@@ -131,10 +131,7 @@ opaque back as the region it hides, a window that is opaque all over draws no
 blur behind it (its rounding cuts the blur away with its corners, so nothing under
 those corners rebuilds it), and a border or a shadow is only drawn where
 the window it decorates does not cover it, so it becomes the ring its shader
-fills. `tests/overdraw.py` mounts a shader
-wallpaper with one, ten and fifty rounded windows, compares the presented pixels
-against the ones it recorded and fails if a repaint submits more fragments than
-it did when that record was taken. A blur keeps only the texels its draw samples,
+fills. A blur keeps only the texels its draw samples,
 for up to 64 blurred backdrops, and restores them while nothing beneath changes,
 so a repaint over many frosted windows recomputes only the blurs whose backdrop
 moved; a recomputed blur runs each pass only over the texels those samples depend
@@ -143,15 +140,9 @@ only the part of the blur that shows: behind a window that is opaque but rounded
 they are the corners its rounding cuts away, so the blur rebuilds only those
 corners' cones, the draws beneath it are drawn only where those cones read, and a
 backdrop that moves under such a window redraws its corners instead of the window
-it frosts. `tests/draw.py` holds
-fifty translucent blurred windows to one 240 Hz refresh at the 99th percentile and
-compares their bytes with main's. A quiet scene collects the Lisp heap and
+it frosts. A quiet scene collects the Lisp heap and
 hands the dead generations and the free pages of the native heap back to the
-system, so an idle desktop keeps only what it is using; `tests/memory.py` mounts
-the shipping policy and a tiled scene at one, ten and fifty windows and fails if
-that footprint or the longest collection grows past the bound it states, then
-provokes the idle handback, fails if its memory is still in use or if any pause it took
-grew past one refresh, and proves that bound rejects a deliberately slow handback.
+system, so an idle desktop keeps only what it is using.
 `tomoe timings` prints the latency Tomoe spends on its own work, in
 nanoseconds: pointer and drag motion to the frame carrying it, a key press to the
 transaction applying it, the wait between an input and its frame, each phase of a
@@ -164,15 +155,7 @@ motion from the kernel's own event timestamp to the vblank that scanned out the
 cursor plane carrying it: the newest and the oldest motion each cursor update took. The samples are kept only when the compositor
 starts with
 `--test-timings`, so the default pays a branch per sample point and nothing
-else; `tests/timing.py` drives one event per frame through it for a repeatable
-table, alongside the bytes each sample path consed and every frame longer than a
-refresh, tagged with the collection it overlapped. `tests/trace.py` mounts a set
-of scripted policies and records the order every reducer was dispatched in, the
-one-shot commands they emitted and the layout and context every materialization
-settled on, then compares that record with `tests/trace.golden`: dependency
-chains, rule replacement, deferred deliveries, mount and unmount ownership, a
-failing reducer, a dependency cycle, eight windows placed by one grid extension,
-a delayed interval and a source swapped on disk all have to reproduce it exactly.
+else.
 
 Every output keeps a frame clock. It records what its compositions cost from the
 moment a repaint starts to the moment the commit is submitted, keeps the 99th
@@ -191,21 +174,12 @@ for the next few hundred frames; a repaint predicts with the histogram of the
 class it last landed in, and the first heavy frame of an episode pays for itself
 through the slack instead of through every frame after it. `--test-pacing-class=0`
 pools the two histograms again for comparison. An idle output arms nothing.
-`tests/frameclock.py` drives vkms with a 1000 Hz pointer and a 500 Hz client,
-with and without `--test-pacing=0` for comparison, and asserts the drop.
-`tests/phase.py` runs the clock at 60 Hz on vkms and at 240 Hz on the headless
-output, which joins the clock under `--test-frame-clock`, with a shader
-wallpaper and blurred windows on and off, and asserts that the class split
-lowers `present-input` without dropping more frames.
 An output that cannot present draws nothing. When the seat goes away Tomoe stops
 submitting frames, stops telling clients their frames are on screen, and leaves
 the display on its last picture; the frame a repaint was waiting for is dropped
 instead of being counted against a flip that will never complete. When the seat
 comes back every output draws again and the pending scene is committed, so a
-switch away and back costs a frame instead of the desktop. `tests/session.py`
-drives vkms through an inactive seat while a client commits 120 times a second,
-and asserts that nothing is drawn, that the display keeps its picture, and that
-the first frame after the resume reaches the plane.
+switch away and back costs a frame instead of the desktop.
 
 The default log level keeps that history: a seat change, an output that appears
 or is removed (with the reason the scan gave), and every DRM change event are
@@ -665,8 +639,7 @@ the API to move.
   application through `zwp_pointer_gestures_v1`; focus loss cancels the gesture.
 - Input methods use text-input-v3 and input-method-v2: focused text fields,
   surrounding text, preedit/commit/delete, candidate popups and keyboard grabs.
-  A private headless end-to-end check exercises a minimal Wayland IME; toolkit
-  support still depends on the application's text-input protocol support.
+  Toolkit support still depends on the application's text-input protocol support.
 - Focused clients can inhibit compositor shortcuts with
   keyboard-shortcuts-inhibit-v1; focus loss or destruction restores bindings.
   VT switching remains compositor-controlled.
@@ -761,66 +734,32 @@ Bug reports, questions and odd setups are welcome in the
 
 ## Releases
 
-`main` is what I run every day, and it breaks. Releases are for everyone else:
-
-| Channel | Tag | Try it |
-| --- | --- | --- |
-| Latest | `main` | `nix run github:y0usaf/tomoe` |
-| Release candidate | `vX.Y.Z-rc.N`, a GitHub prerelease | `nix run github:y0usaf/tomoe/vX.Y.Z-rc.N` |
-| Stable | `vX.Y.Z` | `nix run github:y0usaf/tomoe/vX.Y.Z` |
-
-A candidate is a commit already on `main`. Before it becomes stable it runs its
-own `gate.sh` against a real config on a private instance and is then kept busy
-(palette flips, every rail theme, focus storms with windows closing
-mid-animation, reloads) for half an hour; one crash, fatal log line, extension
-failure or lost focus rules it out, and the fix ships as the next candidate.
-The stable tag goes on the exact commit that soaked, and its soak record is a
-git note under `refs/notes/soak` (`git fetch origin refs/notes/soak:refs/notes/soak`,
-then `git notes --ref soak show vX.Y.Z`). [`CHANGELOG.md`](CHANGELOG.md) lists what
-each release changes.
+`main` is what I run every day, and it breaks. There has been no release yet; the
+first will be a tag on a commit that has been my desktop for a while, and
+[`CHANGELOG.md`](CHANGELOG.md) will list what each release changes.
 
 ```sh
-nix run .#release -- rc 0.1.0             # tag origin/main v0.1.0-rc.N
-nix run .#release -- soak v0.1.0-rc.1     # gate + 30-minute soak, recorded as a note
-nix run .#release -- promote v0.1.0-rc.1  # tag v0.1.0 on that commit
+nix run github:y0usaf/tomoe
 ```
-
-Each takes `--dry-run`, which keeps its tags and notes under `refs/dry-run/` and
-`refs/notes/soak-dry-run`, pushes and publishes nothing, and makes the finix change
-`promote` would make in a throwaway worktree. `RELEASE_SOAK=SECONDS` shortens a dry
-soak; a real promote refuses a soak shorter than 1800 seconds.
 
 ## Development
 
 ```sh
 nix build          # the package
 nix build .#znver4 # the same code with -march/-mtune=znver4 for a Zen 4 host
-nix build .#checks.x86_64-linux.smoke      # the landing check: one VM, a few minutes
-nix build .#checks.x86_64-linux.services   # services die with the compositor, leftovers clear
-nix flake check    # two KVM tests (headless suites, kms); needs /dev/kvm
-nix build -L .#legacyPackages.x86_64-linux.suites.memory   # one suite in its own VM
+nix flake check    # builds the package; there is no test suite
 nix run .#bench    # Tomoe, sway, niri and Hyprland on one vkms output, as JSON
-tools/land.sh submit BRANCH                  # smoke check, then land it on main
-tools/gate.sh REV                            # REV with finix's real config, privately
+tomoe-land submit BRANCH                     # build, then land it on main and pin it in finix
 bench/speedlab.sh REV                        # instructions, memory and output equivalence vs the reference
 tools/isolate DIR COMMAND                    # run anything that must not reach your desktop
 nix develop -c tools/dev.sh --backend nested  # run from source
 ```
 
-`gate.sh` measures as well as checks. The frames a client presents, the interval
-between frames, wake and commit latency, and how many frames or screen reads a
-fixed wait produced are printed on every run, but they only fail the gate with
-`GATE_SPEED=1`: a busy machine changes them, and a landing is not a speed claim.
-Everything else still decides the run — the build, the start, the windows,
-keyboard and pointer input, the reload, the refused config, the pixel and
-idle-frame comparisons, and the resume after input.
+Tomoe has no committed tests. A change is checked when it is made, against the
+build before it, on a private instance or on the desktop, and the check is not
+kept; a change that breaks something is fixed or reverted.
 
-Every suite `nix flake check` runs is also a target of its own under
-`legacyPackages.<system>.suites`, named as in `tests/default.nix`, so one suite
-can be iterated on without the whole VM.
-
-`nix run .#bench` measures rather than asserts, so it is not part of
-`nix flake check`. It boots every compositor that runs in the VM on the same
+`nix run .#bench` measures rather than asserts. It boots every compositor that runs in the VM on the same
 vkms output at the same mode, drives them all with the neutral
 `bench/bench-client.c` client over uinput evdev devices (so input takes the real
 libinput path, flat 1:1), and prints a table plus one JSON document with latency
@@ -832,8 +771,7 @@ number carries the spread across its repeats. All four composite with Mesa
 llvmpipe; niri is rebuilt without its refusal of software renderers
 (`bench/niri.nix`), and Tomoe goes through zink. vkms is a 60 Hz software display,
 so these are compositor pipeline costs: nothing here measures input-to-photon
-latency, GPU cost or power draw. The landing queue runs the same script as
-`tomoe-land submit --timing -s bench`.
+latency, GPU cost or power draw.
 
 The hand-rolled libraries live in `lib/`, one folder each with its one public
 header in `include/`: `png` (PNG decoding and encoding with its own inflate,
@@ -849,8 +787,7 @@ monitor), `expat` (the XML parser fontconfig's config files go through) and
 `pipewire` (the PipeWire wire protocol and an audio client). None of them
 includes anything from `native/` or from each other. `make -C lib/NAME` builds
 `libtomoe-NAME.a` and a `libtomoe-NAME.so` linked with `-z defs` from that
-folder alone, and the `libraries` check, one of the compositor VMs' packages,
-builds all nine. Tomoe compiles the ones it calls itself straight into its one
+folder alone. Tomoe compiles the ones it calls itself straight into its one
 binary and its core with its own flags, so the split adds no call, copy or
 library at run time.
 
@@ -872,12 +809,12 @@ The package takes `{ cpu ? "", opt ? "-O2", lto ? false }`; the C core is built 
 `opt` with `-flto` when `lto` is set, and `cpu` adds `-march`/`-mtune` for that
 one machine. `make OPT= CPU= LTO=` overrides the same three knobs from a checkout.
 
-Anything that starts a private Tomoe or a test client on this machine goes
-through `tools/isolate`, as `gate.sh` does: the command gets its own runtime
+Anything that starts a private Tomoe or a client of it on this machine goes
+through `tools/isolate`: the command gets its own runtime
 directory and home, no X11 sockets, network, uinput or evdev nodes, a read-only
 real home, and a pid namespace that dies with it. It refuses to start while
 `DISPLAY`, `WAYLAND_DISPLAY`, `WAYLAND_SOCKET` or `TOMOE_SOCKET` is set or while a
-fake kernel input device exists, so a test cannot type into, point at, open
+fake kernel input device exists, so nothing it runs can type into, point at, open
 windows on or restyle the session you are using.
 
 ## License

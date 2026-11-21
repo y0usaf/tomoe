@@ -52,7 +52,6 @@
           opt ? "-O2",
           lto ? false,
           portal ? true,
-          coreStamp ? null,
         }:
         let
           freetype = pkgs.freetype.overrideAttrs (old: {
@@ -238,7 +237,7 @@
           buildPhase = ''
             runHook preBuild
             make -j"$NIX_BUILD_CORES" VERSION=${version} \
-              CORE_STAMP='${if coreStamp == null then version else coreStamp}' \
+              CORE_STAMP='${version}' \
               PATH_PREFIX=$out/bin \
               FONTCONFIG_FILE=${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts.minimal ]; }} \
               XKB_CONFIG_ROOT=${pkgs.xkeyboard_config}/etc/X11/xkb \
@@ -295,62 +294,6 @@
           ];
           WLR_PROTOCOLS_XML = "${pkgs.wlr-protocols}/share/wlr-protocols";
         };
-      appsFor = pkgs: {
-        release = {
-          type = "app";
-          program = pkgs.lib.getExe (
-            pkgs.writeShellApplication {
-              name = "tomoe-release";
-              runtimeInputs = [
-                pkgs.git
-                pkgs.gh
-                pkgs.gnused
-                pkgs.gawk
-                pkgs.gnutar
-                pkgs.util-linux
-              ];
-              text = ''
-                TOMOE_LEASE_LIB=${./tools/lease.sh}
-              '' + builtins.readFile ./tools/release.sh;
-            }
-          );
-        };
-      };
-    in
-    let
-      coreBadSource =
-        pkgs:
-        pkgs.runCommand "tomoe-src-layout-drift" { } ''
-          mkdir -p $out
-          cp -r ${./native} $out/native
-          cp -r ${./lib} $out/lib
-          cp -r ${./lisp} $out/lisp
-          cp -r ${./support} $out/support
-          cp -r ${./tools} $out/tools
-          cp -r ${./examples} $out/examples
-          cp -r ${./share} $out/share
-          cp ${./Makefile} $out/Makefile
-          cp ${./LICENSE} $out/LICENSE
-          cp ${./NOTICE} $out/NOTICE
-          cp ${./COPYING-LGPL-2.1} $out/COPYING-LGPL-2.1
-          cp ${./COPYING-MPL-1.1} $out/COPYING-MPL-1.1
-          substituteInPlace $out/native/backend.c --replace-fail \
-            'int tomoe_abi_version(void) { return 46; }' \
-            'int tomoe_abi_version(void) { return 47; }'
-        '';
-      testsFor =
-        pkgs:
-        let
-          base = package pkgs { };
-        in
-        import ./tests {
-          inherit pkgs;
-          tomoe = base;
-          coreB = package pkgs { coreStamp = "core-b"; };
-          coreBad = packageFrom (coreBadSource pkgs) pkgs { coreStamp = "core-bad"; };
-          fontconfigModule = base.passthru.fontconfig;
-          fontconfigReal = base.passthru.fontconfigReal;
-        };
     in
     {
       packages = nixpkgs.lib.mapAttrs (_: pkgs: rec {
@@ -365,14 +308,10 @@
       devShells = nixpkgs.lib.mapAttrs (_: pkgs: {
         default = devShell pkgs;
       }) pkgsFor;
-      checks = nixpkgs.lib.mapAttrs (_: pkgs: removeAttrs (testsFor pkgs) [ "suites" "client" ])
-        pkgsFor;
+      checks = nixpkgs.lib.mapAttrs (_: pkgs: {
+        tomoe = package pkgs { };
+      }) pkgsFor;
       legacyPackages = nixpkgs.lib.mapAttrs (_: pkgs: {
-        inherit
-          (testsFor pkgs)
-          suites
-          client
-          ;
         bench = import ./bench {
           inherit pkgs;
           tomoe = package pkgs { };
@@ -381,8 +320,7 @@
       }) pkgsFor;
       apps = nixpkgs.lib.mapAttrs (
         system: pkgs:
-        appsFor pkgs
-        // {
+        {
           bench = {
             type = "app";
             program = pkgs.lib.getExe (
