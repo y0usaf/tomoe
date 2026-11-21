@@ -14,6 +14,8 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#include <linux/sync_file.h>
+#include <time.h>
 #include <drm/drm.h>
 #include <drm/drm_mode.h>
 
@@ -194,6 +196,21 @@ int ioctl(int fd, unsigned long request, ...) {
         default:
             break;
         }
+    }
+    if (request == SYNC_IOC_FILE_INFO) {
+        struct sync_file_info *info = arg;
+        uint32_t cap = info ? info->num_fences : 0;
+        int ret = real_ioctl(fd, request, arg);
+        if (ret == 0 && info && info->status == 1 && info->sync_fence_info && cap) {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            uint64_t now = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+            struct sync_fence_info *fences = (struct sync_fence_info *)(uintptr_t)info->sync_fence_info;
+            uint32_t count = info->num_fences < cap ? info->num_fences : cap;
+            for (uint32_t i = 0; i < count; i++)
+                if (fences[i].status == 1) fences[i].timestamp_ns = now;
+        }
+        return ret;
     }
     return real_ioctl(fd, request, arg);
 }

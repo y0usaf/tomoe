@@ -18,6 +18,7 @@ struct headless {
     int32_t refresh;
     int held;
     int64_t held_until;
+    int64_t held_ready;
 };
 
 static void clock_arm(struct headless *h, int32_t refresh) {
@@ -81,20 +82,25 @@ static void test_fence_arm(struct headless *h) {
     test_fence_record("hold %zu %lld %lld\n", h->seq, (long long)at, (long long)deadline);
 }
 
-static int64_t await_render(struct headless *h) {
+static int64_t await_render(struct headless *h, int64_t *held_ready) {
     int64_t ready = 0;
+    if (held_ready) *held_ready = 0;
     if (h->wait) {
         int fd = timeline_export_sync_file(h->wait, h->wait_point);
         if (fd >= 0) {
-            struct timespec before, after;
-            clock_gettime(CLOCK_MONOTONIC, &before);
-            poll(&(struct pollfd){ .fd = fd, .events = POLLIN }, 1, -1);
-            clock_gettime(CLOCK_MONOTONIC, &after);
-            int64_t waited = (int64_t)(after.tv_sec - before.tv_sec) * 1000000000 +
-                (after.tv_nsec - before.tv_nsec);
-            if (waited > 500000)
-                tomoe_log(LOG_DEBUG, "tomoe: output %s tick waited %lld us on the render",
-                    h->screen.name, (long long)(waited / 1000));
+            struct pollfd p = { .fd = fd, .events = POLLIN };
+            if (poll(&p, 1, 0) == 0) {
+                struct timespec before, after;
+                clock_gettime(CLOCK_MONOTONIC, &before);
+                while (poll(&p, 1, -1) < 0 && errno == EINTR) {}
+                clock_gettime(CLOCK_MONOTONIC, &after);
+                int64_t after_ns = (int64_t)after.tv_sec * 1000000000 + after.tv_nsec;
+                int64_t waited = after_ns - ((int64_t)before.tv_sec * 1000000000 + before.tv_nsec);
+                if (waited > 500000)
+                    tomoe_log(LOG_DEBUG, "tomoe: output %s tick waited %lld us on the render",
+                        h->screen.name, (long long)(waited / 1000));
+                ready = after_ns;
+            }
             close(fd);
         }
         timeline_unref(h->wait);
@@ -105,7 +111,8 @@ static int64_t await_render(struct headless *h) {
         while (read(h->held, &expirations, sizeof(expirations)) < 0 && errno == EINTR) {}
         close(h->held);
         h->held = -1;
-        ready = h->held_until;
+        if (held_ready) *held_ready = h->held_until;
+        if (h->held_until > ready) ready = h->held_until;
     }
     return ready;
 }
@@ -114,18 +121,26 @@ static int clock_tick(int fd, uint32_t mask, void *data) {
     struct headless *h = data;
     uint64_t expirations;
     if (read(fd, &expirations, sizeof(expirations)) != sizeof(expirations)) return 0;
-    int64_t ready = await_render(h);
-    h->vblank = h->next;
-    if (ready > h->vblank) {
+    int64_t held_ready = 0;
+    int64_t ready = await_render(h, &held_ready);
+    if (held_ready) h->held_ready = held_ready;
+    if (ready > h->next) {
         int64_t period = 1000000000000LL / (h->refresh > 0 ? h->refresh : 60000);
-        h->vblank += (ready - h->vblank + period - 1) / period * period;
+        h->next += (ready - h->next + period - 1) / period * period;
+        struct itimerspec spec = { .it_value = { h->next / 1000000000, h->next % 1000000000 } };
+        timerfd_settime(h->fd, TFD_TIMER_ABSTIME, &spec, NULL);
+        return 0;
     }
+    h->vblank = h->next;
+    h->screen.vblank_ns = h->vblank;
     struct screen_present present = { .commit_seq = h->seq, .presented = true, .seq = ++h->frames,
         .when = { h->vblank / 1000000000, h->vblank % 1000000000 },
         .refresh = h->screen.refresh ? (int)(1000000000000LL / h->screen.refresh) : 0 };
-    if (ready)
+    if (h->held_ready) {
         test_fence_record("present %u %zu %lld %lld\n", h->frames, h->seq, (long long)h->vblank,
-            (long long)ready);
+            (long long)h->held_ready);
+        h->held_ready = 0;
+    }
     screen_send_present(&h->screen, &present);
     screen_send_frame(&h->screen);
     return 0;
@@ -144,7 +159,8 @@ static bool headless_commit(struct screen_update *updates, size_t count) {
             state->custom_mode.refresh : h->screen.refresh;
         h->seq = h->screen.commit_seq + 1;
         h->refresh = refresh;
-        await_render(h);
+        h->held_ready = 0;
+        await_render(h, NULL);
         test_fence_arm(h);
         if (state->committed & SCREEN_WAIT) {
             h->wait = timeline_ref(state->wait_timeline);
@@ -169,6 +185,7 @@ static size_t headless_gamma_size(struct screen *screen) {
 }
 
 static const struct screen_impl headless_impl = {
+    .late_frames = true,
     .test = headless_test,
     .commit = headless_commit,
     .gamma_size = headless_gamma_size,

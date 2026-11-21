@@ -367,15 +367,8 @@ static void dispatch_frame(struct screen *screen) {
     }
 }
 
-static bool test_frame_clock(void) {
-    static int enabled = -1;
-    if (enabled < 0) enabled = tomoe_test_flag("frame-clock");
-    return enabled;
-}
-
 static bool late_frames(const struct screen *screen) {
-    if (!screen->frame_timer.source) return false;
-    return screen->impl->late_frames || (screen->kind == SCREEN_HEADLESS && test_frame_clock());
+    return screen->impl->late_frames && screen->frame_timer.source;
 }
 
 static uint32_t bucket_total(const uint16_t *buckets) {
@@ -584,7 +577,10 @@ static int64_t fence_signaled_ns(int fd) {
 void screen_frame_committed(struct screen *screen, const struct screen_state *state) {
     if (!late_frames(screen) || !screen->frame_start_ns) return;
     if (screen->frame_fence >= 0) close(screen->frame_fence);
-    screen->frame_fence = (state->committed & SCREEN_WAIT) && state->wait_timeline ?
+    bool signaled = false;
+    bool export_fence = (state->committed & SCREEN_WAIT) && state->wait_timeline &&
+        !(timeline_check(state->wait_timeline, state->wait_point, 0, &signaled) && signaled);
+    screen->frame_fence = export_fence ?
         timeline_export_sync_file(state->wait_timeline, state->wait_point) : -1;
     screen->frame_ready_ns = monotonic_ns();
     screen->frame_target_ns = screen_next_vblank(screen, screen->frame_start_ns);
@@ -643,8 +639,6 @@ void screen_schedule_animation(struct screen *screen) {
 void screen_send_present(struct screen *screen, struct screen_present *present) {
     present->output = screen;
     int64_t when = (int64_t)present->when.tv_sec * 1000000000 + present->when.tv_nsec;
-    if (present->presented && screen->kind == SCREEN_HEADLESS && test_frame_clock())
-        screen->vblank_ns = when;
     if (timing_enabled && present->presented) {
         if (screen->present_ns && when > screen->present_ns)
             timing_add(TIMING_PRESENT_INTERVAL, (uint64_t)(when - screen->present_ns));
@@ -681,7 +675,7 @@ void screen_init(struct screen *screen, struct tomoe *s, const struct screen_imp
     screen->clock.predicted_ns = FRAME_COST_START_NS;
     screen->clock.slack_ns = FRAME_SLACK_START_NS;
     screen->clock.warmup = 16;
-    if (impl->late_frames || (kind == SCREEN_HEADLESS && test_frame_clock()))
+    if (impl->late_frames)
         ns_timer_init(&screen->frame_timer, wl_display_get_event_loop(s->display), frame_fire, screen);
     wl_list_init(&screen->modes);
     wl_list_init(&screen->resources);

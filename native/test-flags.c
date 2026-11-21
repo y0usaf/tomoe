@@ -9,7 +9,6 @@ static struct test_flag {
 } test_flags[] = {
     { "debug-damage", NULL, false },
     { "refuse-planes", NULL, false },
-    { "frame-clock", NULL, false },
     { "pacing", NULL, false },
     { "pacing-class", NULL, false },
     { "cursor-early", NULL, false },
