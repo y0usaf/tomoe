@@ -8,13 +8,7 @@
 
 #include "lisp-internal.h"
 
-struct lisp_runtime *lisp_ptr;
-
-void lisp_attach(lisp_state_lookup state) {
-    static struct lisp_runtime private_runtime;
-    lisp_ptr = state ? state("lisp", sizeof(*lisp_ptr)) : NULL;
-    if (!lisp_ptr) lisp_ptr = &private_runtime;
-}
+struct lisp_runtime lisp;
 
 static char *reservation;
 static uint32_t free_block = UINT32_MAX;

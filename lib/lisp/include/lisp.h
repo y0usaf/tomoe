@@ -31,13 +31,11 @@ struct lisp_builtin_source {
 };
 
 typedef lisp_value (*lisp_primitive)(int argc, lisp_value *argv);
-typedef void *(*lisp_state_lookup)(const char *name, size_t size);
 
 #define UI_SHAPE_STOPS 6
 #define UI_SHAPE_SHADOWS 4
 #define UI_SHAPE_POINTS 1024
 
-void lisp_attach(lisp_state_lookup state);
 int lisp_init(size_t region_bytes);
 void lisp_shutdown(void);
 int lisp_set_region_limit(size_t region_bytes);

@@ -1,8 +1,6 @@
 #ifndef TOMOE_REGION_H
 #define TOMOE_REGION_H
 
-struct tomoe_state_abi;
-void region_attach(const struct tomoe_state_abi *abi);
 #include <stdbool.h>
 #include <stdint.h>
 

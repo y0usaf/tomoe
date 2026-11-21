@@ -7,7 +7,6 @@
 #include "ipc.h"
 #include "json.h"
 #include "lisp.h"
-#include "livecore.h"
 #include "policy.h"
 
 #include <errno.h>
@@ -24,7 +23,58 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "lisp-sources.h"
+static const char lisp_prelude[] = {
+#embed "../lisp/prelude.lisp"
+};
+static const char lisp_api[] = {
+#embed "../lisp/api.lisp"
+};
+static const char lisp_ui[] = {
+#embed "../lisp/ui.lisp"
+};
+static const char lisp_cursor[] = {
+#embed "../lisp/cursor.lisp"
+};
+static const char lisp_dialogs[] = {
+#embed "../lisp/dialogs.lisp"
+};
+static const char lisp_rules[] = {
+#embed "../lisp/rules.lisp"
+};
+static const char lisp_ipc[] = {
+#embed "../lisp/ipc.lisp"
+};
+static const char lisp_plan[] = {
+#embed "../lisp/plan.lisp"
+};
+static const char lisp_runtime[] = {
+#embed "../lisp/runtime.lisp"
+};
+static const char lisp_livepatch[] = {
+#embed "../lisp/livepatch.lisp"
+};
+static const char lisp_desktop[] = {
+#embed "../lisp/desktop.lisp"
+};
+static const char lisp_default_config[] = {
+#embed "../lisp/default-config.lisp"
+};
+
+static const struct lisp_builtin_source tomoe_builtin_sources[] = {
+    { "prelude", lisp_prelude, sizeof(lisp_prelude) },
+    { "api", lisp_api, sizeof(lisp_api) },
+    { "ui", lisp_ui, sizeof(lisp_ui) },
+    { "cursor", lisp_cursor, sizeof(lisp_cursor) },
+    { "dialogs", lisp_dialogs, sizeof(lisp_dialogs) },
+    { "rules", lisp_rules, sizeof(lisp_rules) },
+    { "ipc", lisp_ipc, sizeof(lisp_ipc) },
+    { "plan", lisp_plan, sizeof(lisp_plan) },
+    { "runtime", lisp_runtime, sizeof(lisp_runtime) },
+    { "livepatch", lisp_livepatch, sizeof(lisp_livepatch) },
+    { "desktop", lisp_desktop, sizeof(lisp_desktop) },
+    { "default-config", lisp_default_config, sizeof(lisp_default_config) },
+};
+static const size_t tomoe_builtin_source_count = sizeof(tomoe_builtin_sources) / sizeof(tomoe_builtin_sources[0]);
 
 enum { JSON_WIRE_VERSION = 3, CONTROL_WIRE_VERSION = 2 };
 
@@ -594,7 +644,6 @@ static int run_compositor(const struct cli_options *options) {
     bool session = false;
     int signal_fd = -1;
     struct loop_source *signal_watch = NULL;
-    livecore_attach_state();
     if (lisp_init(budget_lisp_region_bootstrap)) {
         tomoe_log(LOG_ERROR, "tomoe: cannot initialise the Lisp runtime");
         goto done;
@@ -603,7 +652,6 @@ static int run_compositor(const struct cli_options *options) {
     resources_register_primitives(server);
     ui_layout_register_primitives(server);
     loop_register_primitives(server);
-    (void)livecore_init(server, error, sizeof(error));
     if (lisp_load_builtins(tomoe_builtin_sources, tomoe_builtin_source_count, error,
             sizeof(error))) {
         tomoe_log(LOG_ERROR, "tomoe: %s", error);
@@ -683,7 +731,6 @@ static int run_compositor(const struct cli_options *options) {
         control_serve(control);
         ipc_serve(ipc);
         lisp_end_turn();
-        livecore_service();
     }
     uint64_t deadline = loop_now_ms() + 100;
     while (ipc_pending(ipc) && loop_now_ms() < deadline) ipc_drain(ipc, 1);

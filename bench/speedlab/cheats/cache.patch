@@ -1,6 +1,6 @@
 --- a/native/main.c
 +++ b/native/main.c
-@@ -655,6 +655,10 @@ static int run_compositor(const struct cli_options *options) {
+@@ -708,6 +708,10 @@ static int run_compositor(const struct cli_options *options) {
          const char *message = lisp_get_string(boot_result, &length);
          if (message) tomoe_log(LOG_ERROR, "tomoe: %.*s", (int)length, message);
      }
@@ -11,9 +11,9 @@
      while (!loop_state.quit) {
          int timeout = policy_events_pending(server) ? 0 : -1;
          int step = tomoe_step(server, timeout);
-@@ -680,6 +684,18 @@ static int run_compositor(const struct cli_options *options) {
+@@ -732,6 +736,18 @@ static int run_compositor(const struct cli_options *options) {
+         ipc_serve(ipc);
          lisp_end_turn();
-         livecore_service();
      }
 +    FILE *keep = fopen(warm, "w");
 +    if (keep) {

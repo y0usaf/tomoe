@@ -781,7 +781,7 @@ nix run .#bench    # Tomoe, sway, niri and Hyprland on one vkms output, as JSON
 tomoe-land submit BRANCH                     # build, then land it on main and pin it in finix
 bench/speedlab.sh REV                        # instructions, memory and output equivalence vs the reference
 tools/isolate DIR COMMAND                    # run anything that must not reach your desktop
-nix develop -c tools/dev.sh --backend nested  # run from source
+nix develop -c sh -c 'make -j && build/tomoe --backend nested'  # run from source
 ```
 
 Tomoe has no committed tests. A change is checked when it is made, against the
@@ -817,8 +817,8 @@ monitor), `expat` (the XML parser fontconfig's config files go through) and
 includes anything from `native/` or from each other. `make -C lib/NAME` builds
 `libtomoe-NAME.a` and a `libtomoe-NAME.so` linked with `-z defs` from that
 folder alone. Tomoe compiles the ones it calls itself straight into its one
-binary and its core with its own flags, so the split adds no call, copy or
-library at run time.
+binary with its own flags, so the split adds no call, copy or library at
+run time.
 
 The libraries Tomoe still links are rebuilt in `flake.nix` with what it does not
 use left out. `libgbm` picks its backend by the kernel driver's name, which

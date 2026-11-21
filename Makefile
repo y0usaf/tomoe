@@ -1,9 +1,7 @@
 CC ?= cc
-NM ?= nm
 PKG_CONFIG ?= pkg-config
 VERSION ?= dev
 XKB_CONFIG_ROOT ?= /etc/X11/xkb
-CORE_STAMP ?= $(VERSION)
 OPT ?= -O2
 LTO ?=
 CPU ?=
@@ -66,8 +64,6 @@ PROTOCOLS = \
 
 NAMES = $(basename $(notdir $(PROTOCOLS)))
 HEADERS = build/wayland-server-protocol.h build/wayland-client-protocol.h $(NAMES:%=build/%-protocol.h) $(NAMES:%=build/%-client-protocol.h)
-LISP_SOURCES = prelude api ui cursor dialogs rules ipc plan runtime livepatch desktop default-config
-LISP_EMBED = $(wildcard lisp/*.lisp)
 LIBRARIES = png lisp wayland xkb pipewire udev
 LIB_SOURCES = $(foreach l,$(LIBRARIES),$(wildcard lib/$(l)/*.c))
 LIB_HEADERS = $(wildcard lib/*/*.h lib/*/include/*.h lib/wayland/scanner/*.h)
@@ -78,10 +74,9 @@ WAYLAND_SERVER = $(WAYLAND_CORE) build/obj/lib/wayland/loop.o build/obj/lib/wayl
 WAYLAND_CLIENT = $(WAYLAND_CORE) build/obj/lib/wayland/client.o
 NATIVE = $(patsubst native/%.c,build/obj/%.o,$(wildcard native/*.c)) $(LIB_OBJECTS) $(NAMES:%=build/obj/%-protocol.o) $(WAYLAND_SERVER) build/obj/lib/wayland/client.o
 CFLAGS_CODE = $(OPT) $(LTO) $(CPU)
-CFLAGS_BASE = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -fpatchable-function-entry=5,0 -fno-partial-inlining -fno-reorder-blocks-and-partition
-CFLAGS_NATIVE = $(CFLAGS_BASE) -DTOMOE_CORE_STAMP='"$(CORE_STAMP)"' -DTOMOE_VERSION='"$(VERSION)"' -DTOMOE_PATH_PREFIX='"$(PATH_PREFIX)"' -DTOMOE_FONTCONFIG_FILE='"$(FONTCONFIG_FILE)"' -Ibuild -Inative $(LIB_INCLUDE) $(shell $(PKG_CONFIG) --cflags $(LIBS))
-CFLAGS_CORE = $(CFLAGS_NATIVE) -fPIC -DTOMOE_SHARED_CORE
-CFLAGS_SUPPORT = $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -fpatchable-function-entry=5,0 -DTOMOE_CORE_STAMP='"$(CORE_STAMP)"' -DTOMOE_VERSION='"$(VERSION)"'
+CFLAGS_BASE = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter
+CFLAGS_NATIVE = $(CFLAGS_BASE) -DTOMOE_VERSION='"$(VERSION)"' -DTOMOE_PATH_PREFIX='"$(PATH_PREFIX)"' -DTOMOE_FONTCONFIG_FILE='"$(FONTCONFIG_FILE)"' -Ibuild -Inative $(LIB_INCLUDE) $(shell $(PKG_CONFIG) --cflags $(LIBS))
+CFLAGS_SUPPORT = $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -DTOMOE_VERSION='"$(VERSION)"'
 CFLAGS_PORTAL = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild -Isupport -Ilib/wayland/include -Ilib/wayland/scanner -Ilib/pipewire/include $(shell $(PKG_CONFIG) --cflags $(PORTAL_LIBS))
 LIB_CFLAGS_pipewire = $(CFLAGS_SUPPORT)
 LIB_FLAGS_wayland = -Ilib/wayland/scanner -Ibuild
@@ -101,63 +96,12 @@ build/tomoe-portal: $(PORTAL) $(PORTAL_PROTOCOLS:%=build/obj/%-protocol.o) $(WAY
 build/obj/portal-%.o: native/portal/%.c $(wildcard native/portal/*.h) $(LIB_HEADERS) $(wildcard support/*.h) support/bus.h $(HEADERS) | build/obj
 	$(CC) $(CFLAGS_PORTAL) -c $< -o $@
 
-CORE_OBJECTS = $(patsubst native/%.c,build/core/obj/%.o,$(wildcard native/*.c)) \
-	$(patsubst lib/%.c,build/core/obj/lib/%.o,$(LIB_SOURCES)) \
-	$(NAMES:%=build/core/obj/protocol-%-protocol.o) $(SUPPORT:%=build/core/obj/support-%.o) \
-	build/core/obj/wayland-protocol.o
-
-build/tomoe: $(NATIVE) $(SUPPORT:%=build/%.o) | build/entries
+build/tomoe: $(NATIVE) $(SUPPORT:%=build/%.o)
 	$(CC) $(LTO) $(NATIVE) $(SUPPORT:%=build/%.o) -o $@ $(LINK) -lm \
 		-Wl,--export-dynamic-symbol=tomoe_png_glyph_info \
 		-Wl,--export-dynamic-symbol=tomoe_png_glyph_rows
-	build/entries $@
 
-build/tomoe-core.so: $(CORE_OBJECTS) | build/entries
-	$(CC) $(LTO) -shared -Wl,-Bsymbolic $(CORE_OBJECTS) -o $@ \
-		$(LINK) -lm
-	build/entries $@
-
-core: build/tomoe-core.so
-
-build/entries: tools/entries.c | build
-	$(CC) $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -o $@ $<
-
-build/core/obj/support-%.o: support/%.c $(wildcard support/*.h) | build
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS_SUPPORT) -fPIC -DTOMOE_SHARED_CORE -c $< -o $@
-
-build/core/obj/wayland-protocol.o: build/wayland-protocol.c build/wayland-server-protocol.h build/wayland-client-protocol.h | build
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS_CORE) -c $< -o $@
-
-build/core/obj/protocol-%-protocol.o: build/%-protocol.c $(HEADERS) | build
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS_CORE) -c $< -o $@
-
-build/core/obj/%.o: native/%.c $(wildcard native/*.h) $(LIB_HEADERS) $(HEADERS) | build
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS_CORE) -c $< -o $@
-
-build/core/obj/lib/%.o: lib/%.c $(LIB_HEADERS) build/wayland-server-protocol.h build/wayland-client-protocol.h | build
-	@mkdir -p $(dir $@)
-	$(CC) $(call lib_cflags,$(firstword $(subst /, ,$*))) -fPIC -DTOMOE_SHARED_CORE -c $< -o $@
-
-build/embed: tools/embed.c | build
-	$(CC) $(CFLAGS_CODE) -o $@ $<
-
-build/lisp-sources.h: build/embed $(LISP_EMBED) FORCE
-	sh -c 'set --; for n in $(LISP_SOURCES); do if [ -f lisp/$$n.lisp ]; then set -- "$$@" "$$n" "lisp/$$n.lisp"; fi; done; exec build/embed build/lisp-sources.h "$$@"'
-
-build/obj/main.o: build/lisp-sources.h
-build/core/obj/main.o: build/lisp-sources.h
-build/obj/livecore.o: build/main-functions.h
-build/core/obj/livecore.o: build/main-functions.h
-
-build/main-functions.h: build/obj/main.o | build
-	{ echo 'static const char *const livecore_driver[] = {'; \
-	  $(NM) --defined-only --format=posix build/obj/main.o | \
-	    awk '$$2 == "T" || $$2 == "t" { printf "    \"%s\",\n", $$1 }'; \
-	  echo '};'; } > $@
+build/obj/main.o: $(wildcard lisp/*.lisp)
 
 build/obj/%.o: native/%.c $(wildcard native/*.h) $(LIB_HEADERS) $(HEADERS) | build/obj
 	$(CC) $(CFLAGS_NATIVE) -c $< -o $@
@@ -192,8 +136,5 @@ build/%-protocol.c: %.xml | build
 
 build build/obj:
 	mkdir -p $@
-
-.PHONY: FORCE core
-FORCE:
 
 .SECONDARY:

@@ -374,8 +374,7 @@ struct lisp_runtime {
     uint32_t builtin_redefined;
 };
 
-extern struct lisp_runtime *lisp_ptr;
-#define lisp (*lisp_ptr)
+extern struct lisp_runtime lisp;
 
 #define OBJ(v) ((struct lisp_obj *)(uintptr_t)(v))
 #define TYPE(v) (OBJ(v)->type)

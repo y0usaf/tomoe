@@ -27,7 +27,6 @@ static struct test_flag {
     { "stall-ns", NULL, false },
     { "ui-stats", NULL, false },
     { "gesture", NULL, false },
-    { "swap-fail", NULL, false },
 };
 
 static struct test_flag *flag_for(const char *name) {

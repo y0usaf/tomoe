@@ -303,22 +303,3 @@ compositor as it was and signals its error. Returns a report plist."
   :arguments '((:name :string :description "Patch name, by default the most recent patch.")
                (:id :integer :description "Patch number, when the name is unknown."))
   :call 'undo-patch-command)
-
-(defun swap-core-command (arguments)
-  (let ((file (getf arguments :file)))
-    (%core-swap file)
-    (list :file file :queued t)))
-
-(defun core-report-command (arguments)
-  (declare (ignore arguments))
-  (list :stamp (%core-stamp) :abi (%core-abi)))
-
-(define-host-command "swap-core"
-  :description "Swap a rebuilt core into this running compositor, keeping every client."
-  :arguments '((:file :string :description "The core library to load."))
-  :call 'swap-core-command)
-
-(define-host-command "core-report"
-  :description "The build stamp and layout the running core answers with."
-  :arguments '()
-  :call 'core-report-command)

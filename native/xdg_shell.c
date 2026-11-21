@@ -1,5 +1,4 @@
 #include "internal.h"
-
 #include "xdg-shell-protocol.h"
 #include "xdg-toplevel-tag-v1-protocol.h"
 #include "xdg-dialog-v1-protocol.h"

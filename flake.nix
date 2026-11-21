@@ -206,7 +206,6 @@
                   ./lib
                   ./support
                   ./lisp
-                  ./tools
                   ./examples
                   ./share
                   ./Makefile
@@ -237,7 +236,6 @@
           buildPhase = ''
             runHook preBuild
             make -j"$NIX_BUILD_CORES" VERSION=${version} \
-              CORE_STAMP='${version}' \
               PATH_PREFIX=$out/bin \
               FONTCONFIG_FILE=${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts.minimal ]; }} \
               XKB_CONFIG_ROOT=${pkgs.xkeyboard_config}/etc/X11/xkb \
@@ -246,13 +244,12 @@
               WLR=${pkgs.wlr-protocols}/share/wlr-protocols/unstable \
               WP=${pkgs.wayland-protocols}/share/wayland-protocols \
               WAYLAND_XML=${pkgs.wayland-scanner}/share/wayland/wayland.xml \
-              build/tomoe build/tomoe-portal build/tomoe-core.so
+              build/tomoe build/tomoe-portal
             runHook postBuild
           '';
           installPhase = ''
             runHook preInstall
             install -Dm755 build/tomoe $out/bin/tomoe
-            install -Dm755 build/tomoe-core.so $out/lib/tomoe/core.so
             install -d $out/share/tomoe/lisp
             install -m 644 lisp/*.lisp $out/share/tomoe/lisp/
             install -Dm644 -t $out/share/doc/tomoe LICENSE NOTICE COPYING-LGPL-2.1 COPYING-MPL-1.1
@@ -292,7 +289,6 @@
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
             pkgs.wayland
           ];
-          WLR_PROTOCOLS_XML = "${pkgs.wlr-protocols}/share/wlr-protocols";
         };
     in
     {
