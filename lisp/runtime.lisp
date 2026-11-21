@@ -622,7 +622,8 @@ while other owners can settle; a new request or declaration permits recovery."
              (preview nil) (message nil) (*output-error-name* nil))
         (%catch (lambda ()
                   (setf preview
-                        (if (not (equal (resolved-native-output-config old) native-config))
+                        (if (or (pending-native-outputs-p)
+                                (not (equal (resolved-native-output-config old) native-config)))
                             (preview-native-outputs native-config)
                             (list :outputs (runtime-outputs) :connectors connectors))))
                 (lambda (text) (setf message text)))
