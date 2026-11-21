@@ -69,21 +69,6 @@
             NIX_CFLAGS_COMPILE = toString (old.NIX_CFLAGS_COMPILE or "") +
               " -DFT_CONFIG_OPTION_USE_PNG";
           });
-          harfbuzz = (pkgs.harfbuzz.override {
-            withGraphite2 = false;
-            withIntrospection = false;
-            inherit freetype;
-          }).overrideAttrs (old: {
-            buildInputs = pkgs.lib.subtractLists [ pkgs.glib pkgs.cairo pkgs.icu ] (old.buildInputs or [ ]);
-            propagatedBuildInputs = pkgs.lib.subtractLists [ pkgs.glib pkgs.cairo pkgs.icu ] (old.propagatedBuildInputs or [ ]);
-            mesonFlags = (pkgs.lib.filter (x: !(pkgs.lib.hasPrefix "-Dglib=" x || pkgs.lib.hasPrefix "-Dgobject=" x || pkgs.lib.hasPrefix "-Dcairo=" x || pkgs.lib.hasPrefix "-Dicu=" x)) (old.mesonFlags or [ ])) ++ [
-              "-Dpng=disabled"
-              "-Dglib=disabled"
-              "-Dgobject=disabled"
-              "-Dcairo=disabled"
-              "-Dicu=disabled"
-            ];
-          });
           libs = lean pkgs;
           dropIn =
             {
@@ -202,7 +187,6 @@
             libs.libgbm
             pkgs.wayland-protocols
             pkgs.wlr-protocols
-            harfbuzz
             freetype
           ];
           strictDeps = true;

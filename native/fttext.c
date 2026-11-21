@@ -3,17 +3,17 @@
 #include "colr.h"
 #include "draw.h"
 #include "emoji-data.h"
+#include "unicode-data.h"
 
 #include "fontmatch.h"
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include FT_ADVANCES_H
 #include FT_COLOR_H
 #include FT_OUTLINE_H
 #include FT_SYNTHESIS_H
 #include FT_LCD_FILTER_H
-#include <hb.h>
-#include <hb-ft.h>
-#include <hb-ot.h>
+#include FT_TRUETYPE_TABLES_H
 
 #include <ctype.h>
 #include <math.h>
@@ -200,7 +200,6 @@ struct fte_scaled {
     int metric_count, metric_capacity;
     struct fte_glyph *glyphs;
     int glyph_count, glyph_capacity;
-    hb_font_t *hb;
 };
 
 static FT_Library fte_library;
@@ -1559,18 +1558,114 @@ static struct fte_scaled *fte_scaled_from_entry(const struct fm_entry *entry,
     return fte_scaled_get(face, &font_matrix, &font_matrix, &fte_render_options, &ft_options);
 }
 
-static hb_font_t *fte_scaled_hb(struct fte_scaled *scaled)
+static int32_t fte_ft_h_advance(struct fte_scaled *scaled, unsigned gid)
 {
-    if (!scaled || !scaled->face || !scaled->face->face) return NULL;
-    fte_face_scale(scaled->face, &scaled->scale);
-    if (!scaled->hb) {
-        scaled->hb = hb_ft_font_create_referenced(scaled->face->face);
-        if (!scaled->hb) return NULL;
-        hb_ft_font_set_load_flags(scaled->hb, scaled->load_flags);
-    } else {
-        hb_ft_font_changed(scaled->hb);
+    FT_Face ft = scaled->face->face;
+    FT_Fixed adv = 0;
+    if (FT_Get_Advance(ft, (FT_UInt)gid, scaled->load_flags, &adv) == 0)
+        return (int32_t)((adv + (1 << 9)) >> 10);
+    int color_flag = scaled->face->have_color ? FT_LOAD_COLOR : 0;
+    if (FT_Load_Glyph(ft, (FT_UInt)gid, scaled->load_flags | color_flag) == 0)
+        return (int32_t)ft->glyph->advance.x;
+    return 0;
+}
+
+static double fte_space_width(struct fte_scaled *scaled, double adv_sx, double font_size)
+{
+    FT_UInt sg = FT_Get_Char_Index(scaled->face->face, ' ');
+    if (sg)
+        return (double)fte_ft_h_advance(scaled, sg) / 64.0 * adv_sx;
+    return font_size / 4.0;
+}
+
+static double fte_space_advance(struct fte_scaled *scaled, double adv_sx, double font_size)
+{
+    return floor(fte_space_width(scaled, adv_sx, font_size) + 0.5);
+}
+
+static double fte_fallback_space_advance(struct fte_scaled *scaled, double adv_sx,
+    double font_size, uint32_t cp)
+{
+    double em = scaled->face->x_scale * adv_sx;
+    if (!(em > 0.0)) em = font_size;
+    switch (cp) {
+    case ' ':
+    case 0x00a0:
+    case 0x2028:
+    case 0x2029:
+        return fte_space_advance(scaled, adv_sx, font_size);
+    case 0x2000:
+    case 0x2002:
+        return floor(em / 2.0 + 0.5);
+    case 0x2001:
+    case 0x2003:
+    case 0x3000:
+        return floor(em + 0.5);
+    case 0x2004:
+        return floor(em / 3.0 + 0.5);
+    case 0x2005:
+        return floor(em / 4.0 + 0.5);
+    case 0x2006:
+        return floor(em / 6.0 + 0.5);
+    case 0x2007: {
+        FT_UInt g = FT_Get_Char_Index(scaled->face->face, '0');
+        if (g)
+            return floor((double)fte_ft_h_advance(scaled, g) / 64.0 * adv_sx + 0.5);
+        return fte_space_advance(scaled, adv_sx, font_size);
     }
-    return scaled->hb;
+    case 0x2008: {
+        FT_UInt g = FT_Get_Char_Index(scaled->face->face, '.');
+        if (g)
+            return floor((double)fte_ft_h_advance(scaled, g) / 64.0 * adv_sx + 0.5);
+        return fte_space_advance(scaled, adv_sx, font_size);
+    }
+    case 0x2009:
+        return floor(em / 5.0 + 0.5);
+    case 0x200a:
+        return floor(em / 16.0 + 0.5);
+    case 0x202f:
+        return floor(fte_space_width(scaled, adv_sx, font_size) / 2.0 + 0.5);
+    case 0x205f:
+        return floor(em * 4.0 / 18.0 + 0.5);
+    default:
+        return 0.0;
+    }
+}
+
+static void fte_ft_decor_metrics(struct fte_scaled *scaled, double adv_sy,
+    int32_t *ul_off, int32_t *ul_size, int32_t *so_off, int32_t *so_size)
+{
+    FT_Face ft = scaled->face->face;
+    FT_Fixed y_scale = ft->size->metrics.y_scale;
+    *ul_size = 0;
+    *ul_off = 0;
+    *so_size = 0;
+    *so_off = 0;
+    if (FT_IS_SCALABLE(ft)) {
+        TT_Postscript *post = (TT_Postscript *)FT_Get_Sfnt_Table(ft, FT_SFNT_POST);
+        if (post) {
+            if (post->underlineThickness)
+                *ul_size = (int32_t)FT_MulFix(post->underlineThickness, y_scale);
+            if (post->underlinePosition)
+                *ul_off = (int32_t)FT_MulFix(post->underlinePosition, y_scale);
+        } else {
+            if (ft->underline_thickness)
+                *ul_size = (int32_t)FT_MulFix(ft->underline_thickness, y_scale);
+            if (ft->underline_position)
+                *ul_off = (int32_t)FT_MulFix(ft->underline_position, y_scale);
+        }
+        TT_OS2 *os2 = (TT_OS2 *)FT_Get_Sfnt_Table(ft, FT_SFNT_OS2);
+        if (os2) {
+            if (os2->yStrikeoutSize)
+                *so_size = (int32_t)FT_MulFix(os2->yStrikeoutSize, y_scale);
+            if (os2->yStrikeoutPosition)
+                *so_off = (int32_t)FT_MulFix(os2->yStrikeoutPosition, y_scale);
+        }
+    }
+    if (*ul_size == 0) *ul_size = (int32_t)lrint(64.0 / adv_sy);
+    if (*ul_off == 0) *ul_off = (int32_t)lrint(-64.0 / adv_sy);
+    if (*so_size == 0) *so_size = (int32_t)lrint(64.0 / adv_sy);
+    if (*so_off == 0) *so_off = (int32_t)(ft->size->metrics.ascender / 2);
 }
 
 static struct fte_scaled *fte_fontset_font(struct fte_fontset *set, int index)
@@ -1683,45 +1778,78 @@ static struct fte_fontset *fte_fontset_get(const struct fte_font_desc *desc, dou
     return set;
 }
 
-static bool fte_is_cluster_continuation(hb_unicode_funcs_t *ufuncs, uint32_t cp)
+static bool fte_in_ranges(const uint32_t (*ranges)[2], size_t count, uint32_t cp)
+{
+    size_t lo = 0, hi = count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (cp < ranges[mid][0]) hi = mid;
+        else if (cp > ranges[mid][1]) lo = mid + 1;
+        else return true;
+    }
+    return false;
+}
+
+#define FTE_IN_RANGES(table, cp) fte_in_ranges(table, sizeof(table) / sizeof(table[0]), cp)
+
+static bool fte_is_variation_selector(uint32_t cp)
+{
+    return (cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0xe0100 && cp <= 0xe01ef);
+}
+
+static bool fte_is_default_ignorable(uint32_t cp)
+{
+    return cp == 0x00ad || cp == 0x034f || cp == 0x061c ||
+        (cp >= 0x115f && cp <= 0x1160) || cp == 0x17b4 || cp == 0x17b5 ||
+        (cp >= 0x180b && cp <= 0x180f) || (cp >= 0x200b && cp <= 0x200f) ||
+        (cp >= 0x202a && cp <= 0x202e) || (cp >= 0x2060 && cp <= 0x206f) ||
+        cp == 0x3164 || (cp >= 0xfe00 && cp <= 0xfe0f) || cp == 0xfeff ||
+        cp == 0xffa0 || (cp >= 0xe0000 && cp <= 0xe0fff);
+}
+
+static uint32_t fte_nfc_compose(uint32_t a, uint32_t b)
+{
+    size_t lo = 0, hi = sizeof(fte_nfc_pairs) / sizeof(fte_nfc_pairs[0]);
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        uint32_t ma = fte_nfc_pairs[mid][0];
+        uint32_t mb = fte_nfc_pairs[mid][1];
+        if (a < ma || (a == ma && b < mb)) hi = mid;
+        else if (a > ma || (a == ma && b > mb)) lo = mid + 1;
+        else return fte_nfc_pairs[mid][2];
+    }
+    return 0;
+}
+
+static bool fte_is_mark_nsm(uint32_t cp)
+{
+    return FTE_IN_RANGES(fte_mark_nsm_ranges, cp);
+}
+
+static bool fte_is_cluster_continuation(uint32_t cp)
 {
     if (cp == 0x200c || cp == 0x200d) return true;
-    if ((cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0xe0100 && cp <= 0xe01ef)) return true;
+    if (fte_is_variation_selector(cp)) return true;
     if (cp >= 0x1f3fb && cp <= 0x1f3ff) return true;
-    hb_unicode_general_category_t cat = hb_unicode_general_category(ufuncs, cp);
-    return cat == HB_UNICODE_GENERAL_CATEGORY_NON_SPACING_MARK ||
-        cat == HB_UNICODE_GENERAL_CATEGORY_SPACING_MARK ||
-        cat == HB_UNICODE_GENERAL_CATEGORY_ENCLOSING_MARK;
+    return fte_is_mark_nsm(cp) || FTE_IN_RANGES(fte_mark_spacing_ranges, cp);
 }
 
-static bool fte_consider_as_space(hb_unicode_funcs_t *ufuncs, uint32_t cp)
+static bool fte_consider_as_space(uint32_t cp)
 {
-    switch (hb_unicode_general_category(ufuncs, cp)) {
-    case HB_UNICODE_GENERAL_CATEGORY_CONTROL:
-    case HB_UNICODE_GENERAL_CATEGORY_FORMAT:
-    case HB_UNICODE_GENERAL_CATEGORY_SURROGATE:
-    case HB_UNICODE_GENERAL_CATEGORY_LINE_SEPARATOR:
-    case HB_UNICODE_GENERAL_CATEGORY_PARAGRAPH_SEPARATOR:
-    case HB_UNICODE_GENERAL_CATEGORY_SPACE_SEPARATOR:
-        return true;
-    default:
-        return false;
-    }
+    return FTE_IN_RANGES(fte_space_cat_ranges, cp);
 }
 
-static int fte_fontset_pick(struct fte_fontset *set, hb_unicode_funcs_t *ufuncs,
-    uint32_t cp, int current)
+static int fte_fontset_pick(struct fte_fontset *set, uint32_t cp, int current)
 {
     if (!set || set->count <= 0) return -1;
     FT_Library library = fte_ft_library();
     if (!library) return 0;
     if (current >= 0 && current < set->count) {
-        if (cp == 0x200c || cp == 0x200d ||
-            (cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0xe0100 && cp <= 0xe01ef))
+        if (cp == 0x200c || cp == 0x200d || fte_is_variation_selector(cp))
             return current;
         if (fm_font_has_char(library, set->matches->entries[current].font, cp))
             return current;
-        if (fte_is_cluster_continuation(ufuncs, cp)) {
+        if (fte_is_cluster_continuation(cp)) {
             for (int i = 0; i < set->count; i++) {
                 if (fm_font_has_char(library, set->matches->entries[i].font, cp))
                     return i;
@@ -1792,7 +1920,6 @@ struct fte_style_table {
 struct fte_char {
     uint32_t cp;
     uint16_t style_idx;
-    hb_script_t script;
     uint8_t bidi_level;
     bool emoji;
 };
@@ -1874,7 +2001,6 @@ static bool fte_append_char(struct fte_char **arr, size_t *len, size_t *cap,
     }
     (*arr)[*len].cp = cp;
     (*arr)[*len].style_idx = style_idx;
-    (*arr)[*len].script = HB_SCRIPT_COMMON;
     (*arr)[*len].bidi_level = 0;
     (*len)++;
     return true;
@@ -2102,7 +2228,7 @@ enum fte_bidi_cls {
     FTE_B_ON
 };
 
-static enum fte_bidi_cls fte_bidi_classify(hb_unicode_funcs_t *ufuncs, uint32_t cp)
+static enum fte_bidi_cls fte_bidi_classify(uint32_t cp)
 {
     if (cp == 0x200e) return FTE_B_L;
     if (cp == 0x200f) return FTE_B_R;
@@ -2115,9 +2241,7 @@ static enum fte_bidi_cls fte_bidi_classify(hb_unicode_funcs_t *ufuncs, uint32_t 
     if (cp == ',' || cp == '.' || cp == ':' || cp == '/' || cp == 0x00a0) return FTE_B_CS;
     if (cp == ' ' || cp == '\t' || (cp >= 0x2000 && cp <= 0x200a) || cp == 0x3000) return FTE_B_WS;
 
-    hb_unicode_general_category_t cat = hb_unicode_general_category(ufuncs, cp);
-    if (cat == HB_UNICODE_GENERAL_CATEGORY_NON_SPACING_MARK ||
-        cat == HB_UNICODE_GENERAL_CATEGORY_ENCLOSING_MARK)
+    if (fte_is_mark_nsm(cp))
         return FTE_B_NSM;
 
     if ((cp >= 0x0600 && cp <= 0x074f) || (cp >= 0x0750 && cp <= 0x077f) ||
@@ -2129,18 +2253,13 @@ static enum fte_bidi_cls fte_bidi_classify(hb_unicode_funcs_t *ufuncs, uint32_t 
         (cp >= 0x1e800 && cp <= 0x1efff))
         return FTE_B_R;
 
-    if (cat == HB_UNICODE_GENERAL_CATEGORY_UPPERCASE_LETTER ||
-        cat == HB_UNICODE_GENERAL_CATEGORY_LOWERCASE_LETTER ||
-        cat == HB_UNICODE_GENERAL_CATEGORY_TITLECASE_LETTER ||
-        cat == HB_UNICODE_GENERAL_CATEGORY_MODIFIER_LETTER ||
-        cat == HB_UNICODE_GENERAL_CATEGORY_OTHER_LETTER)
+    if (FTE_IN_RANGES(fte_letter_ranges, cp))
         return FTE_B_L;
 
     return FTE_B_ON;
 }
 
-static void fte_resolve_bidi_and_scripts(struct fte_char *chars, size_t clen,
-    hb_unicode_funcs_t *ufuncs)
+static void fte_resolve_bidi(struct fte_char *chars, size_t clen)
 {
     if (clen == 0) return;
     uint8_t *cls = malloc(clen);
@@ -2149,7 +2268,7 @@ static void fte_resolve_bidi_and_scripts(struct fte_char *chars, size_t clen,
     uint8_t base_level = 0;
     bool found_strong = false;
     for (size_t i = 0; i < clen; i++) {
-        cls[i] = (uint8_t)fte_bidi_classify(ufuncs, chars[i].cp);
+        cls[i] = (uint8_t)fte_bidi_classify(chars[i].cp);
         if (!found_strong) {
             if (cls[i] == FTE_B_L) { base_level = 0; found_strong = true; }
             else if (cls[i] == FTE_B_R || cls[i] == FTE_B_AL) { base_level = 1; found_strong = true; }
@@ -2220,22 +2339,6 @@ static void fte_resolve_bidi_and_scripts(struct fte_char *chars, size_t clen,
                 chars[i].bidi_level = 2;
             else chars[i].bidi_level = 1;
         }
-        chars[i].script = hb_unicode_script(ufuncs, chars[i].cp);
-    }
-
-    hb_script_t cur = HB_SCRIPT_COMMON;
-    size_t pending = 0;
-    for (size_t i = 0; i < clen; i++) {
-        hb_script_t sc = chars[i].script;
-        if (sc == HB_SCRIPT_COMMON || sc == HB_SCRIPT_INHERITED || sc == HB_SCRIPT_UNKNOWN) {
-            chars[i].script = cur;
-            continue;
-        }
-        if (cur == HB_SCRIPT_COMMON) {
-            for (size_t k = pending; k < i; k++) chars[k].script = sc;
-        }
-        cur = sc;
-        pending = i + 1;
     }
 
     free(cls);
@@ -2246,7 +2349,6 @@ struct fte_run {
     size_t len;
     uint16_t style_idx;
     uint8_t bidi_level;
-    hb_script_t script;
     int font_idx;
     bool emoji;
 };
@@ -2294,20 +2396,6 @@ static struct fte_metric *fte_metric_get(struct fte_scaled *scaled, unsigned gly
     fte_glyph_metrics(scaled, glyph, m);
     return m;
 }
-
-static bool fte_in_ranges(const uint32_t (*ranges)[2], size_t count, uint32_t cp)
-{
-    size_t lo = 0, hi = count;
-    while (lo < hi) {
-        size_t mid = lo + (hi - lo) / 2;
-        if (cp < ranges[mid][0]) hi = mid;
-        else if (cp > ranges[mid][1]) lo = mid + 1;
-        else return true;
-    }
-    return false;
-}
-
-#define FTE_IN_RANGES(table, cp) fte_in_ranges(table, sizeof(table) / sizeof(table[0]), cp)
 
 static bool fte_emoji_element(uint32_t cp)
 {
@@ -2431,8 +2519,7 @@ struct fte_layout *fte_layout_create(const char *font, const char *text, double 
         return layout;
     }
 
-    hb_unicode_funcs_t *ufuncs = hb_unicode_funcs_get_default();
-    fte_resolve_bidi_and_scripts(chars, clen, ufuncs);
+    fte_resolve_bidi(chars, clen);
     fte_mark_emoji(chars, clen);
 
     struct fte_run *runs = NULL;
@@ -2441,12 +2528,10 @@ struct fte_layout *fte_layout_create(const char *font, const char *text, double 
     for (size_t i = 0; i < clen && runs_ok; ) {
         uint16_t sidx = chars[i].style_idx;
         uint8_t lvl = chars[i].bidi_level;
-        hb_script_t sc = chars[i].script;
         bool emo = chars[i].emoji;
         size_t seg_end = i + 1;
         while (seg_end < clen && chars[seg_end].style_idx == sidx &&
-            chars[seg_end].bidi_level == lvl && chars[seg_end].script == sc &&
-            chars[seg_end].emoji == emo)
+            chars[seg_end].bidi_level == lvl && chars[seg_end].emoji == emo)
             seg_end++;
         const struct fte_style *st = &styles.items[sidx];
         struct fte_fontset *set = fte_run_fontset(st, emo);
@@ -2461,11 +2546,11 @@ struct fte_layout *fte_layout_create(const char *font, const char *text, double 
             bool forced = false;
             if (c < seg_end) {
                 uint32_t cp = chars[c].cp;
-                forced = cp == '\t' || cp == 0x2028;
-                bool space = fte_consider_as_space(ufuncs, cp);
+                forced = cp == '\t' || cp == 0x2028 || cp == 0x2029;
+                bool space = fte_consider_as_space(cp);
                 if (!space)
-                    font = fte_fontset_pick(set, ufuncs, cp,
-                        c > item_start && fte_is_cluster_continuation(ufuncs, cp) ? item_font : -1);
+                    font = fte_fontset_pick(set, cp,
+                        c > item_start && fte_is_cluster_continuation(cp) ? item_font : -1);
                 size_t prev_first_space = first_space;
                 if (space) {
                     if (first_space == SIZE_MAX) first_space = c;
@@ -2496,8 +2581,8 @@ struct fte_layout *fte_layout_create(const char *font, const char *text, double 
             }
             runs[run_count++] = (struct fte_run){
                 .start = item_start, .len = cut - item_start, .style_idx = sidx,
-                .bidi_level = lvl, .script = sc,
-                .font_idx = item_font >= 0 ? item_font : fte_fontset_pick(set, ufuncs, ' ', -1),
+                .bidi_level = lvl,
+                .font_idx = item_font >= 0 ? item_font : fte_fontset_pick(set, ' ', -1),
                 .emoji = emo
             };
             item_start = cut;
@@ -2555,26 +2640,24 @@ struct fte_layout *fte_layout_create(const char *font, const char *text, double 
         if (chars[i].cp != '\t') continue;
         double space = base.size / 4.0;
         struct fte_scaled *bs = base_set ?
-            fte_fontset_font(base_set, fte_fontset_pick(base_set, ufuncs, ' ', -1)) : NULL;
-        hb_font_t *bf = fte_scaled_hb(bs);
-        hb_codepoint_t sg = 0;
-        if (bf && hb_font_get_nominal_glyph(bf, ' ', &sg)) {
-            double sx = (!FT_IS_SCALABLE(bs->face->face) && bs->face->have_shape) ?
-                bs->face->shape.xx : 1.0;
-            space = (double)hb_font_get_glyph_h_advance(bf, sg) / 64.0 * sx;
+            fte_fontset_font(base_set, fte_fontset_pick(base_set, ' ', -1)) : NULL;
+        if (bs && bs->face && bs->face->face) {
+            fte_face_scale(bs->face, &bs->scale);
+            FT_UInt sg = FT_Get_Char_Index(bs->face->face, ' ');
+            if (sg) {
+                double sx = (!FT_IS_SCALABLE(bs->face->face) && bs->face->have_shape) ?
+                    bs->face->shape.xx : 1.0;
+                space = (double)fte_ft_h_advance(bs, sg) / 64.0 * sx;
+            }
         }
         tab_width = 8.0 * floor(space + 0.5);
         if (!(tab_width > 0.0)) tab_width = 8.0;
         break;
     }
 
-    hb_buffer_t *buf = hb_buffer_create();
     size_t gcap = clen + 16;
     layout->glyphs = malloc(gcap * sizeof(*layout->glyphs));
-    hb_codepoint_t *cps = malloc(clen * sizeof(*cps));
-    if (!buf || !layout->glyphs || !cps) {
-        if (buf) hb_buffer_destroy(buf);
-        free(cps);
+    if (!layout->glyphs) {
         free(runs);
         free(chars);
         free(styles.items);
@@ -2582,12 +2665,13 @@ struct fte_layout *fte_layout_create(const char *font, const char *text, double 
         return layout;
     }
 
-    for (size_t i = 0; i < clen; i++) cps[i] = chars[i].cp;
-
     double pen_x = 0.0;
     double baseline_y = layout->y_offset + layout->ascent;
     bool have_ink = false;
     double ink_x0 = 0.0, ink_y0 = 0.0, ink_x1 = 0.0, ink_y1 = 0.0;
+
+    struct fte_run_item { uint32_t cp; unsigned gid; };
+    struct fte_run_item stack_items[64];
 
     for (size_t r = 0; r < run_count; r++) {
         const struct fte_run *run = &runs[r];
@@ -2595,58 +2679,114 @@ struct fte_layout *fte_layout_create(const char *font, const char *text, double 
         struct fte_fontset *set = fte_run_fontset(st, run->emoji);
         if (!set) continue;
         struct fte_scaled *scaled = fte_fontset_font(set, run->font_idx);
-        hb_font_t *hbf = fte_scaled_hb(scaled);
-        if (hbf) {
-            hb_buffer_clear_contents(buf);
-            hb_buffer_set_flags(buf, HB_BUFFER_FLAG_BOT | HB_BUFFER_FLAG_EOT);
-            hb_buffer_set_cluster_level(buf, HB_BUFFER_CLUSTER_LEVEL_MONOTONE_CHARACTERS);
-            hb_buffer_add_codepoints(buf, cps, (int)clen, (unsigned)run->start, (int)run->len);
-            hb_buffer_set_direction(buf, (run->bidi_level & 1) ? HB_DIRECTION_RTL : HB_DIRECTION_LTR);
-            hb_buffer_set_script(buf, run->script);
-            hb_buffer_set_language(buf, hb_language_get_default());
-            hb_shape(hbf, buf, NULL, 0);
-
-            unsigned count = 0;
-            hb_glyph_info_t *info = hb_buffer_get_glyph_infos(buf, &count);
-            hb_glyph_position_t *pos = hb_buffer_get_glyph_positions(buf, &count);
-            double adv_sx = (!FT_IS_SCALABLE(scaled->face->face) && scaled->face->have_shape)
+        if (scaled && scaled->face && scaled->face->face) {
+            FT_Face ft = scaled->face->face;
+            fte_face_scale(scaled->face, &scaled->scale);
+            double adv_sx = (!FT_IS_SCALABLE(ft) && scaled->face->have_shape)
                 ? scaled->face->shape.xx : 1.0;
-            double adv_sy = (!FT_IS_SCALABLE(scaled->face->face) && scaled->face->have_shape)
+            double adv_sy = (!FT_IS_SCALABLE(ft) && scaled->face->have_shape)
                 ? scaled->face->shape.yy : 1.0;
-            hb_position_t ul_off = 0, ul_size = 0, so_off = 0, so_size = 0;
-            if (!hb_ot_metrics_get_position(hbf, HB_OT_METRICS_TAG_UNDERLINE_SIZE, &ul_size) ||
-                ul_size == 0)
-                ul_size = (hb_position_t)lrint(64.0 / adv_sy);
-            if (!hb_ot_metrics_get_position(hbf, HB_OT_METRICS_TAG_UNDERLINE_OFFSET, &ul_off) ||
-                ul_off == 0)
-                ul_off = (hb_position_t)lrint(-64.0 / adv_sy);
-            if (!hb_ot_metrics_get_position(hbf, HB_OT_METRICS_TAG_STRIKEOUT_SIZE, &so_size) ||
-                so_size == 0)
-                so_size = (hb_position_t)lrint(64.0 / adv_sy);
-            if (!hb_ot_metrics_get_position(hbf, HB_OT_METRICS_TAG_STRIKEOUT_OFFSET, &so_off) ||
-                so_off == 0) {
-                hb_font_extents_t fe;
-                hb_font_get_h_extents(hbf, &fe);
-                so_off = fe.ascender / 2;
+            int32_t ul_off = 0, ul_size = 0, so_off = 0, so_size = 0;
+            fte_ft_decor_metrics(scaled, adv_sy, &ul_off, &ul_size, &so_off, &so_size);
+            bool rtl = (run->bidi_level & 1) != 0;
+            bool has_kern = FT_HAS_KERNING(ft) != 0;
+            FT_UInt kern_mode = (scaled->load_flags & FT_LOAD_NO_HINTING)
+                ? FT_KERNING_UNFITTED : FT_KERNING_DEFAULT;
+
+            struct fte_run_item *items = stack_items;
+            if (run->len > sizeof(stack_items) / sizeof(stack_items[0])) {
+                items = malloc(run->len * sizeof(*items));
+                if (!items) {
+                    fte_fontset_unref(set);
+                    continue;
+                }
             }
-            for (unsigned k = 0; k < count; k++) {
-                double gx = pen_x + floor((double)pos[k].x_offset / 64.0 * adv_sx + 0.5);
-                double gy = baseline_y - floor((double)pos[k].y_offset / 64.0 * adv_sy + 0.5);
-                double ax = floor((double)pos[k].x_advance / 64.0 * adv_sx + 0.5);
+            size_t item_count = 0;
+            for (size_t j = 0; j < run->len; j++) {
+                uint32_t cp = chars[run->start + j].cp;
+                if (fte_is_default_ignorable(cp)) continue;
+                while (j + 1 < run->len && fte_is_mark_nsm(chars[run->start + j + 1].cp)) {
+                    uint32_t comp = fte_nfc_compose(cp, chars[run->start + j + 1].cp);
+                    if (comp && FT_Get_Char_Index(ft, comp) != 0) {
+                        cp = comp;
+                        j++;
+                    } else {
+                        break;
+                    }
+                }
+                if (rtl) {
+                    switch (cp) {
+                    case '(': cp = ')'; break;
+                    case ')': cp = '('; break;
+                    case '[': cp = ']'; break;
+                    case ']': cp = '['; break;
+                    case '{': cp = '}'; break;
+                    case '}': cp = '{'; break;
+                    case '<': cp = '>'; break;
+                    case '>': cp = '<'; break;
+                    default: break;
+                    }
+                }
+                FT_UInt gid = 0;
+                if (j + 1 < run->len && fte_is_variation_selector(chars[run->start + j + 1].cp)) {
+                    gid = FT_Face_GetCharVariantIndex(ft, cp, chars[run->start + j + 1].cp);
+                    j++;
+                }
+                if (!gid) gid = FT_Get_Char_Index(ft, cp);
+                items[item_count++] = (struct fte_run_item){ .cp = cp, .gid = gid };
+            }
+
+            if (rtl && item_count > 1) {
+                for (size_t c = 0; c < item_count; ) {
+                    size_t ce = c + 1;
+                    while (ce < item_count && fte_is_mark_nsm(items[ce].cp)) ce++;
+                    for (size_t a = c, b = ce - 1; a < b; a++, b--) {
+                        struct fte_run_item tmp = items[a];
+                        items[a] = items[b];
+                        items[b] = tmp;
+                    }
+                    c = ce;
+                }
+                for (size_t a = 0, b = item_count - 1; a < b; a++, b--) {
+                    struct fte_run_item tmp = items[a];
+                    items[a] = items[b];
+                    items[b] = tmp;
+                }
+            }
+
+            size_t run_glyph_start = layout->glyph_count;
+            unsigned prev_gid = 0;
+            for (size_t k = 0; k < item_count; k++) {
+                uint32_t src_cp = items[k].cp;
+                unsigned gid = items[k].gid;
+                bool nsm = fte_is_mark_nsm(src_cp);
+                bool sep = src_cp == 0x2028 || src_cp == 0x2029;
+                if (has_kern && !nsm && !sep && prev_gid && gid) {
+                    FT_Vector kern = { 0, 0 };
+                    if (FT_Get_Kerning(ft, prev_gid, gid, kern_mode, &kern) == 0 && kern.x != 0) {
+                        double kx = floor((double)kern.x / 64.0 * adv_sx + 0.5);
+                        if (kx != 0.0 && layout->glyph_count > run_glyph_start) {
+                            layout->glyphs[layout->glyph_count - 1].adv_x += kx;
+                            pen_x += kx;
+                        }
+                    }
+                }
+                double gx = pen_x;
+                double gy = baseline_y;
+                double ax = (nsm || sep) ? 0.0 :
+                    floor((double)fte_ft_h_advance(scaled, gid) / 64.0 * adv_sx + 0.5);
                 bool blank = false;
-                uint32_t src_cp = info[k].cluster < clen ? chars[info[k].cluster].cp : 0;
-                if (info[k].codepoint == 0 && src_cp == ' ') {
-                    ax = floor(st->size / 4.0 + 0.5);
-                    gx = pen_x;
-                    gy = baseline_y;
+                if (sep) {
+                    ax = fte_space_advance(scaled, adv_sx, st->size);
+                    blank = true;
+                } else if (gid == 0 && fte_consider_as_space(src_cp)) {
+                    ax = fte_fallback_space_advance(scaled, adv_sx, st->size, src_cp);
                     blank = true;
                 }
                 if (src_cp == '\t' && tab_width > 0.0) {
                     double stop = ceil((pen_x + tab_width / 8.0) / tab_width) * tab_width;
                     if (stop < tab_width) stop = tab_width;
                     ax = stop - pen_x;
-                    gx = pen_x;
-                    gy = baseline_y;
                     blank = true;
                 }
                 if (layout->glyph_count >= gcap) {
@@ -2658,7 +2798,7 @@ struct fte_layout *fte_layout_create(const char *font, const char *text, double 
                 }
                 layout->glyphs[layout->glyph_count++] = (struct fte_shaped_glyph){
                     .scaled = scaled,
-                    .glyph_id = info[k].codepoint,
+                    .glyph_id = gid,
                     .x = gx,
                     .y = gy,
                     .adv_x = ax,
@@ -2679,30 +2819,36 @@ struct fte_layout *fte_layout_create(const char *font, const char *text, double 
                     .st_y = baseline_y - (double)so_off / 64.0 * adv_sy,
                     .st_h = (double)so_size / 64.0 * adv_sy,
                 };
+                pen_x += ax;
+                prev_gid = (blank || nsm) ? 0 : gid;
+            }
+            if (items != stack_items) free(items);
+
+            for (size_t k = run_glyph_start; k < layout->glyph_count; k++) {
+                const struct fte_shaped_glyph *ng = &layout->glyphs[k];
                 if (st->underline || st->strikethrough) {
-                    const struct fte_shaped_glyph *ng = &layout->glyphs[layout->glyph_count - 1];
                     double dy0 = st->underline ? ng->ul_y : ng->st_y;
                     double dy1 = st->underline ? ng->ul_y + ng->ul_h : ng->st_y + ng->st_h;
                     if (st->underline && st->strikethrough) {
                         if (ng->st_y < dy0) dy0 = ng->st_y;
                         if (ng->st_y + ng->st_h > dy1) dy1 = ng->st_y + ng->st_h;
                     }
-                    if (ax > 0.0 && dy1 > dy0) {
+                    if (ng->adv_x > 0.0 && dy1 > dy0) {
                         if (!have_ink) {
-                            ink_x0 = gx; ink_y0 = dy0; ink_x1 = gx + ax; ink_y1 = dy1;
+                            ink_x0 = ng->x; ink_y0 = dy0; ink_x1 = ng->x + ng->adv_x; ink_y1 = dy1;
                             have_ink = true;
                         } else {
-                            if (gx < ink_x0) ink_x0 = gx;
+                            if (ng->x < ink_x0) ink_x0 = ng->x;
                             if (dy0 < ink_y0) ink_y0 = dy0;
-                            if (gx + ax > ink_x1) ink_x1 = gx + ax;
+                            if (ng->x + ng->adv_x > ink_x1) ink_x1 = ng->x + ng->adv_x;
                             if (dy1 > ink_y1) ink_y1 = dy1;
                         }
                     }
                 }
-                struct fte_metric *m = blank ? NULL : fte_metric_get(scaled, info[k].codepoint);
+                struct fte_metric *m = ng->blank ? NULL : fte_metric_get(scaled, ng->glyph_id);
                 if (m && m->valid && m->ink_w > 0.0 && m->ink_h > 0.0) {
-                    double bx0 = gx + m->ink_x;
-                    double by0 = gy + m->ink_y;
+                    double bx0 = ng->x + m->ink_x;
+                    double by0 = ng->y + m->ink_y;
                     double bx1 = bx0 + m->ink_w;
                     double by1 = by0 + m->ink_h;
                     if (!have_ink) {
@@ -2715,14 +2861,10 @@ struct fte_layout *fte_layout_create(const char *font, const char *text, double 
                         if (by1 > ink_y1) ink_y1 = by1;
                     }
                 }
-                pen_x += ax;
             }
         }
         fte_fontset_unref(set);
     }
-
-    hb_buffer_destroy(buf);
-    free(cps);
     free(runs);
     free(chars);
     free(styles.items);

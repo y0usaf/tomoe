@@ -92,7 +92,7 @@ native/slope.c, native/contour.c, native/spline.c
   2007 David Turner, 2008 M Joonas Pihlaja.
 
 native/fttext.c
-  Fontconfig/HarfBuzz/FreeType glyph rasterisation and text drawing without
+  FreeType glyph rasterisation and text drawing without
   cairo or pango: cairo 1.18.4 cairo-ft-font.c (font options, FreeType
   outline and bitmap rendering, quarter-pixel glyph phases, colour glyphs),
   cairo-scaled-font.c (glyph extents and device boxes), cairo-matrix.c (matrix
@@ -111,8 +111,9 @@ native/fttext.c
   widths apart, a missing space advances a quarter em, and markup sizes are
   in points at 96 dpi.
 
-native/emoji-data.h
-  Emoji, Emoji_Presentation and Extended_Pictographic code point ranges
+native/emoji-data.h, native/unicode-data.h
+  Emoji, Emoji_Presentation, general-category and NFC composition tables
+  (emoji-data.h / unicode-data.h); Emoji, Emoji_Presentation and Extended_Pictographic code point ranges
   generated from Unicode 17.0.0 emoji/emoji-data.txt. Copyright 1991-2025
   Unicode, Inc. Unicode License v3: permission is hereby granted, free of
   charge, to any person obtaining a copy of data files and any associated
