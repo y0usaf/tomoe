@@ -39,16 +39,27 @@ struct ipc_client {
     size_t out_length, out_capacity, out_offset;
     char **events;
     size_t event_count;
-    bool readable, writable, subscribed, read_eof, dead;
+    bool readable, writable, subscribed, read_eof, hangup, dead;
+};
+
+struct ipc_screencast {
+    struct wl_list link;
+    struct ipc_client *client;
+    uint64_t token;
+    uint64_t id;
 };
 
 struct ipc_server {
     struct tomoe *server;
     struct wl_list clients;
+    struct wl_list screencasts;
     struct loop_source *watch;
     char *path;
     int fd;
     bool readable;
+    bool screencast_active;
+    uint64_t screencast_early_token;
+    char *screencast_early_reply;
 };
 
 static struct ipc_server *broadcast_server;
@@ -66,6 +77,14 @@ static void ipc_update_watch(struct ipc_client *client) {
 static void ipc_kill(struct ipc_client *client) {
     if (client->dead) return;
     client->dead = true;
+    if (client->server) {
+        struct ipc_screencast *pending, *next;
+        wl_list_for_each_safe(pending, next, &client->server->screencasts, link) {
+            if (pending->client != client) continue;
+            wl_list_remove(&pending->link);
+            free(pending);
+        }
+    }
     if (client->watch) loop_remove(client->watch);
     client->watch = NULL;
     if (client->fd >= 0) close(client->fd);
@@ -85,7 +104,7 @@ static void ipc_ready(void *data, int fd, uint32_t mask) {
     (void)fd;
     if (mask & WL_EVENT_READABLE) client->readable = true;
     if (mask & WL_EVENT_WRITABLE) client->writable = true;
-    if (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) client->read_eof = true;
+    if (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) { client->read_eof = true; client->hangup = true; }
 }
 
 static void ipc_server_ready(void *data, int fd, uint32_t mask) {
@@ -256,11 +275,26 @@ static void ipc_dispatch(struct ipc_server *server, struct ipc_client *client,
         if (has_id) ipc_reply(client, id, json_build_object(2, keys, values));
         return;
     }
+    bool screencast = method_length == 17 && !memcmp(method, "screencast_select", 17);
+    if (screencast && !has_id) return;
+    uint64_t request_id = has_id ? lisp_get_uint(id) : 0;
+    if (screencast) {
+        server->screencast_active = true;
+        server->screencast_early_token = 0;
+        free(server->screencast_early_reply);
+        server->screencast_early_reply = NULL;
+    }
     lisp_value arguments[2] = { lisp_string(method, method_length), params };
     lisp_value result = lisp_nil();
     lisp_set_limits(5000000, 1000000000ULL);
     char failure[4 * IPC_ERROR_CHARACTERS + 1];
     if (policy_call(POLICY_HOOK_JSON, 2, arguments, &result, failure, sizeof(failure))) {
+        if (screencast) {
+            server->screencast_active = false;
+            free(server->screencast_early_reply);
+            server->screencast_early_reply = NULL;
+            server->screencast_early_token = 0;
+        }
         size_t characters = 0, end = 0;
         for (; failure[end]; end++) {
             if (((unsigned char)failure[end] & 0xc0) != 0x80 &&
@@ -269,6 +303,46 @@ static void ipc_dispatch(struct ipc_server *server, struct ipc_client *client,
         failure[end] = '\0';
         if (has_id) ipc_error_reply(client, id, failure);
         return;
+    }
+    if (screencast) {
+        server->screencast_active = false;
+        char *early = server->screencast_early_reply;
+        uint64_t early_token = server->screencast_early_token;
+        server->screencast_early_reply = NULL;
+        server->screencast_early_token = 0;
+        lisp_value action = lisp_nil();
+        lisp_value token_value = lisp_nil();
+        size_t action_length = 0;
+        const char *action_name = json_objectp(result) && json_has(result, "action", &action) ?
+            lisp_get_string(action, &action_length) : NULL;
+        if (action_name && action_length == 7 && !memcmp(action_name, "pending", 7) &&
+                json_has(result, "token", &token_value) && lisp_intp(token_value) &&
+                lisp_get_double(token_value) > 0) {
+            uint64_t token = lisp_get_uint(token_value);
+            if (early && early_token == token) {
+                char header[48];
+                int n = snprintf(header, sizeof(header), "{\"id\":%llu,\"result\":",
+                    (unsigned long long)request_id);
+                if (n > 0 && (size_t)n < sizeof(header) &&
+                        ipc_queue(client, header, (size_t)n) &&
+                        ipc_queue(client, early, strlen(early)))
+                    ipc_queue(client, "}\n", 2);
+                free(early);
+                return;
+            }
+            free(early);
+            struct ipc_screencast *pending = calloc(1, sizeof(*pending));
+            if (!pending) {
+                ipc_error_reply(client, id, "Cannot retain the pending screencast request.");
+                return;
+            }
+            pending->client = client;
+            pending->token = token;
+            pending->id = request_id;
+            wl_list_insert(&server->screencasts, &pending->link);
+            return;
+        }
+        free(early);
     }
     if (method_length == 9 && !memcmp(method, "subscribe", 9))
         ipc_apply_subscription(client, result);
@@ -361,8 +435,17 @@ static void ipc_read_client(struct ipc_server *server, struct ipc_client *client
     }
 }
 
+static bool ipc_client_has_screencast(const struct ipc_client *client) {
+    if (!client->server) return false;
+    struct ipc_screencast *pending;
+    wl_list_for_each(pending, &client->server->screencasts, link)
+        if (pending->client == client) return true;
+    return false;
+}
+
 static bool ipc_drained(struct ipc_client *client) {
     if (!client->read_eof) return false;
+    if (!client->hangup && ipc_client_has_screencast(client)) return false;
     if (client->out_offset < client->out_length) return false;
     if (!client->in) return true;
     return !memchr(client->in + client->in_start, '\n', client->in_length - client->in_start);
@@ -452,6 +535,7 @@ struct ipc_server *ipc_start(struct tomoe *server, const char *path, char *error
         return NULL;
     }
     wl_list_init(&result->clients);
+    wl_list_init(&result->screencasts);
     result->server = server;
     result->fd = fd;
     result->path = strdup(path);
@@ -478,6 +562,8 @@ void ipc_stop(struct ipc_server *server) {
     }
     if (server->watch) loop_remove(server->watch);
     if (server->fd >= 0) close(server->fd);
+    free(server->screencast_early_reply);
+    server->screencast_early_reply = NULL;
     if (server->path) unlink(server->path);
     free(server->path);
     if (broadcast_server == server) broadcast_server = NULL;
@@ -520,6 +606,35 @@ bool ipc_subscribed(void) {
     wl_list_for_each(client, &server->clients, link)
         if (!client->dead && client->subscribed) return true;
     return false;
+}
+
+void ipc_screencast_answer(uint64_t token, lisp_value result) {
+    struct ipc_server *server = broadcast_server;
+    if (!server) return;
+    struct ipc_screencast *pending, *next;
+    wl_list_for_each_safe(pending, next, &server->screencasts, link) {
+        if (pending->token != token) continue;
+        struct ipc_client *client = pending->client;
+        uint64_t id = pending->id;
+        wl_list_remove(&pending->link);
+        free(pending);
+        if (!client->dead) {
+            ipc_reply(client, lisp_uint(id), result);
+            ipc_flush(client, IPC_IO_QUOTA);
+        }
+        return;
+    }
+    if (server->screencast_active) {
+        char error[256];
+        char *text = json_write(result, false, error, sizeof(error));
+        if (!text) {
+            ipc_log("cannot serialize a screencast reply");
+            return;
+        }
+        free(server->screencast_early_reply);
+        server->screencast_early_token = token;
+        server->screencast_early_reply = text;
+    }
 }
 
 void ipc_broadcast(const char *name, lisp_value payload) {

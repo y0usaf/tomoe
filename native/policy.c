@@ -1133,6 +1133,36 @@ static lisp_value prim_json_broadcast(int argc, lisp_value *argv) {
     return lisp_nil();
 }
 
+static lisp_value prim_screencast_answer(int argc, lisp_value *argv) {
+    uint64_t token = unsigned_integer(argv[0]);
+    lisp_value reply;
+    if (lisp_eq_keyword(argv[1], "OUTPUT")) {
+        const char *keys[3] = { "action", "type", "output" };
+        lisp_value values[3] = { lisp_cstring("resolve"), lisp_cstring("output"),
+            lisp_stringp(argv[2]) ? argv[2] : lisp_cstring("") };
+        reply = json_build_object(3, keys, values);
+    } else if (lisp_eq_keyword(argv[1], "WINDOW")) {
+        const char *identifier = tomoe_window_identifier(server(),
+            (uint32_t)unsigned_integer(argv[2]));
+        if (identifier && *identifier) {
+            const char *keys[3] = { "action", "type", "identifier" };
+            lisp_value values[3] = { lisp_cstring("resolve"), lisp_cstring("window"),
+                lisp_cstring(identifier) };
+            reply = json_build_object(3, keys, values);
+        } else {
+            const char *keys[1] = { "action" };
+            lisp_value values[1] = { lisp_cstring("deny") };
+            reply = json_build_object(1, keys, values);
+        }
+    } else {
+        const char *keys[1] = { "action" };
+        lisp_value values[1] = { lisp_cstring("deny") };
+        reply = json_build_object(1, keys, values);
+    }
+    ipc_screencast_answer(token, reply);
+    return lisp_nil();
+}
+
 static lisp_value prim_json_subscribed(int argc, lisp_value *argv) {
     return boolean(ipc_subscribed());
 }
@@ -1234,6 +1264,7 @@ static const struct primitive {
     { "%write-patch-file", prim_write_patch_file, 2, 2 },
     { "%write-append", prim_write_append, 2, 2 },
     { "%delete-file", prim_delete_file, 1, 1 },
+    { "%screencast-answer", prim_screencast_answer, 3, 3 },
     { "%json-broadcast", prim_json_broadcast, 2, 2 },
     { "%json-subscribed-p", prim_json_subscribed, 0, 0 },
     { "%json-validate-value", prim_json_validate_value, 1, 1 },

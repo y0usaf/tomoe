@@ -126,6 +126,7 @@ int policy_call(const char *hook, int argc, const lisp_value *argv, lisp_value *
     char *error, size_t error_size);
 void ipc_broadcast(const char *name, lisp_value value);
 bool ipc_subscribed(void);
+void ipc_screencast_answer(uint64_t token, lisp_value result);
 
 typedef void (*loop_fd_fn)(void *data, int fd, uint32_t mask);
 typedef void (*loop_timer_fn)(void *data);
