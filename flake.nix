@@ -69,31 +69,6 @@
             NIX_CFLAGS_COMPILE = toString (old.NIX_CFLAGS_COMPILE or "") +
               " -DFT_CONFIG_OPTION_USE_PNG";
           });
-          expat = dropIn {
-            name = "expat";
-            pc = "expat";
-            library = "expat";
-            version = "2.8.1";
-          };
-          fontconfig =
-            (pkgs.fontconfig.override {
-              inherit freetype expat;
-            }).overrideAttrs
-              (old: {
-                NIX_LDFLAGS = (old.NIX_LDFLAGS or "") + " --exclude-libs=libexpat.a";
-                postFixup = (old.postFixup or "") + ''
-                  test -f $lib/lib/libfontconfig.so.1
-                  if nm -D --defined-only $lib/lib/libfontconfig.so.1 | grep -w 'XML_[A-Za-z]*'; then
-                    echo "libfontconfig exports the XML parser"
-                    exit 1
-                  fi
-                  if nm -D --undefined-only $lib/lib/libfontconfig.so.1 | grep -w 'XML_[A-Za-z]*'; then
-                    echo "libfontconfig imports an external XML parser"
-                    exit 1
-                  fi
-                '';
-              });
-          fontconfigReal = pkgs.fontconfig.override { inherit freetype; };
           harfbuzz = (pkgs.harfbuzz.override {
             withGraphite2 = false;
             withIntrospection = false;
@@ -228,7 +203,6 @@
             pkgs.wayland-protocols
             pkgs.wlr-protocols
             harfbuzz
-            fontconfig
             freetype
           ];
           strictDeps = true;
@@ -237,7 +211,7 @@
             runHook preBuild
             make -j"$NIX_BUILD_CORES" VERSION=${version} \
               PATH_PREFIX=$out/bin \
-              FONTCONFIG_FILE=${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts.minimal ]; }} \
+              FONT_DIR=${pkgs.dejavu_fonts.minimal} \
               XKB_CONFIG_ROOT=${pkgs.xkeyboard_config}/etc/X11/xkb \
               OPT='${opt}' LTO='${pkgs.lib.optionalString lto "-flto=auto"}' \
               CPU='${pkgs.lib.optionalString (cpu != "") "-march=${cpu} -mtune=${cpu}"}' \
@@ -267,9 +241,6 @@
             install -Dm644 -t $out/share/tomoe/examples/shaders examples/shaders/*.glsl
             runHook postInstall
           '';
-          passthru = {
-            inherit expat fontconfig fontconfigReal;
-          };
           meta = {
             description = "Lisp-configured window management on a native Wayland stack";
             mainProgram = "tomoe";

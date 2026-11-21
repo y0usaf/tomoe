@@ -9,7 +9,7 @@ WLR ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wlr-protocols)/unstable
 WP ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols)
 WAYLAND_XML ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-scanner)/wayland.xml
 
-LIBS = harfbuzz fontconfig freetype2 libinput glesv2 egl gbm
+LIBS = harfbuzz freetype2 libinput glesv2 egl gbm
 LINK = $(shell $(PKG_CONFIG) --libs $(LIBS))
 PORTAL_LIBS = gbm
 SUPPORT = bus executions watches notifications mpris backlight battery network tray system
@@ -75,7 +75,7 @@ WAYLAND_CLIENT = $(WAYLAND_CORE) build/obj/lib/wayland/client.o
 NATIVE = $(patsubst native/%.c,build/obj/%.o,$(wildcard native/*.c)) $(LIB_OBJECTS) $(NAMES:%=build/obj/%-protocol.o) $(WAYLAND_SERVER) build/obj/lib/wayland/client.o
 CFLAGS_CODE = $(OPT) $(LTO) $(CPU)
 CFLAGS_BASE = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter
-CFLAGS_NATIVE = $(CFLAGS_BASE) -DTOMOE_VERSION='"$(VERSION)"' -DTOMOE_PATH_PREFIX='"$(PATH_PREFIX)"' -DTOMOE_FONTCONFIG_FILE='"$(FONTCONFIG_FILE)"' -Ibuild -Inative $(LIB_INCLUDE) $(shell $(PKG_CONFIG) --cflags $(LIBS))
+CFLAGS_NATIVE = $(CFLAGS_BASE) -DTOMOE_VERSION='"$(VERSION)"' -DTOMOE_PATH_PREFIX='"$(PATH_PREFIX)"' -DTOMOE_FONT_DIR='"$(FONT_DIR)"' -Ibuild -Inative $(LIB_INCLUDE) $(shell $(PKG_CONFIG) --cflags $(LIBS))
 CFLAGS_SUPPORT = $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -DTOMOE_VERSION='"$(VERSION)"'
 CFLAGS_PORTAL = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild -Isupport -Ilib/wayland/include -Ilib/wayland/scanner -Ilib/pipewire/include $(shell $(PKG_CONFIG) --cflags $(PORTAL_LIBS))
 LIB_CFLAGS_pipewire = $(CFLAGS_SUPPORT)

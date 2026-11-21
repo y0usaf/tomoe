@@ -4,7 +4,7 @@
 #include "draw.h"
 #include "emoji-data.h"
 
-#include <fontconfig/fontconfig.h>
+#include "fontmatch.h"
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include FT_COLOR_H
@@ -227,122 +227,52 @@ static uint32_t fte_colour(double r, double g, double b, double a)
         ((uint32_t)green & UINT32_C(0xff00)) | (uint32_t)(blue >> 8);
 }
 
-static void fte_options_substitute(const struct fte_options *options, FcPattern *pattern)
+static void fte_render_ft_options(const struct fm_render_cfg *cfg, bool embolden,
+    struct fte_ft_options *out)
 {
-    FcValue v;
-    if (!options) options = &fte_default_options;
-    if (options->antialias != FTE_ANTIALIAS_DEFAULT) {
-        if (FcPatternGet(pattern, FC_ANTIALIAS, 0, &v) == FcResultNoMatch) {
-            FcPatternAddBool(pattern, FC_ANTIALIAS, options->antialias != FTE_ANTIALIAS_NONE);
-            if (options->antialias != FTE_ANTIALIAS_SUBPIXEL) {
-                FcPatternDel(pattern, FC_RGBA);
-                FcPatternAddInteger(pattern, FC_RGBA, FC_RGBA_NONE);
-            }
-        }
-    }
-    if (options->antialias != FTE_ANTIALIAS_DEFAULT) {
-        if (FcPatternGet(pattern, FC_RGBA, 0, &v) == FcResultNoMatch) {
-            int rgba = FC_RGBA_NONE;
-            if (options->antialias == FTE_ANTIALIAS_SUBPIXEL) {
-                switch (options->subpixel_order) {
-                case FTE_SUBPIXEL_BGR: rgba = FC_RGBA_BGR; break;
-                case FTE_SUBPIXEL_VRGB: rgba = FC_RGBA_VRGB; break;
-                case FTE_SUBPIXEL_VBGR: rgba = FC_RGBA_VBGR; break;
-                default: rgba = FC_RGBA_RGB; break;
-                }
-            }
-            FcPatternAddInteger(pattern, FC_RGBA, rgba);
-        }
-    }
-    if (options->lcd_filter != FTE_LCD_FILTER_DEFAULT) {
-        if (FcPatternGet(pattern, FC_LCD_FILTER, 0, &v) == FcResultNoMatch) {
-            int filter = FT_LCD_FILTER_DEFAULT;
-            switch (options->lcd_filter) {
-            case FTE_LCD_FILTER_NONE: filter = FT_LCD_FILTER_NONE; break;
-            case FTE_LCD_FILTER_INTRA_PIXEL: filter = FT_LCD_FILTER_LEGACY; break;
-            case FTE_LCD_FILTER_FIR3: filter = FT_LCD_FILTER_LIGHT; break;
-            default: filter = FT_LCD_FILTER_DEFAULT; break;
-            }
-            FcPatternAddInteger(pattern, FC_LCD_FILTER, filter);
-        }
-    }
-    if (options->hint_style != FTE_HINT_STYLE_DEFAULT) {
-        if (FcPatternGet(pattern, FC_HINTING, 0, &v) == FcResultNoMatch)
-            FcPatternAddBool(pattern, FC_HINTING, options->hint_style != FTE_HINT_STYLE_NONE);
-        if (FcPatternGet(pattern, FC_HINT_STYLE, 0, &v) == FcResultNoMatch) {
-            int style = FC_HINT_FULL;
-            switch (options->hint_style) {
-            case FTE_HINT_STYLE_NONE: style = FC_HINT_NONE; break;
-            case FTE_HINT_STYLE_SLIGHT: style = FC_HINT_SLIGHT; break;
-            case FTE_HINT_STYLE_MEDIUM: style = FC_HINT_MEDIUM; break;
-            default: style = FC_HINT_FULL; break;
-            }
-            FcPatternAddInteger(pattern, FC_HINT_STYLE, style);
-        }
-    }
-}
-
-static void fte_pattern_ft_options(const FcPattern *pattern, struct fte_ft_options *out)
-{
-    FcBool antialias, hinting, autohint, bitmap, embolden, vertical_layout;
-    int rgba, hintstyle;
-
     out->base = fte_default_options;
     out->load_flags = FT_LOAD_DEFAULT;
     out->synth_flags = 0;
 
-    if (FcPatternGetBool(pattern, FC_EMBEDDED_BITMAP, 0, &bitmap) != FcResultMatch)
-        bitmap = FcFalse;
-    if (FcPatternGetBool(pattern, FC_ANTIALIAS, 0, &antialias) != FcResultMatch)
-        antialias = FcTrue;
+    bool bitmap = cfg ? cfg->embedded_bitmap : false;
+    bool antialias = cfg ? cfg->antialias : true;
     if (antialias) {
-        if (FcPatternGetBool(pattern, FC_HINTING, 0, &hinting) != FcResultMatch)
-            hinting = FcTrue;
-        if (FcPatternGetInteger(pattern, FC_RGBA, 0, &rgba) != FcResultMatch)
-            rgba = FC_RGBA_UNKNOWN;
+        bool hinting = cfg ? cfg->hinting : true;
+        int rgba = cfg ? cfg->rgba : FM_RGBA_UNKNOWN;
         int order = FTE_SUBPIXEL_DEFAULT;
         switch (rgba) {
-        case FC_RGBA_RGB: order = FTE_SUBPIXEL_RGB; break;
-        case FC_RGBA_BGR: order = FTE_SUBPIXEL_BGR; break;
-        case FC_RGBA_VRGB: order = FTE_SUBPIXEL_VRGB; break;
-        case FC_RGBA_VBGR: order = FTE_SUBPIXEL_VBGR; break;
+        case FM_RGBA_RGB: order = FTE_SUBPIXEL_RGB; break;
+        case FM_RGBA_BGR: order = FTE_SUBPIXEL_BGR; break;
+        case FM_RGBA_VRGB: order = FTE_SUBPIXEL_VRGB; break;
+        case FM_RGBA_VBGR: order = FTE_SUBPIXEL_VBGR; break;
         default: order = FTE_SUBPIXEL_DEFAULT; break;
         }
         if (order != FTE_SUBPIXEL_DEFAULT) {
             out->base.subpixel_order = order;
             out->base.antialias = FTE_ANTIALIAS_SUBPIXEL;
         }
-        if (FcPatternGetInteger(pattern, FC_LCD_FILTER, 0, &hintstyle) == FcResultMatch) {
-            switch (hintstyle) {
-            case FC_LCD_NONE: out->base.lcd_filter = FTE_LCD_FILTER_NONE; break;
-            case FC_LCD_DEFAULT: out->base.lcd_filter = FTE_LCD_FILTER_FIR5; break;
-            case FC_LCD_LIGHT: out->base.lcd_filter = FTE_LCD_FILTER_FIR3; break;
-            case FC_LCD_LEGACY: out->base.lcd_filter = FTE_LCD_FILTER_INTRA_PIXEL; break;
-            default: break;
-            }
+        int lcd = cfg ? cfg->lcd_filter : FM_LCD_DEFAULT;
+        switch (lcd) {
+        case FM_LCD_NONE: out->base.lcd_filter = FTE_LCD_FILTER_NONE; break;
+        case FM_LCD_DEFAULT: out->base.lcd_filter = FTE_LCD_FILTER_FIR5; break;
+        case FM_LCD_LIGHT: out->base.lcd_filter = FTE_LCD_FILTER_FIR3; break;
+        case FM_LCD_LEGACY: out->base.lcd_filter = FTE_LCD_FILTER_INTRA_PIXEL; break;
+        default: break;
         }
-        if (FcPatternGetInteger(pattern, FC_HINT_STYLE, 0, &hintstyle) != FcResultMatch)
-            hintstyle = FC_HINT_FULL;
-        if (!hinting) hintstyle = FC_HINT_NONE;
+        int hintstyle = cfg ? cfg->hint_style : FM_HINT_FULL;
+        if (!hinting) hintstyle = FM_HINT_NONE;
         switch (hintstyle) {
-        case FC_HINT_NONE: out->base.hint_style = FTE_HINT_STYLE_NONE; break;
-        case FC_HINT_SLIGHT: out->base.hint_style = FTE_HINT_STYLE_SLIGHT; break;
-        case FC_HINT_FULL: out->base.hint_style = FTE_HINT_STYLE_FULL; break;
+        case FM_HINT_NONE: out->base.hint_style = FTE_HINT_STYLE_NONE; break;
+        case FM_HINT_SLIGHT: out->base.hint_style = FTE_HINT_STYLE_SLIGHT; break;
+        case FM_HINT_FULL: out->base.hint_style = FTE_HINT_STYLE_FULL; break;
         default: out->base.hint_style = FTE_HINT_STYLE_MEDIUM; break;
         }
-        if (out->base.hint_style == FTE_HINT_STYLE_NONE) bitmap = FcFalse;
+        if (out->base.hint_style == FTE_HINT_STYLE_NONE) bitmap = false;
         if (!bitmap) out->load_flags |= FT_LOAD_NO_BITMAP;
     } else {
         out->base.antialias = FTE_ANTIALIAS_NONE;
     }
-    if (FcPatternGetBool(pattern, FC_AUTOHINT, 0, &autohint) != FcResultMatch)
-        autohint = FcFalse;
-    if (autohint) out->load_flags |= FT_LOAD_FORCE_AUTOHINT;
-    if (FcPatternGetBool(pattern, FC_VERTICAL_LAYOUT, 0, &vertical_layout) != FcResultMatch)
-        vertical_layout = FcFalse;
-    if (vertical_layout) out->load_flags |= FT_LOAD_VERTICAL_LAYOUT;
-    if (FcPatternGetBool(pattern, FC_EMBOLDEN, 0, &embolden) != FcResultMatch)
-        embolden = FcFalse;
+    if (cfg && cfg->autohint) out->load_flags |= FT_LOAD_FORCE_AUTOHINT;
     if (embolden) out->synth_flags |= 1;
 }
 
@@ -452,21 +382,17 @@ static void fte_face_scale(struct fte_face *face, const struct fte_matrix *scale
     fte_face_set_scale(face, scale);
 }
 
-static struct fte_face *fte_face_get(const FcPattern *pattern)
+static struct fte_face *fte_face_get(const char *file, int index)
 {
-    FcChar8 *file = NULL;
-    int index = 0;
-    FcPatternGetString(pattern, FC_FILE, 0, &file);
-    FcPatternGetInteger(pattern, FC_INDEX, 0, &index);
     if (!file) return NULL;
     for (struct fte_face *face = fte_faces; face; face = face->next)
-        if (face->index == index && strcmp(face->file, (const char *)file) == 0)
+        if (face->index == index && strcmp(face->file, file) == 0)
             return face;
     FT_Library library = fte_ft_library();
     if (!library) return NULL;
     struct fte_face *face = calloc(1, sizeof(*face));
     if (!face) return NULL;
-    face->file = strdup((const char *)file);
+    face->file = strdup(file);
     face->index = index;
     if (!face->file || FT_New_Face(library, face->file, index, &face->face) != 0) {
         free(face->file);
@@ -477,18 +403,6 @@ static struct fte_face *fte_face_get(const FcPattern *pattern)
     face->next = fte_faces;
     fte_faces = face;
     return face;
-}
-
-static double fte_pattern_size(const FcPattern *pattern)
-{
-    double size;
-    if (FcPatternGetDouble(pattern, FC_PIXEL_SIZE, 0, &size) == FcResultMatch)
-        return size;
-    double dpi;
-    if (FcPatternGetDouble(pattern, FC_DPI, 0, &dpi) != FcResultMatch) dpi = 72;
-    if (FcPatternGetDouble(pattern, FC_SIZE, 0, &size) == FcResultMatch)
-        return size * dpi / 72.0;
-    return 18.0;
 }
 
 static struct fte_scaled *fte_scaled_get(struct fte_face *face,
@@ -1480,27 +1394,27 @@ struct fte_font_desc {
 
 static bool fte_match_weight(const char *tok, int *out)
 {
-    if (!strcasecmp(tok, "thin") || !strcasecmp(tok, "hairline")) { *out = FC_WEIGHT_THIN; return true; }
+    if (!strcasecmp(tok, "thin") || !strcasecmp(tok, "hairline")) { *out = FM_WEIGHT_THIN; return true; }
     if (!strcasecmp(tok, "ultralight") || !strcasecmp(tok, "ultra-light") ||
-        !strcasecmp(tok, "extralight") || !strcasecmp(tok, "extra-light")) { *out = FC_WEIGHT_EXTRALIGHT; return true; }
-    if (!strcasecmp(tok, "light")) { *out = FC_WEIGHT_LIGHT; return true; }
+        !strcasecmp(tok, "extralight") || !strcasecmp(tok, "extra-light")) { *out = FM_WEIGHT_EXTRALIGHT; return true; }
+    if (!strcasecmp(tok, "light")) { *out = FM_WEIGHT_LIGHT; return true; }
     if (!strcasecmp(tok, "semilight") || !strcasecmp(tok, "semi-light") ||
-        !strcasecmp(tok, "demilight") || !strcasecmp(tok, "demi-light")) { *out = FC_WEIGHT_DEMILIGHT; return true; }
-    if (!strcasecmp(tok, "book")) { *out = FC_WEIGHT_BOOK; return true; }
-    if (!strcasecmp(tok, "regular") || !strcasecmp(tok, "normal")) { *out = FC_WEIGHT_REGULAR; return true; }
-    if (!strcasecmp(tok, "medium")) { *out = FC_WEIGHT_MEDIUM; return true; }
+        !strcasecmp(tok, "demilight") || !strcasecmp(tok, "demi-light")) { *out = FM_WEIGHT_DEMILIGHT; return true; }
+    if (!strcasecmp(tok, "book")) { *out = FM_WEIGHT_BOOK; return true; }
+    if (!strcasecmp(tok, "regular") || !strcasecmp(tok, "normal")) { *out = FM_WEIGHT_REGULAR; return true; }
+    if (!strcasecmp(tok, "medium")) { *out = FM_WEIGHT_MEDIUM; return true; }
     if (!strcasecmp(tok, "semibold") || !strcasecmp(tok, "semi-bold") ||
-        !strcasecmp(tok, "demibold") || !strcasecmp(tok, "demi-bold")) { *out = FC_WEIGHT_SEMIBOLD; return true; }
-    if (!strcasecmp(tok, "bold")) { *out = FC_WEIGHT_BOLD; return true; }
+        !strcasecmp(tok, "demibold") || !strcasecmp(tok, "demi-bold")) { *out = FM_WEIGHT_SEMIBOLD; return true; }
+    if (!strcasecmp(tok, "bold")) { *out = FM_WEIGHT_BOLD; return true; }
     if (!strcasecmp(tok, "extrabold") || !strcasecmp(tok, "extra-bold") ||
-        !strcasecmp(tok, "ultrabold") || !strcasecmp(tok, "ultra-bold")) { *out = FC_WEIGHT_EXTRABOLD; return true; }
-    if (!strcasecmp(tok, "black") || !strcasecmp(tok, "heavy")) { *out = FC_WEIGHT_BLACK; return true; }
+        !strcasecmp(tok, "ultrabold") || !strcasecmp(tok, "ultra-bold")) { *out = FM_WEIGHT_EXTRABOLD; return true; }
+    if (!strcasecmp(tok, "black") || !strcasecmp(tok, "heavy")) { *out = FM_WEIGHT_BLACK; return true; }
     if (!strcasecmp(tok, "extrablack") || !strcasecmp(tok, "extra-black") ||
-        !strcasecmp(tok, "ultrablack") || !strcasecmp(tok, "ultra-black")) { *out = FC_WEIGHT_EXTRABLACK; return true; }
+        !strcasecmp(tok, "ultrablack") || !strcasecmp(tok, "ultra-black")) { *out = FM_WEIGHT_EXTRABLACK; return true; }
     char *endp = NULL;
     long n = strtol(tok, &endp, 10);
     if (endp && endp != tok && !*endp && n >= 1 && n <= 1000) {
-        *out = FcWeightFromOpenType((int)n);
+        *out = (int)n;
         return true;
     }
     return false;
@@ -1508,22 +1422,22 @@ static bool fte_match_weight(const char *tok, int *out)
 
 static bool fte_match_slant(const char *tok, int *out)
 {
-    if (!strcasecmp(tok, "italic")) { *out = FC_SLANT_ITALIC; return true; }
-    if (!strcasecmp(tok, "oblique")) { *out = FC_SLANT_OBLIQUE; return true; }
-    if (!strcasecmp(tok, "roman")) { *out = FC_SLANT_ROMAN; return true; }
+    if (!strcasecmp(tok, "italic")) { *out = FM_SLANT_ITALIC; return true; }
+    if (!strcasecmp(tok, "oblique")) { *out = FM_SLANT_OBLIQUE; return true; }
+    if (!strcasecmp(tok, "roman")) { *out = FM_SLANT_ROMAN; return true; }
     return false;
 }
 
 static bool fte_match_stretch(const char *tok, int *out)
 {
-    if (!strcasecmp(tok, "ultracondensed") || !strcasecmp(tok, "ultra-condensed")) { *out = FC_WIDTH_ULTRACONDENSED; return true; }
-    if (!strcasecmp(tok, "extracondensed") || !strcasecmp(tok, "extra-condensed")) { *out = FC_WIDTH_EXTRACONDENSED; return true; }
-    if (!strcasecmp(tok, "condensed")) { *out = FC_WIDTH_CONDENSED; return true; }
-    if (!strcasecmp(tok, "semicondensed") || !strcasecmp(tok, "semi-condensed")) { *out = FC_WIDTH_SEMICONDENSED; return true; }
-    if (!strcasecmp(tok, "semiexpanded") || !strcasecmp(tok, "semi-expanded")) { *out = FC_WIDTH_SEMIEXPANDED; return true; }
-    if (!strcasecmp(tok, "expanded")) { *out = FC_WIDTH_EXPANDED; return true; }
-    if (!strcasecmp(tok, "extraexpanded") || !strcasecmp(tok, "extra-expanded")) { *out = FC_WIDTH_EXTRAEXPANDED; return true; }
-    if (!strcasecmp(tok, "ultraexpanded") || !strcasecmp(tok, "ultra-expanded")) { *out = FC_WIDTH_ULTRAEXPANDED; return true; }
+    if (!strcasecmp(tok, "ultracondensed") || !strcasecmp(tok, "ultra-condensed")) { *out = FM_WIDTH_ULTRACONDENSED; return true; }
+    if (!strcasecmp(tok, "extracondensed") || !strcasecmp(tok, "extra-condensed")) { *out = FM_WIDTH_EXTRACONDENSED; return true; }
+    if (!strcasecmp(tok, "condensed")) { *out = FM_WIDTH_CONDENSED; return true; }
+    if (!strcasecmp(tok, "semicondensed") || !strcasecmp(tok, "semi-condensed")) { *out = FM_WIDTH_SEMICONDENSED; return true; }
+    if (!strcasecmp(tok, "semiexpanded") || !strcasecmp(tok, "semi-expanded")) { *out = FM_WIDTH_SEMIEXPANDED; return true; }
+    if (!strcasecmp(tok, "expanded")) { *out = FM_WIDTH_EXPANDED; return true; }
+    if (!strcasecmp(tok, "extraexpanded") || !strcasecmp(tok, "extra-expanded")) { *out = FM_WIDTH_EXTRAEXPANDED; return true; }
+    if (!strcasecmp(tok, "ultraexpanded") || !strcasecmp(tok, "ultra-expanded")) { *out = FM_WIDTH_ULTRAEXPANDED; return true; }
     return false;
 }
 
@@ -1534,9 +1448,9 @@ static unsigned fte_parse_font_desc(const char *str, struct fte_font_desc *out)
 {
     unsigned mask = 0;
     memset(out, 0, sizeof(*out));
-    out->weight = FC_WEIGHT_REGULAR;
-    out->slant = FC_SLANT_ROMAN;
-    out->stretch = FC_WIDTH_NORMAL;
+    out->weight = FM_WEIGHT_REGULAR;
+    out->slant = FM_SLANT_ROMAN;
+    out->stretch = FM_WIDTH_NORMAL;
     out->size = 0.0;
     if (!str || !*str) {
         strcpy(out->families, "sans");
@@ -1611,8 +1525,7 @@ struct fte_fontset {
     int slant;
     int stretch;
     double size;
-    FcPattern *base;
-    FcFontSet *fs;
+    struct fm_list *matches;
     struct fte_scaled **fonts;
     int count;
     double ascent;
@@ -1628,22 +1541,21 @@ static int fte_fontset_count;
 #define FTE_MAX_TEXT_LEN 65536
 #define FTE_MAX_STYLES 4096
 
-static struct fte_scaled *fte_scaled_from_pattern(const FcPattern *pattern)
+static struct fte_scaled *fte_scaled_from_entry(const struct fm_entry *entry,
+    const struct fm_render_cfg *render, double size)
 {
-    if (!pattern) return NULL;
-    struct fte_face *face = fte_face_get(pattern);
+    if (!entry) return NULL;
+    struct fte_face *face = fte_face_get(entry->file, entry->index);
     if (!face) return NULL;
-    double size = fte_pattern_size(pattern);
-    FcMatrix fc_matrix, *value;
-    FcMatrixInit(&fc_matrix);
-    for (int i = 0; FcPatternGetMatrix(pattern, FC_MATRIX, i, &value) == FcResultMatch; i++)
-        FcMatrixMultiply(&fc_matrix, &fc_matrix, value);
     struct fte_matrix font_matrix;
-    fte_matrix_init(&font_matrix, fc_matrix.xx, -fc_matrix.yx, -fc_matrix.xy, fc_matrix.yy,
-        0, 0);
+    if (entry->oblique)
+        fte_matrix_init(&font_matrix, 1.0, 0.0, -0.2, 1.0, 0.0, 0.0);
+    else
+        fte_matrix_init(&font_matrix, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0);
     fte_matrix_scale(&font_matrix, size, size);
     struct fte_ft_options ft_options;
-    fte_pattern_ft_options(pattern, &ft_options);
+    fte_render_ft_options(render, entry->embolden, &ft_options);
+    if (entry->oblique) ft_options.load_flags |= FT_LOAD_NO_BITMAP;
     return fte_scaled_get(face, &font_matrix, &font_matrix, &fte_render_options, &ft_options);
 }
 
@@ -1665,10 +1577,8 @@ static struct fte_scaled *fte_fontset_font(struct fte_fontset *set, int index)
 {
     if (!set || index < 0 || index >= set->count) return NULL;
     if (set->fonts[index]) return set->fonts[index];
-    FcPattern *rendered = FcFontRenderPrepare(NULL, set->base, set->fs->fonts[index]);
-    if (!rendered) return NULL;
-    struct fte_scaled *scaled = fte_scaled_from_pattern(rendered);
-    FcPatternDestroy(rendered);
+    struct fte_scaled *scaled = fte_scaled_from_entry(&set->matches->entries[index],
+        &set->matches->render, set->size);
     set->fonts[index] = scaled;
     return scaled;
 }
@@ -1702,8 +1612,7 @@ static void fte_fontset_free(struct fte_fontset *set)
 {
     if (!set) return;
     free(set->fonts);
-    if (set->fs) FcFontSetDestroy(set->fs);
-    if (set->base) FcPatternDestroy(set->base);
+    fm_list_free(set->matches);
     free(set);
 }
 
@@ -1730,38 +1639,17 @@ static struct fte_fontset *fte_fontset_get(const struct fte_font_desc *desc, dou
             return s;
         }
     }
-    FcPattern *pat = FcPatternCreate();
-    if (!pat) return NULL;
-    char copy[256];
-    snprintf(copy, sizeof(copy), "%s", desc->families);
-    char *save = NULL;
-    for (char *tok = strtok_r(copy, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
-        while (*tok && isspace((unsigned char)*tok)) tok++;
-        size_t l = strlen(tok);
-        while (l > 0 && isspace((unsigned char)tok[l - 1])) tok[--l] = '\0';
-        if (*tok) FcPatternAddString(pat, FC_FAMILY, (const FcChar8 *)tok);
-    }
-    FcPatternAddInteger(pat, FC_WEIGHT, desc->weight);
-    FcPatternAddInteger(pat, FC_SLANT, desc->slant);
-    FcPatternAddInteger(pat, FC_WIDTH, desc->stretch);
-    FcPatternAddDouble(pat, FC_DPI, 96.0);
-    FcPatternAddDouble(pat, FC_SIZE, size * 72.0 / 96.0);
-    FcPatternAddDouble(pat, FC_PIXEL_SIZE, size);
-    FcConfigSubstitute(NULL, pat, FcMatchPattern);
-    fte_options_substitute(&fte_render_options, pat);
-    FcDefaultSubstitute(pat);
-
-    FcResult res = FcResultMatch;
-    FcFontSet *fs = FcFontSort(NULL, pat, FcTrue, NULL, &res);
-    if (!fs || fs->nfont <= 0) {
-        if (fs) FcFontSetDestroy(fs);
-        FcPatternDestroy(pat);
+    FT_Library library = fte_ft_library();
+    if (!library) return NULL;
+    struct fm_list *matches = fm_match(library, desc->families, desc->weight,
+        desc->slant, desc->stretch);
+    if (!matches || matches->count <= 0) {
+        fm_list_free(matches);
         return NULL;
     }
     struct fte_fontset *set = calloc(1, sizeof(*set));
     if (!set) {
-        FcFontSetDestroy(fs);
-        FcPatternDestroy(pat);
+        fm_list_free(matches);
         return NULL;
     }
     set->refcount = 2;
@@ -1770,9 +1658,8 @@ static struct fte_fontset *fte_fontset_get(const struct fte_font_desc *desc, dou
     set->slant = desc->slant;
     set->stretch = desc->stretch;
     set->size = size;
-    set->base = pat;
-    set->fs = fs;
-    set->count = fs->nfont;
+    set->matches = matches;
+    set->count = matches->count;
     set->fonts = calloc((size_t)set->count, sizeof(*set->fonts));
     if (!set->fonts) {
         fte_fontset_free(set);
@@ -1826,29 +1713,25 @@ static int fte_fontset_pick(struct fte_fontset *set, hb_unicode_funcs_t *ufuncs,
     uint32_t cp, int current)
 {
     if (!set || set->count <= 0) return -1;
+    FT_Library library = fte_ft_library();
+    if (!library) return 0;
     if (current >= 0 && current < set->count) {
         if (cp == 0x200c || cp == 0x200d ||
             (cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0xe0100 && cp <= 0xe01ef))
             return current;
-        FcCharSet *cs = NULL;
-        if (FcPatternGetCharSet(set->fs->fonts[current], FC_CHARSET, 0, &cs) == FcResultMatch &&
-            cs && FcCharSetHasChar(cs, cp))
+        if (fm_font_has_char(library, set->matches->entries[current].font, cp))
             return current;
         if (fte_is_cluster_continuation(ufuncs, cp)) {
             for (int i = 0; i < set->count; i++) {
-                FcCharSet *mcs = NULL;
-                if (FcPatternGetCharSet(set->fs->fonts[i], FC_CHARSET, 0, &mcs) == FcResultMatch &&
-                    mcs && FcCharSetHasChar(mcs, cp))
+                if (fm_font_has_char(library, set->matches->entries[i].font, cp))
                     return i;
             }
             return current;
         }
     }
     for (int i = 0; i < set->count; i++) {
-        FcCharSet *cs = NULL;
-        if (FcPatternGetCharSet(set->fs->fonts[i], FC_CHARSET, 0, &cs) == FcResultMatch && cs) {
-            if (FcCharSetHasChar(cs, cp)) return i;
-        }
+        if (fm_font_has_char(library, set->matches->entries[i].font, cp))
+            return i;
     }
     return 0;
 }
@@ -2129,8 +2012,8 @@ static struct fte_char *fte_parse_text(const char *text, const struct fte_style 
                 struct fte_style next = stack[depth];
                 size_t i = 0;
                 while (i < tlen && !isspace((unsigned char)tag[i]) && tag[i] != '/') i++;
-                if (i == 1 && (tag[0] == 'b' || tag[0] == 'B')) next.desc.weight = FC_WEIGHT_BOLD;
-                else if (i == 1 && (tag[0] == 'i' || tag[0] == 'I')) next.desc.slant = FC_SLANT_ITALIC;
+                if (i == 1 && (tag[0] == 'b' || tag[0] == 'B')) next.desc.weight = FM_WEIGHT_BOLD;
+                else if (i == 1 && (tag[0] == 'i' || tag[0] == 'I')) next.desc.slant = FM_SLANT_ITALIC;
                 else if (i == 1 && (tag[0] == 'u' || tag[0] == 'U')) next.underline = true;
                 else if (i == 1 && (tag[0] == 's' || tag[0] == 'S')) next.strikethrough = true;
                 else if (i == 2 && !strncasecmp(tag, "tt", 2))
