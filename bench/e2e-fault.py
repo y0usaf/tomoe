@@ -233,6 +233,92 @@ def check_idle_flush(tomoe_bin, client_bin):
     return f"idle_flush=max{max(switched)}ms"
 
 
+X11_TIMEOUT = 30
+
+
+def x_display():
+    for _ in range(100):
+        try:
+            names = sorted(n for n in os.listdir("/tmp/.X11-unix") if n.startswith("X"))
+        except OSError:
+            names = []
+        if names:
+            return ":" + names[0][1:]
+        time.sleep(0.1)
+    raise SystemExit("x11: FAIL tomoe-xwm never created an X socket")
+
+
+def run_timeout(cmd, env, data=None, timeout=X11_TIMEOUT):
+    return subprocess.run(cmd, env=env, input=data, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, timeout=timeout)
+
+
+def clipboard_x_to_wayland(env, size):
+    data = os.urandom(size // 4 * 3).hex().encode()[:size]
+    owner = subprocess.Popen(["xclip", "-selection", "clipboard", "-i", "-quiet"], env=env,
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    owner.stdin.write(data)
+    owner.stdin.close()
+    try:
+        deadline = time.monotonic() + X11_TIMEOUT
+        while time.monotonic() < deadline:
+            got = run_timeout(["wl-paste", "--no-newline"], env).stdout
+            if got == data:
+                return
+            time.sleep(0.2)
+        raise SystemExit(f"x11: FAIL X->Wayland clipboard of {size} bytes: got {len(got)} bytes")
+    finally:
+        owner.kill()
+        owner.wait()
+
+
+def clipboard_wayland_to_x(env, size):
+    data = os.urandom(size // 4 * 3).hex().encode()[:size]
+    owner = subprocess.Popen(["wl-copy", "--foreground", "--type", "text/plain;charset=utf-8"],
+        env=env, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    owner.stdin.write(data)
+    owner.stdin.close()
+    try:
+        deadline = time.monotonic() + X11_TIMEOUT
+        got = b""
+        while time.monotonic() < deadline:
+            got = run_timeout(["xclip", "-selection", "clipboard", "-o",
+                "-target", "UTF8_STRING"], env).stdout
+            if got == data:
+                return
+            time.sleep(0.2)
+        raise SystemExit(f"x11: FAIL Wayland->X clipboard of {size} bytes: got {len(got)} bytes")
+    finally:
+        owner.kill()
+        owner.wait()
+
+
+def check_x11(path, tomoe_bin):
+    sock = os.path.basename(path)
+    env = dict(os.environ, WAYLAND_DISPLAY=sock, DISPLAY=x_display())
+    logo = subprocess.Popen(["xlogo", "-geometry", "240x120"], env=env,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.monotonic() + X11_TIMEOUT
+        mapped = False
+        while time.monotonic() < deadline and not mapped:
+            out = subprocess.run([tomoe_bin, "--socket", sock, "inspect"], stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, text=True).stdout
+            mapped = "xlogo" in out.lower()
+            if not mapped:
+                time.sleep(0.2)
+        if not mapped:
+            raise SystemExit("x11: FAIL xlogo never appeared in tomoe inspect")
+        clipboard_x_to_wayland(env, 4096)
+        clipboard_x_to_wayland(env, 24 << 20)
+        clipboard_wayland_to_x(env, 4096)
+        clipboard_wayland_to_x(env, 2 << 20)
+    finally:
+        logo.kill()
+        logo.wait()
+    return "x11=mapped,clip-x2w(4K,24M),clip-w2x(4K,2M)"
+
+
 def main():
     args = sys.argv[1:]
     checks = args[0].split(",")
@@ -247,6 +333,8 @@ def main():
             results.append(check_flood(path))
         elif check == "xwm":
             results.append(check_xwm_kill(display, client_bin))
+        elif check == "x11":
+            results.append(check_x11(path, args[3]))
         elif check == "idle-flush":
             results.append(check_idle_flush(args[3], client_bin))
         else:

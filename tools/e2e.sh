@@ -7,6 +7,7 @@ system=$(nix eval --raw --impure --expr builtins.currentSystem)
 tomoe_bin=${TOMOE_BIN:-$(nix build --no-link --print-out-paths "${root}#tomoe")/bin/tomoe}
 client_bin=${CLIENT_BIN:-$(nix build --no-link --print-out-paths --impure --expr "let fl = builtins.getFlake \"path:${root}\"; pkgs = import fl.inputs.nixpkgs { system = \"${system}\"; }; in pkgs.callPackage (fl.outPath + \"/bench/client.nix\") { }")/bin/bench-client}
 capture_bin=${CAPTURE_BIN:-$(nix build --no-link --print-out-paths --impure --expr "let fl = builtins.getFlake \"path:${root}\"; pkgs = import fl.inputs.nixpkgs { system = \"${system}\"; }; in pkgs.callPackage (fl.outPath + \"/bench/capture.nix\") { }")/bin/tomoe-e2e-capture}
+x11_tools=${X11_TOOLS:-$(nix build --no-link --print-out-paths --impure --expr "let fl = builtins.getFlake \"path:${root}\"; pkgs = import fl.inputs.nixpkgs { system = \"${system}\"; }; in pkgs.symlinkJoin { name = \"tomoe-e2e-x11-tools\"; paths = [ pkgs.xwayland pkgs.xclip pkgs.xlogo pkgs.wl-clipboard ]; }")}
 layer_blur_bin=${LAYER_BLUR_BIN:-$(nix build --no-link --print-out-paths --impure --expr "let fl = builtins.getFlake \"path:${root}\"; pkgs = import fl.inputs.nixpkgs { system = \"${system}\"; }; in pkgs.callPackage (fl.outPath + \"/bench/e2e-layer-blur.nix\") { }")/bin/tomoe-e2e-layer-blur}
 
 base=${XDG_RUNTIME_DIR:-/tmp}
@@ -20,7 +21,7 @@ env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u TOMOE_SOCKET \
 
 env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u TOMOE_SOCKET \
 	"$root/tools/isolate" "$dir" \
-	bash -euo pipefail -c '
+	env PATH="$x11_tools/bin:$PATH" bash -euo pipefail -c '
 		tomoe_bin=$1
 		client_bin=$2
 		capture_bin=$3
@@ -72,7 +73,7 @@ env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u TOMOE_SOCKET \
 		echo "$blur_out"
 		echo "$blur_out" | grep -Eq "frames=[3-9]" 
 
-		python3 "$fault_py" max-objects,flood,xwm,idle-flush "$XDG_RUNTIME_DIR/$wl_display" "$client_bin" "$tomoe_bin"
+		python3 "$fault_py" max-objects,flood,xwm,idle-flush,x11 "$XDG_RUNTIME_DIR/$wl_display" "$client_bin" "$tomoe_bin"
 
 		trap - EXIT
 		kill -TERM "$tpid"

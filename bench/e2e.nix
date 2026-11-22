@@ -36,6 +36,10 @@ pkgs.testers.runNixOSTest {
       pkgs.pipewire
       pkgs.wireplumber
       pkgs.procps
+      pkgs.xwayland
+      pkgs.xclip
+      pkgs.xlogo
+      pkgs.wl-clipboard
     ];
     environment.pathsToLink = [ "/share/dbus-1" ];
     environment.variables.LP_NUM_THREADS = "4";
@@ -145,7 +149,7 @@ pkgs.testers.runNixOSTest {
     print(f"E2E_LAYER_BLUR rc={blur_rc} out={blur_out.strip()}")
 
     fault_out = machine.succeed(
-        f"{sh_env} WAYLAND_DISPLAY={wl_display} python3 ${./e2e-fault.py} max-objects,flood,xwm,idle-flush "
+        f"{sh_env} WAYLAND_DISPLAY={wl_display} python3 ${./e2e-fault.py} max-objects,flood,xwm,idle-flush,x11 "
         f"/run/e2e/rt/{wl_display} ${client}/bin/bench-client tomoe"
     )
     print(fault_out.strip())
