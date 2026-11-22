@@ -131,8 +131,8 @@ pkgs.testers.runNixOSTest {
     print(f"E2E_LAYER_BLUR rc={blur_rc} out={blur_out.strip()}")
 
     fault_out = machine.succeed(
-        f"{sh_env} WAYLAND_DISPLAY={wl_display} python3 ${./e2e-fault.py} max-objects,flood,xwm "
-        f"/run/e2e/rt/{wl_display} ${client}/bin/bench-client"
+        f"{sh_env} WAYLAND_DISPLAY={wl_display} python3 ${./e2e-fault.py} max-objects,flood,xwm,idle-flush "
+        f"/run/e2e/rt/{wl_display} ${client}/bin/bench-client tomoe"
     )
     print(fault_out.strip())
 
