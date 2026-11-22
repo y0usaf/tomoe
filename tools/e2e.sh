@@ -73,7 +73,7 @@ env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u TOMOE_SOCKET \
 		echo "$blur_out"
 		echo "$blur_out" | grep -Eq "frames=[3-9]" 
 
-		python3 "$fault_py" max-objects,flood,xwm,idle-flush,x11,x11-stale,x11-ownership "$XDG_RUNTIME_DIR/$wl_display" "$client_bin" "$tomoe_bin"
+		python3 "$fault_py" max-objects,flood,xwm,idle-flush,x11,x11-stale,x11-ownership,xwm-hang "$XDG_RUNTIME_DIR/$wl_display" "$client_bin" "$tomoe_bin"
 
 		trap - EXIT
 		kill -TERM "$tpid"

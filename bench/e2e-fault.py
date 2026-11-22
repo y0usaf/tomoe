@@ -532,6 +532,69 @@ def check_x11_ownership(path):
         logo.kill()
         logo.wait()
 
+def check_xwm_hang(path, client_bin, tomoe_bin):
+    sock = os.path.basename(path)
+    env = dict(os.environ, WAYLAND_DISPLAY=sock)
+    pids = []
+    for _ in range(100):
+        pids = xwm_pids()
+        if pids:
+            break
+        time.sleep(0.05)
+    if len(pids) != 1:
+        raise SystemExit(f"xwm-hang: FAIL expected one tomoe-xwm, found {pids}")
+    old = pids[0]
+    honest = subprocess.Popen([client_bin, "--input", "virtual", "--phase", "frames", "--seconds", "6",
+        "--windows", "1"], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    time.sleep(0.3)
+    os.kill(old, signal.SIGSTOP)
+    stopped_at = time.monotonic()
+    owner = subprocess.Popen(["wl-copy", "--foreground"], env=env, stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    owner.stdin.write(b"hang-probe")
+    owner.stdin.close()
+    new = None
+    try:
+        while time.monotonic() - stopped_at < 10:
+            current = [p for p in xwm_pids() if p != old]
+            if current:
+                new = current[0]
+                break
+            time.sleep(0.05)
+        if new is None:
+            raise SystemExit("xwm-hang: FAIL a stopped tomoe-xwm was not replaced within 10s")
+        restarted = time.monotonic() - stopped_at
+        out, _ = honest.communicate(timeout=30)
+        if honest.returncode != 0 or not re.search(r"frames [1-9][0-9]*", out) or not re.search(r"lost 0\b", out):
+            raise SystemExit(f"xwm-hang: FAIL Wayland client disturbed by the sidecar hang: {out[-200:]}")
+        xenv = dict(env, DISPLAY=x_display())
+        logo = subprocess.Popen(["xlogo"], env=xenv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            deadline = time.monotonic() + X11_TIMEOUT
+            while time.monotonic() < deadline:
+                out = subprocess.run([tomoe_bin, "--socket", sock, "inspect"], stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL, text=True).stdout
+                if "xlogo" in out.lower():
+                    break
+                time.sleep(0.2)
+            else:
+                raise SystemExit("xwm-hang: FAIL X clients do not map after the sidecar restart")
+        finally:
+            logo.kill()
+            logo.wait()
+        return f"xwm_hang={old}->{new} in {restarted:.1f}s"
+    finally:
+        try:
+            os.kill(old, signal.SIGCONT)
+        except OSError:
+            pass
+        owner.kill()
+        owner.wait()
+        if honest.poll() is None:
+            honest.kill()
+            honest.wait()
+
+
 def main():
     args = sys.argv[1:]
     checks = args[0].split(",")
@@ -546,6 +609,8 @@ def main():
             results.append(check_flood(path))
         elif check == "xwm":
             results.append(check_xwm_kill(display, client_bin))
+        elif check == "xwm-hang":
+            results.append(check_xwm_hang(path, client_bin, args[3]))
         elif check == "x11-ownership":
             results.append(check_x11_ownership(path))
         elif check == "x11-stale":
