@@ -47,7 +47,17 @@ pkgs.testers.runNixOSTest {
     import time
 
     machine.wait_for_unit("seatd.service")
-    machine.wait_for_file("/dev/dri/card0")
+    drm_cards = "for c in /sys/class/drm/card[0-9]*; do [ -e $c/device ] && echo $(basename $c) $(basename $(readlink -f $c/device)) $(basename $(readlink $c/device/driver 2>/dev/null) 2>/dev/null); done"
+    vkms_card = ""
+    for _ in range(300):
+        _, listing = machine.execute(drm_cards)
+        found = [line.split()[0] for line in listing.splitlines() if line.split()[1:2] == ["vkms"]]
+        if found:
+            vkms_card = found[0]
+            break
+        time.sleep(0.1)
+    assert vkms_card, f"no vkms card; drm cards and drivers: {machine.execute(drm_cards)[1]!r}"
+    print(f"E2E_DRM_DEVICE /dev/dri/{vkms_card} drivers={machine.execute(drm_cards)[1].strip()!r}")
     machine.succeed("mkdir -p /run/e2e/rt /run/e2e/cfg /run/e2e/cap && chmod 700 /run/e2e/rt")
     machine.succeed(
         "cat <<'EOF' > /run/e2e/cfg/init.lisp\n"
@@ -86,7 +96,8 @@ pkgs.testers.runNixOSTest {
 
     machine.succeed(
         f"systemd-run --unit=e2e-tomoe --collect {unit_env} "
-        "tomoe --socket e2e --backend drm --config /run/e2e/cfg/init.lisp --no-watch"
+        f"tomoe --socket e2e --backend drm --drm_device /dev/dri/{vkms_card} "
+        "--config /run/e2e/cfg/init.lisp --no-watch"
     )
 
     inspect = ""
@@ -96,7 +107,10 @@ pkgs.testers.runNixOSTest {
             inspect = out
             break
         time.sleep(0.1)
-    assert inspect.strip(), "tomoe did not become ready with VOUT-2"
+    assert inspect.strip(), (
+        f"tomoe did not become ready with VOUT-2 on /dev/dri/{vkms_card}; "
+        f"drm cards and drivers: {machine.execute(drm_cards)[1]!r}"
+    )
     assert not re.search(r":CONFIG-ERROR \(", inspect), f"tomoe config error: {inspect[:300]}"
 
     machine.succeed("test -S /run/e2e/rt/e2e")
