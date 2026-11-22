@@ -889,6 +889,7 @@ static void window_mapped(struct window *w) {
         w->desired_height = w->height;
         w->desired_visible = true;
         w->admitted = true;
+        sound_play(w->server, SOUND_OPEN);
     }
     w->fullscreen_state = w->xdg->current.fullscreen;
     w->maximize_state = w->xdg->current.maximized;
@@ -1040,6 +1041,7 @@ static void window_destroy(struct wl_listener *listener, void *data) {
     wl_list_remove(&w->link);
     if (w->tree) w->tree->data = NULL;
     if (admitted) {
+        sound_play(s, SOUND_CLOSE);
         unmap_event(s, w->target.id);
     }
     schedule_scene(s);

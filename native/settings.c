@@ -21,6 +21,17 @@ static const struct setting_field {
     { "cursor-trail-life", offsetof(struct settings, cursor_trail_life), SETTING_REAL },
     { "cursor-trail-steps", offsetof(struct settings, cursor_trail_steps), SETTING_INT },
     { "cursor-trail-color", offsetof(struct settings, cursor_trail_color), SETTING_COLOR },
+    { "shader-hold", offsetof(struct settings, shader_hold), SETTING_REAL },
+    { "screenshot-freeze", offsetof(struct settings, screenshot_freeze), SETTING_BOOL },
+    { "pause-readings-when-dark", offsetof(struct settings, pause_readings_when_dark), SETTING_BOOL },
+    { "sound-pause-after", offsetof(struct settings, sound_pause_after), SETTING_REAL },
+    { "screenshot-motion-enabled", offsetof(struct settings, screenshot_motion_enabled), SETTING_BOOL },
+    { "screenshot-motion-stiffness", offsetof(struct settings, screenshot_motion_stiffness), SETTING_REAL },
+    { "screenshot-motion-damping", offsetof(struct settings, screenshot_motion_damping), SETTING_REAL },
+    { "screenshot-mark-ink", offsetof(struct settings, screenshot_mark_ink), SETTING_COLOR },
+    { "screenshot-mark-width", offsetof(struct settings, screenshot_mark_width), SETTING_INT },
+    { "screenshot-mark-head", offsetof(struct settings, screenshot_mark_head), SETTING_INT },
+    { "screenshot-mark-size", offsetof(struct settings, screenshot_mark_size), SETTING_INT },
 #define ANIMATION_FIELDS(prefix, member) \
     { prefix "-kind", offsetof(struct settings, member.kind), SETTING_INT }, \
     { prefix "-damping-ratio", offsetof(struct settings, member.damping_ratio), SETTING_REAL }, \
@@ -93,6 +104,11 @@ void settings_clear(struct settings *settings) {
     memset(settings, 0, sizeof(*settings));
     input_config_unset(&settings->touchpad);
     input_config_unset(&settings->mouse);
+    settings->shader_hold = 3.0;
+    settings->screenshot_mark_ink = UINT32_C(0xffffffff);
+    settings->screenshot_mark_width = 3;
+    settings->screenshot_mark_head = 18;
+    settings->screenshot_mark_size = 22;
 }
 
 int tomoe_present_settings(struct tomoe *s) {
@@ -108,6 +124,12 @@ int tomoe_present_settings(struct tomoe *s) {
 int tomoe_present_setting(struct tomoe *s, const char *key, double value) {
     struct presentation *plan = s->presentation;
     if (!plan || !plan->settings || !isfinite(value)) return 0;
+    if (strcmp(key, "screenshot-mark-palette") == 0) {
+        if (plan->settings->screenshot_mark_palette_count >= SCREENSHOT_PALETTE_MAX) return 0;
+        plan->settings->screenshot_mark_palette[
+            plan->settings->screenshot_mark_palette_count++] = (uint32_t)value;
+        return 1;
+    }
     int handled = input_setting(plan->settings, key, value, NULL);
     if (handled >= 0) return handled;
     for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
@@ -140,6 +162,27 @@ int tomoe_present_setting_text(struct tomoe *s, const char *key, const char *tex
         settings->cursor_trail_shape = strcmp(text, "dots") == 0 ? TRAIL_DOTS : TRAIL_CELLS;
         return 1;
     }
+    if (strcmp(key, "screenshot-mark-font") == 0) {
+        char *copy = strdup(text);
+        if (!copy) return 0;
+        free(settings->screenshot_mark_font);
+        settings->screenshot_mark_font = copy;
+        return 1;
+    }
+    if (strcmp(key, "screenshot-mark-keys") == 0) {
+        if (settings->screenshot_mark_key_count >= 6) return 1;
+        char *copy = strdup(text);
+        if (!copy) return 0;
+        settings->screenshot_mark_keys[settings->screenshot_mark_key_count++] = copy;
+        return 1;
+    }
+    if (strcmp(key, "screenshot-mark-palette-keys") == 0) {
+        if (settings->screenshot_mark_palette_key_count >= SCREENSHOT_PALETTE_MAX) return 0;
+        char *copy = strdup(text);
+        if (!copy) return 0;
+        settings->screenshot_mark_palette_keys[settings->screenshot_mark_palette_key_count++] = copy;
+        return 1;
+    }
     int handled = input_setting(settings, key, NAN, text);
     if (handled >= 0) return handled;
     return policy_text_key(key);
@@ -153,10 +196,19 @@ void settings_publish(struct tomoe *s, struct presentation *plan) {
     s->settings = *plan->settings;
     plan->settings->device_count = 0;
     plan->settings->blur_namespace_count = 0;
+    plan->settings->screenshot_mark_font = NULL;
+    memset(plan->settings->screenshot_mark_keys, 0, sizeof(plan->settings->screenshot_mark_keys));
+    plan->settings->screenshot_mark_key_count = 0;
+    memset(plan->settings->screenshot_mark_palette_keys, 0,
+        sizeof(plan->settings->screenshot_mark_palette_keys));
+    plan->settings->screenshot_mark_palette_key_count = 0;
+    plan->settings->screenshot_mark_palette_count = 0;
     if (resized) outputs_request_nested_size(s);
     input_devices_apply(s);
     cursor_glass_settings(s);
     cursor_trail_settings(s);
+    sound_settings(s);
+    resources_outputs_changed();
     free(plan->settings);
     plan->settings = NULL;
 }

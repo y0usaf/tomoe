@@ -1,6 +1,7 @@
 #include "internal.h"
 #include "drm.h"
 #include "budget.h"
+#include "ui.h"
 #include <inttypes.h>
 #include <malloc.h>
 
@@ -419,8 +420,17 @@ lisp_value outputs_event_value(struct tomoe *s, const struct tomoe_event *event)
     return lisp_nreverse(list);
 }
 
+bool tomoe_system_readings_wanted(struct tomoe *s) {
+    if (!s->settings.pause_readings_when_dark) return true;
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link)
+        if (output_is_active(o) && !o->screen->power_off) return true;
+    return false;
+}
+
 void outputs_event(struct tomoe *s) {
     if (s->configuring_outputs) return;
+    resources_outputs_changed();
     output_management_refresh(s);
     uint64_t revision = s->outputs_revision + 1;
     struct tomoe_event *event = policy_event_push(s, EV_OUTPUTS);
@@ -1438,11 +1448,13 @@ static void output_destroy(struct wl_listener *listener, void *data) {
     for (size_t i = 0; i < sizeof(o->damage) / sizeof(o->damage[0]); i++)
         region_fini(&o->damage[i]);
     planes_finish(&o->planes);
+    screenshot_output_gone(s, o);
     capture_output_gone(s, o);
     gamma_output_gone(o);
     profile_unref(o->profile);
     profile_unref(o->pending_profile);
     power_output_gone(o);
+    ui_output_finish(s, wlr->name);
     detach(&o->frame); detach(&o->present); detach(&o->request); detach(&o->destroy);
     if (o->tick) wl_event_source_remove(o->tick);
     forget_output(s, wlr);

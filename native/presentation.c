@@ -1,10 +1,13 @@
 #include "internal.h"
+#include "ui.h"
 
 void presentation_finish(struct tomoe *s) {
     if (!s || !s->presentation) return;
+    ui_set_finish(s->presentation->ui);
     presentation_bindings_finish(s->presentation);
     keyboard_profile_finish(s->presentation->keyboard);
     if (s->presentation->settings) settings_finish(s->presentation->settings);
+    sound_bank_free(s->presentation->sounds);
     free(s->presentation->grab_owner);
     free(s->presentation->grab_otherwise);
     free(s->presentation->settings);
@@ -185,7 +188,7 @@ static int compare_targets(const void *a, const void *b) {
 
 bool presentation_prepare(struct tomoe *s) {
     struct presentation *plan = s->presentation;
-    if (!plan || !layers_prepare_presentation(s, plan)) return false;
+    if (!plan || !ui_prepare(s) || !layers_prepare_presentation(s, plan)) return false;
     windows_prepare_presentation(s, plan);
     qsort(plan->targets, plan->target_count, sizeof(*plan->targets), compare_targets);
     return true;
@@ -198,6 +201,7 @@ void presentation_publish(struct tomoe *s) {
     if (s->failed) return;
     layers_publish_presentation(s);
     if (s->failed) return;
+    ui_publish(s);
     if (!keyboard_profile_publish(s, plan)) {
         fail(s, "keyboard publication failed");
         return;
@@ -205,6 +209,7 @@ void presentation_publish(struct tomoe *s) {
     motion_publish(s, &plan->motion);
     presentation_input_publish(s, plan);
     settings_publish(s, plan);
+    sound_publish(s, plan);
     uint32_t previous_focus = s->focused;
     if (s->focused != plan->focused) tomoe_focus(s, plan->focused);
     if (s->focused == previous_focus) update_keyboard_focus(s);

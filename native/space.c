@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "ui.h"
 #include <poll.h>
 #include <unistd.h>
 
@@ -573,12 +574,16 @@ static void draw_scene(struct output *o, struct frame *data, const struct presen
         .box = { .width = data->buffer->width, .height = data->buffer->height },
         .color = { locked ? 0.3f : 0.05f, locked ? 0.1f : 0.05f, locked ? 0.1f : 0.05f, 1 },
         .blend_mode = BLEND_NONE });
-    (void)chrome;
+    bool frozen = !locked && screenshot_render_frozen(o, data);
     if (locked) {
         walk_scene(o->server, o->server->lock_tree, NULL, 0, 0, false, render_leaf, data);
+    } else if (frozen) {
     } else if (plan) {
+        static const int ui_band[] = { 1, 2, 5 };
+        int layer = 0;
         for (size_t i = 0; i < plan->target_count; i++) {
             const struct presentation_target *root = &plan->targets[i];
+            for (; layer < 3 && root->band >= ui_band[layer]; layer++) ui_render(o, data, plan, layer);
             if (!root->visible) continue;
             struct target target = root->target;
             target.fullscreen = root->fullscreen;
@@ -586,13 +591,21 @@ static void draw_scene(struct output *o, struct frame *data, const struct presen
             walk_presentation_root(o->server, plan, root, root->node, 0, 0, render_leaf, data);
         }
         ghosts_draw(o->server, data);
+        for (; layer < 3; layer++) ui_render(o, data, plan, layer);
         render_walk(o->server, o->server->drag_icon_tree, NULL, 0, 0, data);
     } else {
         struct node *child;
-        wl_list_for_each(child, &o->server->scene->children, link)
+        wl_list_for_each(child, &o->server->scene->children, link) {
+            if (child == o->server->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY])
+                ui_render(o, data, NULL, ZWLR_LAYER_SHELL_V1_LAYER_TOP);
             render_walk(o->server, child, NULL, 0, 0, data);
+            for (int layer = 0; layer < 2; layer++)
+                if (child == o->server->layer_tree[layer]) ui_render(o, data, NULL, layer);
+        }
     }
-    if (!locked && !plan) ghosts_draw(o->server, data);
+    if (!locked && !frozen && !plan) ghosts_draw(o->server, data);
+    if (!locked && !frozen) ui_render(o, data, plan, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY);
+    if (!locked && chrome && screenshot_on(o)) ui_render(o, data, plan, UI_LAYER_SCREENSHOT);
     if (cursors) render_cursor(o, data, plan);
 }
 static size_t ring_slot(const struct ring *ring, const struct buffer *buffer) {
@@ -1020,13 +1033,15 @@ struct surface *scanout_surface(struct output *o) {
     struct tomoe *s = o->server;
     struct scanout_data data = {0};
     physical_output_box(o, &data.output);
-    if (s->view_zoom != 1 || lock_active(s) || ghosts_visible(s)) return NULL;
+    if (s->view_zoom != 1 || lock_active(s) || s->screenshot || ghosts_visible(s) ||
+            ui_on_output(o, 2)) return NULL;
     walk_scene(s, s->scene, NULL, 0, 0, true, scanout_leaf, &data);
     struct surface *surface = data.surface;
     bool cursor_here = !s->cursor_hidden && s->pointer_x >= data.output.x &&
         s->pointer_y >= data.output.y && s->pointer_x < data.output.x + data.output.width &&
         s->pointer_y < data.output.y + data.output.height;
-    if (!surface || surface->current.transform != o->screen->transform) return NULL;
+    if (!surface || (!data.window && ui_on_output(o, 0)) ||
+            surface->current.transform != o->screen->transform) return NULL;
     struct dmabuf_attributes dmabuf;
     if (!surface->buffer || !buffer_get_dmabuf(surface->buffer, &dmabuf) ||
             surface->current.buffer_width != o->screen->width ||
@@ -1103,11 +1118,40 @@ static bool plane_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     return false;
 }
 
+static void plane_ui(struct plane_scan *scan, int layer) {
+    struct box boxes[16];
+    bool blurs[16] = {0};
+    size_t count = ui_claim(scan->o, layer, boxes, blurs, sizeof(boxes) / sizeof(*boxes));
+    if (count == SIZE_MAX) {
+        scan->overflow = true;
+        return;
+    }
+    int margin = scan->o->server->settings.blur_margin;
+    for (size_t i = 0; i < count; i++) {
+        struct box blur_box = {0};
+        bool has_blur = false;
+        if (blurs[i]) {
+            struct box area = { boxes[i].x - margin, boxes[i].y - margin,
+                boxes[i].width + 2 * margin, boxes[i].height + 2 * margin };
+            has_blur = box_intersection(&blur_box, &area, &scan->output);
+        }
+        plane_add(scan, boxes[i], boxes[i], boxes[i], blur_box, has_blur, NULL, NULL);
+    }
+}
+
 static void plane_collect(struct plane_scan *scan) {
     struct tomoe *s = scan->o->server;
     struct node *child;
-    wl_list_for_each(child, &s->scene->children, link)
+    wl_list_for_each(child, &s->scene->children, link) {
+        if (child == s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY])
+            plane_ui(scan, ZWLR_LAYER_SHELL_V1_LAYER_TOP);
         walk_scene(s, child, NULL, 0, 0, false, plane_leaf, scan);
+        if (child == s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND])
+            plane_ui(scan, ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND);
+        if (child == s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM])
+            plane_ui(scan, ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM);
+    }
+    plane_ui(scan, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY);
     walk_scene(s, s->drag_icon_tree, NULL, 0, 0, false, plane_leaf, scan);
 }
 
@@ -1229,7 +1273,7 @@ size_t planes_assign(struct output *o) {
     size_t eligible_count = 0;
     bool primary_alpha = o->ring.format.len &&
         o->ring.format.formats[0].format == DRM_FORMAT_ARGB8888;
-    if (capacity && s->view_zoom == 1 && !lock_active(s) &&
+    if (capacity && s->view_zoom == 1 && !lock_active(s) && !s->screenshot &&
             o->screen->transform == WL_OUTPUT_TRANSFORM_NORMAL &&
             !ghosts_visible(s) && !capture_wants_output(o)) {
         physical_output_box(o, &scan.output);
@@ -1433,6 +1477,8 @@ const char *tomoe_hit_test(struct tomoe *s, double x, double y) {
     struct surface *surface;
     double sx, sy, wx = x, wy = y;
     uint32_t id = physical_hit_test(s, x, y, &surface, &sx, &sy);
+    struct ui_hit ui;
+    bool shell_hit = ui_hit_at(s, x, y, &ui);
     screen_to_world(s, &wx, &wy);
     free(s->hit_result); s->hit_result = NULL;
     size_t length = 0;
@@ -1444,6 +1490,13 @@ const char *tomoe_hit_test(struct tomoe *s, double x, double y) {
     fprintf(out,
             "(:id %u :screen-x %.17fd0 :screen-y %.17fd0 :world-x %.17fd0 :world-y %.17fd0"
             " :surface-x %.17fd0 :surface-y %.17fd0", id, x, y, wx, wy, sx, sy);
+    if (shell_hit) {
+        fputs(" :ui (:owner ", out); quote(out, ui.owner);
+        fputs(" :surface ", out); quote(out, ui.name);
+        fputs(" :output ", out); quote(out, ui.output);
+        fputs(" :element ", out); if (ui.key) quote(out, ui.key); else fputs("nil", out);
+        fputc(')', out);
+    }
     fputc(')', out);
     if (fclose(out) != 0) {
         fail(s, "hit test result allocation failed");

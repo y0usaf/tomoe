@@ -1,7 +1,6 @@
 #include "desktop-session.h"
 
 #include "policy.h"
-#include "supervise.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -23,6 +22,13 @@
 #include <unistd.h>
 #include "wayland.h"
 
+struct execution;
+struct execution *tomoe_process_start_dependent(char *const argv[], char *const envp[], int *error);
+int tomoe_exec_fd(struct execution *job, int which);
+int tomoe_exec_poll(struct execution *job);
+int tomoe_exec_code(struct execution *job);
+int tomoe_exec_stop(struct execution *job, int signal);
+int tomoe_exec_release(struct execution *job);
 
 extern char **environ;
 

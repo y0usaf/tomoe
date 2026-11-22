@@ -212,11 +212,18 @@ staged outputs when PENDING and on the committed ones otherwise."
                                          (%double-float (getf properties :scale 1))
                                          (%double-float (getf properties :rotation 0))
                                          (getf translate :x 0) (getf translate :y 0)))
-      (error "Cannot stage window ~D visuals." id))
-))
+      (error "Cannot stage window ~D visuals." id))))
+
+(defun stage-native-sounds (sounds)
+  (unless (= 1 (%present-sounds)) (error "Cannot allocate candidate sounds."))
+  (loop for event in +sound-events+ for code from 0
+        for entry = (getf sounds event) do
+    (dolist (file (getf entry :files))
+      (let ((message (%present-sound code file (getf entry :gain))))
+        (when message (error "Cannot load sound ~A: ~A" file message))))))
 
 (defun configure-native-presentation (context overrides restack outputs-changed bindings-changed
-                                      grab motion keyboard-changed settings-changed)
+                                      grab motion keyboard-changed settings-changed sounds-changed)
   "Prepare all owned native state, then publish the accepted presentation once."
   (let ((failure nil))
     (%catch
@@ -239,6 +246,7 @@ staged outputs when PENDING and on the committed ones otherwise."
                                            (getf config :repeat-rate) (getf config :repeat-delay)))
              (error "Cannot prepare keyboard configuration (invalid XKB names or allocation failure)."))))
        (when settings-changed (stage-native-settings (getf context :settings)))
+       (when sounds-changed (stage-native-sounds (getf context :sounds)))
        (let ((keyboard-grab (getf context :keyboard-grab)))
          (unless (= 1 (%present-keyboard-grab (or (getf keyboard-grab :owner) "")
                                               (or (getf keyboard-grab :source-id) 0)
@@ -256,6 +264,7 @@ staged outputs when PENDING and on the committed ones otherwise."
        (dolist (id (or (getf context :stacking) '(0)))
          (unless (= 1 (%present-stack id))
            (error "Cannot stage window stacking.")))
+       (stage-native-ui (getf context :surface-plans))
        (let ((message (%present-apply)))
          (when message (error "~A" message))))
      (lambda (text) (setf failure text)))

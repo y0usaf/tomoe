@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "ui.h"
 
 #include <fcntl.h>
 #include <malloc.h>
@@ -73,6 +74,7 @@ struct tomoe *tomoe_create(const char *socket_name) {
     struct tomoe *s = calloc(1, sizeof(*s));
     if (!s) return NULL;
     s->input_at = animation_now();
+    s->settings.shader_hold = 3.0;
     wl_list_init(&s->windows); wl_list_init(&s->ghosts); wl_list_init(&s->layers); wl_list_init(&s->outputs);
     wl_list_init(&s->keyboards); wl_list_init(&s->input_devices); wl_list_init(&s->bindings);
     wl_list_init(&s->activation_tokens);
@@ -104,6 +106,7 @@ struct tomoe *tomoe_create(const char *socket_name) {
     s->next_binding_id = 1;
     s->next_device_id = 1;
     s->next_output_id = 1;
+    s->next_ui_callback_id = 1;
     s->view_zoom = 1.0;
     s->cursor_motion.current[0] = s->cursor_motion.current[3] = 1;
     s->cursor_motion.target[0] = s->cursor_motion.target[3] = 1;
@@ -177,10 +180,14 @@ void tomoe_destroy(struct tomoe *s) {
     if (!s) return;
     s->stopping = true;
     xwayland_finish(s);
+    sound_finish(s);
     finish_captures(s);
     presentation_finish(s);
     lock_finish(s);
+    screenshot_finish(s);
     effects_finish(s);
+    ui_input_finish(s);
+    ui_finish(s);
     activation_finish(s);
     xdg_shell_finish(s);
     if (s->display) wl_display_destroy_clients(s->display);

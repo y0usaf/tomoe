@@ -1,20 +1,31 @@
 #include "internal.h"
 #include "drm.h"
+#include "ui.h"
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES2/gl2ext.h>
 #include <GLES3/gl3.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <gbm.h>
 #include <malloc.h>
 #include <poll.h>
 #include <pthread.h>
+#include <signal.h>
+#include <spawn.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+extern char **environ;
 
 enum {
     FENCE_WAIT_MS = 1000,
     HELD_FRAME_LIMIT = 4,
+    WARM_SIZE = 16,
+    WARM_SOURCE_LIMIT = 1 << 20,
+    WARM_NAME = sizeof("0123456789abcdef.glsl"),
 };
 
 struct held_frame {
@@ -68,6 +79,9 @@ struct render {
     EGLContext context;
     struct format_set texture_formats, render_formats, shm_formats;
     struct program programs[PROGRAM_COUNT];
+    struct shader *shaders;
+    size_t shader_count;
+    uint64_t shader_clock;
     struct wl_list images, bos;
     bool read_bgra;
     PFNEGLCREATEIMAGEKHRPROC create_image;
@@ -83,7 +97,17 @@ struct render {
     struct pass passes[PASS_POOL];
     bool pass_used[PASS_POOL];
     uint64_t gl_calls, quads, runs, fragments, uploads, upload_bytes;
-    char *node;
+    char *node, *exe, *warm_dir, *driver;
+    bool binaries;
+    struct shader_job *jobs;
+};
+
+struct shader_job {
+    struct shader_job *next;
+    char name[WARM_NAME];
+    pid_t pid;
+    uint64_t deadline;
+    bool failed;
 };
 
 #define GL(r, statement) ((r)->gl_calls++, (void)(statement))
@@ -408,7 +432,7 @@ static const char up_source[] =
     "    gl_FragColor = c;\n"
     "}\n";
 
-static const char glass_vertex_source[] =
+static const char shader_vertex_source[] =
     "#version 300 es\n"
     "in vec2 pos;\n"
     "in vec2 local;\n"
@@ -418,39 +442,60 @@ static const char glass_vertex_source[] =
     "    gl_Position = vec4(pos, 0.0, 1.0);\n"
     "}\n";
 
-static const char glass_fragment_source[] =
+static const char shader_prelude[] =
     "#version 300 es\n"
     "precision highp float;\n"
+    "precision highp int;\n"
     "uniform vec3 iResolution;\n"
+    "uniform float iTime;\n"
+    "uniform int iFrame;\n"
+    "uniform vec4 iMouse;\n"
+    "uniform int iTrailCount;\n"
+    "uniform vec4 iTrail[64];\n"
     "uniform vec4 iData[48];\n"
+    "uniform int iWindowCount;\n"
+    "uniform vec4 iWindow[8];\n"
+    "uniform vec4 iSelection[4];\n"
+    "uniform sampler2D tomoe_marks;\n"
+    "uniform vec4 iMarksBox;\n"
     "uniform sampler2D tomoe_beneath;\n"
     "uniform vec4 tomoe_beneath_box;\n"
-    "uniform sampler2D tomoe_glass;\n"
-    "in vec2 v_local;\n"
-    "out vec4 tomoe_color;\n"
     "vec4 beneath(vec2 at) {\n"
     "    return texture(tomoe_beneath, (at - tomoe_beneath_box.xy) * tomoe_beneath_box.zw);\n"
     "}\n"
-    "void main() {\n"
-    "    vec4 lens = texture(tomoe_glass, v_local / iResolution.xy);\n"
-    "    vec2 normal = lens.rg * 2.0 - 1.0;\n"
-    "    vec2 bend = normal * iData[0].x;\n"
-    "    vec2 at = gl_FragCoord.xy;\n"
-    "    vec3 seen = vec3(beneath(at + bend * 1.12).r, beneath(at + bend).g,\n"
-    "        beneath(at + bend * 0.88).b);\n"
-    "    vec3 behind = beneath(at - v_local + iResolution.xy * 0.5).rgb;\n"
-    "    float luma = dot(behind, vec3(0.2126, 0.7152, 0.0722));\n"
-    "    float dark = 1.0 - smoothstep(0.42, 0.50, luma);\n"
-    "    vec3 smoked = seen * vec3(0.54, 0.56, 0.66);\n"
-    "    vec3 frost = mix(seen, vec3(0.94, 0.95, 0.99), 0.85);\n"
-    "    vec3 body = mix(smoked, frost, dark);\n"
-    "    body += vec3(max(dot(normal, vec2(-0.55, -0.83)), 0.0) * 0.12);\n"
-    "    float ink = lens.b * 2.0 - 1.0;\n"
-    "    float edge = abs(ink);\n"
-    "    vec3 rim = ink < 0.0 ? vec3(0.0) : vec3(1.0);\n"
-    "    float gain = mix(0.45, 1.0, ink < 0.0 ? 1.0 - dark : dark);\n"
-    "    tomoe_color = vec4(body * lens.a + rim * edge * gain, lens.a + edge * gain);\n"
+    "uniform sampler2D tomoe_frost;\n"
+    "uniform vec4 tomoe_frost_box;\n"
+    "vec4 frost(vec2 at) {\n"
+    "    return texture(tomoe_frost, (at - tomoe_frost_box.xy) * tomoe_frost_box.zw);\n"
+    "}\n"
+    "vec4 markvec(vec2 at) {\n"
+    "    if (iMarksBox.z <= 0.0 || iMarksBox.w <= 0.0) return vec4(0.0);\n"
+    "    vec2 uv = vec2((at.x - iMarksBox.x) / iMarksBox.z,\n"
+    "        (iMarksBox.y + iMarksBox.w - at.y) / iMarksBox.w);\n"
+    "    if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) return vec4(0.0);\n"
+    "    return texture(tomoe_marks, uv);\n"
+    "}\n"
+    "float marked(vec2 at) { return markvec(at).a; }\n"
+    "in vec2 v_local;\n"
+    "out vec4 tomoe_color;\n"
+    "#line 1\n";
+
+static const char shader_main[] =
+    "\nvoid main() {\n"
+    "    mainImage(tomoe_color, vec2(v_local.x, iResolution.y - v_local.y));\n"
     "}\n";
+
+enum { SHADER_CACHE_MAX = 32 };
+
+struct shader {
+    struct program program;
+    struct render *r;
+    struct shader *next;
+    char *source;
+    uint64_t hash, used;
+    int refs;
+    bool cached;
+};
 
 static const float transforms[][4] = {
     [WL_OUTPUT_TRANSFORM_NORMAL] = { 1, 0, 0, 1 },
@@ -556,12 +601,22 @@ static void program_locations(struct program *p) {
     p->pos = glGetAttribLocation(p->id, "pos");
     p->local = glGetAttribLocation(p->id, "local");
     p->texcoord = glGetAttribLocation(p->id, "texcoord");
-    const char *names[] = { "tex", "alpha", "opaque", "size", "radius", "clip", "half_pixel",
-        "offset", "iResolution", "tomoe_beneath", "lut", "tint", "iData", "tomoe_beneath_box",
-        "tomoe_glass", "grain", "vibrancy" };
-    GLint *slots[] = { &p->tex, &p->alpha, &p->opaque, &p->size, &p->radius, &p->clip,
-        &p->half_pixel, &p->offset, &p->resolution, &p->channel, &p->lut, &p->tint, &p->data,
-        &p->beneath, &p->glass, &p->grain, &p->vibrancy };
+    const char *names[] = { "tex", "alpha", "opaque", "size", "radius", "clip", "width", "kind",
+        "color", "range", "power", "half_pixel", "offset", "iResolution", "iTime", "iFrame", "iMouse", "tomoe_beneath",
+        "lut", "iTrail", "iTrailCount", "tint", "iBox", "iMin", "iMax", "iDrag", "tex_prev",
+        "tex_next", "geo_to_tex", "geo_to_tex_prev", "geo_to_tex_next", "curr_geo_to_prev_geo",
+        "curr_geo_to_next_geo", "progress", "clamped_progress", "random_seed", "iPath",
+        "iPathCount", "iData", "iWindow", "iWindowCount", "tomoe_beneath_box", "iSelection",
+        "tomoe_marks", "iMarksBox", "tomoe_frost", "tomoe_frost_box", "grain", "vibrancy" };
+    GLint *slots[] = { &p->tex, &p->alpha, &p->opaque, &p->size, &p->radius, &p->clip, &p->width,
+        &p->kind, &p->color, &p->range, &p->power, &p->half_pixel, &p->offset, &p->resolution,
+        &p->time, &p->frame, &p->mouse, &p->channel, &p->lut, &p->trail, &p->trail_count, &p->tint,
+        &p->box, &p->min_ndc, &p->max_ndc, &p->drag, &p->tex_prev, &p->tex_next,
+        &p->geo_to_tex, &p->geo_to_tex_prev, &p->geo_to_tex_next, &p->curr_geo_to_prev_geo,
+        &p->curr_geo_to_next_geo, &p->progress, &p->clamped_progress, &p->random_seed,
+        &p->path, &p->path_count, &p->data, &p->windows, &p->window_count, &p->beneath,
+        &p->selection, &p->marks, &p->marks_box, &p->frost, &p->frost_box, &p->grain,
+        &p->vibrancy };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
         *slots[i] = glGetUniformLocation(p->id, names[i]);
 }
@@ -617,6 +672,120 @@ static const struct builtin {
     { PROGRAM_UP, false, "", up_source },
 };
 
+enum shader_await { SHADER_RUNNING, SHADER_READY, SHADER_NO_HELPER, SHADER_FAILED };
+
+static uint64_t fnv(uint64_t hash, const char *text);
+static void warm_name(const char *source, char name[WARM_NAME]);
+static bool warm_remember(struct render *r, const char *source, const char *name);
+static bool warm_load(struct render *r, const char *name, struct program *p);
+static enum shader_await shader_await(struct render *r, const char *name,
+    struct program *program);
+static void jobs_stop(struct render *r);
+
+static EGLContext compile_begin(struct render *r) {
+    current(r);
+    return r->context;
+}
+
+static void compile_end(struct render *r, EGLContext scratch) {
+    if (scratch == EGL_NO_CONTEXT) return;
+    glFinish();
+    malloc_trim(0);
+}
+
+static void shader_cache_prune(struct render *r) {
+    while (r->shader_count > SHADER_CACHE_MAX) {
+        struct shader **victim = NULL;
+        for (struct shader **link = &r->shaders; *link; link = &(*link)->next)
+            if ((*link)->refs == 0 && (!victim || (*link)->used < (*victim)->used))
+                victim = link;
+        if (!victim) break;
+        struct shader *evict = *victim;
+        *victim = evict->next;
+        r->shader_count--;
+        current(r);
+        glDeleteProgram(evict->program.id);
+        free(evict->source);
+        free(evict);
+    }
+}
+
+static struct program *shader_create(struct render *r, const char *source, bool helper,
+        bool *pending) {
+    bool waiting = false;
+    if (!pending) pending = &waiting;
+    *pending = false;
+    uint64_t hash = fnv(0xcbf29ce484222325ull, source);
+    for (struct shader *cached = r->shaders; cached; cached = cached->next) {
+        if (cached->hash == hash && cached->source && !strcmp(cached->source, source)) {
+            cached->refs++;
+            cached->used = ++r->shader_clock;
+            return &cached->program;
+        }
+    }
+    struct shader *shader = calloc(1, sizeof(*shader));
+    if (!shader) return NULL;
+    const char *vertex[] = { shader_vertex_source };
+    const char *fragment[] = { shader_prelude, source, shader_main };
+    char name[WARM_NAME];
+    warm_name(source, name);
+    bool handable = warm_remember(r, source, name);
+    current(r);
+    bool linked = warm_load(r, name, &shader->program);
+    if (!linked && !(helper && handable && r->warm_dir && r->binaries)) {
+        linked = link_sources(&shader->program, vertex, 1, fragment, 3);
+    } else if (!linked) {
+        enum shader_await awaited = shader_await(r, name, &shader->program);
+        if (awaited == SHADER_RUNNING) *pending = true;
+        else if (awaited == SHADER_READY) linked = true;
+        else if (awaited == SHADER_NO_HELPER)
+            linked = link_sources(&shader->program, vertex, 1, fragment, 3);
+    }
+    if (linked) {
+        glFinish();
+        malloc_trim(0);
+        shader->r = r;
+        shader->source = strdup(source);
+        if (shader->source) {
+            shader->hash = hash;
+            shader->used = ++r->shader_clock;
+            shader->refs = 1;
+            shader->cached = true;
+            shader->next = r->shaders;
+            r->shaders = shader;
+            r->shader_count++;
+            shader_cache_prune(r);
+        }
+        return &shader->program;
+    }
+    free(shader);
+    return NULL;
+}
+
+struct program *render_shader_create(struct render *r, const char *source, bool *pending) {
+    return shader_create(r, source, true, pending);
+}
+
+struct program *render_shader_compile(struct render *r, const char *source) {
+    bool pending;
+    return shader_create(r, source, false, &pending);
+}
+
+void render_shader_destroy(struct program *program) {
+    if (!program) return;
+    struct shader *shader = wl_container_of(program, shader, program);
+    if (shader->cached) {
+        if (shader->refs > 0) shader->refs--;
+        shader_cache_prune(shader->r);
+        return;
+    }
+    current(shader->r);
+    glDeleteProgram(program->id);
+    free(shader);
+}
+
+enum { WINDOW_SHADER_LIMIT = 65536, WINDOW_SHADER_ENTRY = 64 };
+
 static void render_quad(struct render *r, struct program *p, const float pos[8],
         const float local[8], const float texcoords[8]) {
     r->scene.attributes = false;
@@ -663,6 +832,27 @@ static bool bounds_overlap(const struct rect *bounds, const struct rect *clip) {
     return bounds->x1 < bounds->x2 && bounds->y1 < bounds->y2 &&
         bounds->x1 < clip->x2 && bounds->x2 > clip->x1 &&
         bounds->y1 < clip->y2 && bounds->y2 > clip->y1;
+}
+
+void pass_triangles(struct pass *pass, struct program *p, const float *pos, size_t vertices) {
+    if (!pass || !p || !p->id || vertices < 3 || p->pos < 0) return;
+    glVertexAttribPointer(p->pos, 2, GL_FLOAT, GL_FALSE, 0, pos);
+    glEnableVertexAttribArray(p->pos);
+    if (!pass->clip) {
+        glDrawArrays(GL_TRIANGLES, 0, (GLsizei)vertices);
+    } else {
+        struct rect bounds = position_bounds(pass, pos, vertices);
+        int count = 0;
+        const struct rect *rects = region_rectangles(pass->clip, &count);
+        glEnable(GL_SCISSOR_TEST);
+        for (int i = 0; i < count; i++) {
+            if (!bounds_overlap(&bounds, &rects[i])) continue;
+            glScissor(rects[i].x1, rects[i].y1, rects[i].x2 - rects[i].x1, rects[i].y2 - rects[i].y1);
+            glDrawArrays(GL_TRIANGLES, 0, (GLsizei)vertices);
+        }
+        glDisable(GL_SCISSOR_TEST);
+    }
+    glDisableVertexAttribArray(p->pos);
 }
 
 static uint64_t quad_pixels(const struct pass *pass, const float pos[8],
@@ -1666,6 +1856,7 @@ static int stall_fence(struct render *r) {
     return fds[0];
 }
 
+
 static int flush_fence(struct render *r) {
     EGLint attribs[] = { EGL_NONE };
     EGLSyncKHR sync = r->create_sync(r->display, EGL_SYNC_NATIVE_FENCE_ANDROID, attribs);
@@ -2013,15 +2204,24 @@ bool pass_record(struct pass *pass, const struct texture_options *texture, struc
     op.hash = mix(0xcbf29ce484222325ull, params, count * sizeof(*params));
     if (texture) {
         const struct surface *surface = texture->surface;
+        const struct ui_surface *ui = texture->ui && texture->content_seq ? texture->ui : NULL;
         double fields[] = { texture->src_box.x, texture->src_box.y, texture->src_box.width,
             texture->src_box.height, texture->transform, texture->alpha ? *texture->alpha : 1,
             texture->filter_mode, texture->blend_mode, texture_of(texture->texture)->alpha,
-            surface ? 0 : (double)texture->texture->serial };
+            surface || ui ? 0 : (double)texture->texture->serial };
         op.hash = mix(op.hash, fields, sizeof(fields));
         op.hash = mix(op.hash, &surface, sizeof(surface));
         if (surface) {
             op.surface = surface;
             op.seq = surface->commit_seq;
+            op.src = texture->src_box;
+            if (op.src.width <= 0 || op.src.height <= 0)
+                op.src = (struct fbox){ 0, 0, texture->texture->width, texture->texture->height };
+            op.mapped = texture->transform == WL_OUTPUT_TRANSFORM_NORMAL;
+        } else if (ui) {
+            op.hash = mix(op.hash, &texture->texture, sizeof(texture->texture));
+            op.ui = ui;
+            op.content_seq = texture->content_seq;
             op.src = texture->src_box;
             if (op.src.width <= 0 || op.src.height <= 0)
                 op.src = (struct fbox){ 0, 0, texture->texture->width, texture->texture->height };
@@ -2073,7 +2273,24 @@ static void damage_box(struct region *out, struct box box) {
 
 static void damage_content(struct region *out, const struct op *was, const struct op *op) {
     struct box changed;
-    bool known = op->mapped && surface_damage_since(op->surface, was->seq, &changed);
+    if (op->marks) {
+        struct region marks;
+        region_init(&marks);
+        if (op->mapped && op->src.width == op->box.width && op->src.height == op->box.height &&
+                screenshot_marks_since(op->marks, was->content_seq, &marks)) {
+            region_translate(&marks, op->box.x - (int)op->src.x, op->box.y - (int)op->src.y);
+            region_intersect_rect(&marks, &marks, op->box.x, op->box.y,
+                (uint32_t)op->box.width, (uint32_t)op->box.height);
+            region_union(out, out, &marks);
+        } else {
+            damage_box(out, op->box);
+        }
+        region_fini(&marks);
+        return;
+    }
+    bool known = op->mapped && (op->content_seq
+        ? ui_damage_since(op->ui, was->content_seq, &changed)
+        : surface_damage_since(op->surface, was->seq, &changed));
     if (!known) {
         damage_box(out, op->box);
         return;
@@ -2101,7 +2318,8 @@ static bool backdrop_moved(const struct oplist *old, const struct oplist *now,
         if (match[j] == SIZE_MAX) return true;
         const struct op *before = &old->ops[match[j]];
         if (under->blur && under->key != before->key) return true;
-        bool differs = under->surface && under->seq != before->seq;
+        bool differs = under->surface ? under->seq != before->seq :
+            (under->content_seq || under->marks) && under->content_seq != before->content_seq;
         if (!differs) continue;
         struct region changed;
         region_init(&changed);
@@ -2192,7 +2410,8 @@ bool oplist_damage(struct oplist *old, struct oplist *now, struct region *out) {
         if (match[i] == SIZE_MAX) region_union(out, out, &op->visible);
         else if (op->key != old->ops[match[i]].key || (op->blur && !op->key))
             region_union(out, out, &op->visible);
-        else if (op->surface && op->seq != old->ops[match[i]].seq) {
+        else if ((op->surface && op->seq != old->ops[match[i]].seq) ||
+                ((op->content_seq || op->marks) && op->content_seq != old->ops[match[i]].content_seq)) {
             region_clear(&changed);
             damage_content(&changed, &old->ops[match[i]], op);
             region_intersect(&changed, &changed, &op->visible);
@@ -2285,6 +2504,7 @@ void render_counters(struct render *r, struct render_counters *out) {
 }
 
 static void render_free(struct render *r) {
+    jobs_stop(r);
     if (r->held_count)
         tomoe_log(LOG_ERROR, "tomoe: the renderer is closing with %d frame(s) still on the GPU",
             r->held_count);
@@ -2312,6 +2532,14 @@ static void render_free(struct render *r) {
     }
     if (r->context) {
         current(r);
+        while (r->shaders) {
+            struct shader *s = r->shaders;
+            r->shaders = s->next;
+            glDeleteProgram(s->program.id);
+            free(s->source);
+            free(s);
+        }
+        r->shader_count = 0;
         for (int i = 0; i < PROGRAM_COUNT; i++) glDeleteProgram(r->programs[i].id);
         if (r->scene.vbo) glDeleteBuffers(1, &r->scene.vbo);
         if (r->scene.dummy) glDeleteTextures(1, &r->scene.dummy);
@@ -2330,6 +2558,9 @@ static void render_free(struct render *r) {
     free(r->scene.prev);
     free(r->scene.vertex);
     free(r->node);
+    free(r->exe);
+    free(r->warm_dir);
+    free(r->driver);
     free(r);
 }
 
@@ -2518,9 +2749,6 @@ static bool programs_init(struct render *r) {
     if (!link_sdf(&r->programs[PROGRAM_SDF])) return false;
     if (!link_trail(&r->programs[PROGRAM_TRAIL]))
         tomoe_log(LOG_ERROR, "tomoe: the pointer trail's program did not link");
-    const char *gv[] = { glass_vertex_source };
-    const char *gf[] = { glass_fragment_source };
-    link_sources(&r->programs[PROGRAM_GLASS], gv, 1, gf, 1);
     for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++)
         if ((external || !builtins[i].external) &&
                 !link_program(&r->programs[builtins[i].kind], builtins[i].prelude, builtins[i].body))
@@ -2571,10 +2799,9 @@ failed:
 }
 
 static bool programs_ready(struct render *r) {
-    current(r);
+    EGLContext scratch = compile_begin(r);
     bool linked = programs_init(r);
-    glFinish();
-    malloc_trim(0);
+    compile_end(r, scratch);
     if (!linked) {
         tomoe_log(LOG_ERROR, "tomoe: shader setup failed");
         return false;
@@ -2583,6 +2810,390 @@ static bool programs_ready(struct render *r) {
     r->timeline = !r->stall_test && r->dup_fence && r->wait_sync &&
         drm_cap(r->fd, DRM_CAP_SYNCOBJ_TIMELINE, &timeline) && timeline;
     return true;
+}
+
+static uint64_t fnv(uint64_t hash, const char *text) {
+    for (const unsigned char *p = (const unsigned char *)text; *p; p++)
+        hash = (hash ^ *p) * 0x100000001b3ull;
+    return (hash ^ 0xff) * 0x100000001b3ull;
+}
+
+static void warm_setup(struct render *r) {
+    char exe[PATH_MAX];
+    ssize_t length = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    const char *cache = getenv("XDG_CACHE_HOME"), *home = getenv("HOME");
+    char *base = NULL;
+    if (length <= 0 || !r->node) return;
+    exe[length] = '\0';
+    if (cache && *cache == '/') base = strdup(cache);
+    else if (home && *home == '/' && asprintf(&base, "%s/.cache", home) < 0) base = NULL;
+    if (!base) return;
+    char *tomoe = NULL, *dir = NULL;
+    if (asprintf(&tomoe, "%s/tomoe", base) >= 0 && asprintf(&dir, "%s/shaders", tomoe) >= 0 &&
+            (mkdir(base, 0700) == 0 || errno == EEXIST) &&
+            (mkdir(tomoe, 0700) == 0 || errno == EEXIST) &&
+            (mkdir(dir, 0700) == 0 || errno == EEXIST)) {
+        const char *slash = strrchr(exe, '/');
+        if (asprintf(&r->driver, "%s\n%s\n%s\n%s", (const char *)glGetString(GL_VENDOR),
+                (const char *)glGetString(GL_RENDERER), (const char *)glGetString(GL_VERSION),
+                slash ? slash + 1 : exe) >= 0 && (r->exe = strdup(exe))) {
+            r->warm_dir = dir;
+            dir = NULL;
+            GLint formats = 0;
+            glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &formats);
+            r->binaries = formats > 0;
+        } else {
+            free(r->driver);
+            r->driver = NULL;
+        }
+    }
+    free(dir);
+    free(tomoe);
+    free(base);
+}
+
+static int shader_file(const struct dirent *entry) {
+    size_t length = strlen(entry->d_name);
+    return length > 5 && !strcmp(entry->d_name + length - 5, ".glsl");
+}
+
+static void warm_name(const char *source, char name[WARM_NAME]) {
+    snprintf(name, WARM_NAME, "%016llx.glsl",
+        (unsigned long long)fnv(0xcbf29ce484222325ull, source));
+}
+
+static char *warm_binary_path(const char *dir, const char *name) {
+    char *path = NULL;
+    int stem = (int)(strlen(name) - strlen(".glsl"));
+    return asprintf(&path, "%s/%.*s.bin", dir, stem, name) < 0 ? NULL : path;
+}
+
+static bool warm_remember(struct render *r, const char *source, const char *name) {
+    char *path = NULL, *temp = NULL;
+    if (!r->warm_dir || strlen(source) > WARM_SOURCE_LIMIT ||
+            asprintf(&path, "%s/%s", r->warm_dir, name) < 0) return false;
+    if (access(path, F_OK) != 0 && asprintf(&temp, "%s.%ld", path, (long)getpid()) >= 0) {
+        FILE *out = fopen(temp, "we");
+        bool ok = out && fputs(source, out) >= 0;
+        if (out && fclose(out) != 0) ok = false;
+        if (!ok || rename(temp, path) != 0) unlink(temp);
+    }
+    bool there = access(path, F_OK) == 0;
+    free(temp);
+    free(path);
+    return there;
+}
+
+static uint64_t warm_now_ns(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+}
+
+static struct shader_job *job_find(struct render *r, const char *name) {
+    for (struct shader_job *job = r->jobs; job; job = job->next)
+        if (!strcmp(job->name, name)) return job;
+    return NULL;
+}
+
+static void job_forget(struct render *r, struct shader_job *job) {
+    for (struct shader_job **link = &r->jobs; *link; link = &(*link)->next)
+        if (*link == job) {
+            *link = job->next;
+            free(job);
+            return;
+        }
+}
+
+static void job_stop(struct shader_job *job) {
+    if (job->pid <= 0) return;
+    kill(job->pid, SIGKILL);
+    while (waitpid(job->pid, NULL, 0) < 0 && errno == EINTR) {}
+    job->pid = 0;
+}
+
+static void jobs_stop(struct render *r) {
+    struct shader_job *job;
+    for (job = r->jobs; job; job = job->next) job_stop(job);
+    while ((job = r->jobs)) {
+        r->jobs = job->next;
+        free(job);
+    }
+}
+
+static struct shader_job *job_start(struct render *r, const char *name) {
+    struct shader_job *job = calloc(1, sizeof(*job));
+    if (!job) return NULL;
+    snprintf(job->name, sizeof(job->name), "%s", name);
+    char flag[] = "--warm-shaders";
+    char *argv[] = { r->exe, flag, r->node, r->warm_dir, "", job->name, NULL };
+    posix_spawn_file_actions_t actions;
+    pid_t child = 0;
+    if (posix_spawn_file_actions_init(&actions) != 0) {
+        free(job);
+        return NULL;
+    }
+    posix_spawn_file_actions_addclosefrom_np(&actions, 3);
+    int spawned = posix_spawn(&child, r->exe, &actions, NULL, argv, environ);
+    posix_spawn_file_actions_destroy(&actions);
+    if (spawned != 0) {
+        free(job);
+        return NULL;
+    }
+    job->pid = child;
+    job->deadline = warm_now_ns() + (uint64_t)TOMOE_SHADER_COPY_MS * 1000000ull;
+    job->next = r->jobs;
+    r->jobs = job;
+    return job;
+}
+
+bool render_shader_reap(struct render *r) {
+    bool busy = false;
+    for (struct shader_job *job = r->jobs, *next; job; job = next) {
+        next = job->next;
+        if (job->pid <= 0) continue;
+        int status = 0;
+        pid_t done = waitpid(job->pid, &status, WNOHANG);
+        bool running = done == 0 || (done < 0 && errno == EINTR);
+        if (running && warm_now_ns() < job->deadline) {
+            busy = true;
+            continue;
+        }
+        if (running) {
+            job_stop(job);
+            if (!job->name[0]) {
+                tomoe_log(LOG_ERROR, "tomoe: the shader prewarm did not finish in %d s",
+                    TOMOE_SHADER_COPY_MS / 1000);
+                job_forget(r, job);
+                continue;
+            }
+            job->failed = true;
+            tomoe_log(LOG_ERROR, "tomoe: a shader copy did not finish in %d s: %s",
+                TOMOE_SHADER_COPY_MS / 1000, job->name);
+            continue;
+        }
+        job->pid = 0;
+        job_forget(r, job);
+    }
+    return busy;
+}
+
+static enum shader_await shader_await(struct render *r, const char *name,
+        struct program *program) {
+    struct shader_job *job = job_find(r, name);
+    if (job && job->failed) return SHADER_FAILED;
+    if (!job && !(job = job_start(r, name))) return SHADER_NO_HELPER;
+    if (job->pid > 0) {
+        int status = 0;
+        pid_t child = job->pid, done = waitpid(child, &status, WNOHANG);
+        if (done == 0) {
+            if (warm_now_ns() < job->deadline) return SHADER_RUNNING;
+            job_stop(job);
+            job->failed = true;
+            tomoe_log(LOG_ERROR, "tomoe: a shader copy did not finish in %d s: %s",
+                TOMOE_SHADER_COPY_MS / 1000, name);
+            return SHADER_FAILED;
+        }
+        if (done < 0 && errno == EINTR) return SHADER_RUNNING;
+        job->pid = 0;
+        if (done != child || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+            job->failed = true;
+            tomoe_log(LOG_ERROR, "tomoe: a shader copy could not compile %s", name);
+            return SHADER_FAILED;
+        }
+    }
+    if (!warm_load(r, name, program)) {
+        job->failed = true;
+        tomoe_log(LOG_ERROR, "tomoe: the copied shader does not load: %s", name);
+        return SHADER_FAILED;
+    }
+    job_forget(r, job);
+    return SHADER_READY;
+}
+
+static bool warm_spawn(struct render *r, const char *marker) {
+    char flag[] = "--warm-shaders";
+    char *argv[] = { r->exe, flag, r->node, r->warm_dir, (char *)marker, "", NULL };
+    struct shader_job *job = calloc(1, sizeof(*job));
+    if (!job) return false;
+    posix_spawn_file_actions_t actions;
+    pid_t child = 0;
+    if (posix_spawn_file_actions_init(&actions) != 0) {
+        free(job);
+        return false;
+    }
+    posix_spawn_file_actions_addclosefrom_np(&actions, 3);
+    int spawned = posix_spawn(&child, r->exe, &actions, NULL, argv, environ);
+    posix_spawn_file_actions_destroy(&actions);
+    if (spawned != 0) {
+        free(job);
+        return false;
+    }
+    job->pid = child;
+    job->deadline = warm_now_ns() + (uint64_t)TOMOE_SHADER_COPY_MS * 1000000ull;
+    job->next = r->jobs;
+    r->jobs = job;
+    return true;
+}
+
+static void warm(struct render *r) {
+    if (!r->warm_dir) return;
+    uint64_t hash = fnv(0xcbf29ce484222325ull, r->driver);
+    for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++)
+        hash = fnv(fnv(fnv(fnv(fnv(hash, builtins[i].prelude), fragment_precision),
+            rounding_source), builtins[i].body), vertex_source);
+    hash = fnv(fnv(fnv(fnv(hash, scene_vertex_source), scene_prelude), rounding_source),
+        scene_source);
+    hash = fnv(fnv(fnv(fnv(hash, sdf_vertex_source), sdf_prelude), rounding_source), sdf_source);
+    hash = fnv(fnv(fnv(hash, shader_vertex_source), shader_prelude), shader_main);
+    struct dirent **entries = NULL;
+    int count = scandir(r->warm_dir, &entries, shader_file, alphasort);
+    for (int i = 0; i < count; i++) {
+        hash = fnv(hash, entries[i]->d_name);
+        free(entries[i]);
+    }
+    free(entries);
+    char *marker = NULL;
+    if (asprintf(&marker, "%s/%016llx.warm", r->warm_dir, (unsigned long long)hash) < 0) return;
+    if (access(marker, F_OK) != 0) warm_spawn(r, marker);
+    free(marker);
+}
+
+static void warm_save(const char *dir, const char *name, const struct program *p) {
+    GLint length = 0;
+    glGetProgramiv(p->id, GL_PROGRAM_BINARY_LENGTH, &length);
+    char *path = length > 0 ? warm_binary_path(dir, name) : NULL, *temp = NULL;
+    uint8_t *data = path ? malloc(sizeof(GLenum) + (size_t)length) : NULL;
+    GLenum format = 0;
+    if (data && asprintf(&temp, "%s.%ld", path, (long)getpid()) >= 0) {
+        glGetProgramBinary(p->id, length, &length, &format, data + sizeof(format));
+        memcpy(data, &format, sizeof(format));
+        size_t size = sizeof(format) + (size_t)length;
+        FILE *out = fopen(temp, "we");
+        bool ok = out && fwrite(data, 1, size, out) == size;
+        if (out && fclose(out) != 0) ok = false;
+        if (!ok || rename(temp, path) != 0) unlink(temp);
+    }
+    free(temp);
+    free(data);
+    free(path);
+}
+
+static bool warm_load(struct render *r, const char *name, struct program *p) {
+    char *path = r->warm_dir && r->binaries ? warm_binary_path(r->warm_dir, name) : NULL;
+    FILE *in = path ? fopen(path, "re") : NULL;
+    free(path);
+    if (!in) return false;
+    struct stat st;
+    uint8_t *data = fstat(fileno(in), &st) == 0 && st.st_size > (off_t)sizeof(GLenum) ?
+        malloc((size_t)st.st_size) : NULL;
+    bool loaded = data && fread(data, 1, (size_t)st.st_size, in) == (size_t)st.st_size;
+    fclose(in);
+    if (loaded) {
+        GLenum format;
+        memcpy(&format, data, sizeof(format));
+        p->id = glCreateProgram();
+        glProgramBinary(p->id, format, data + sizeof(format),
+            (GLsizei)(st.st_size - (off_t)sizeof(format)));
+        GLint ok = 0;
+        glGetProgramiv(p->id, GL_LINK_STATUS, &ok);
+        loaded = ok;
+        if (loaded) program_locations(p);
+        else {
+            glDeleteProgram(p->id);
+            p->id = 0;
+            while (glGetError() != GL_NO_ERROR) {}
+        }
+    }
+    free(data);
+    return loaded;
+}
+
+static void warm_draws(struct render *r, struct program **shaders, int count) {
+    const struct format *format = format_set_get(&r->render_formats, DRM_FORMAT_XRGB8888);
+    struct buffer *target = format ? render_allocate(r, WARM_SIZE, WARM_SIZE, format) : NULL;
+    if (!target) return;
+    static const uint32_t pixels[WARM_SIZE * WARM_SIZE];
+    struct texture *textures[] = {
+        texture_from_pixels(r, DRM_FORMAT_ARGB8888, WARM_SIZE * 4, WARM_SIZE, WARM_SIZE, pixels),
+        texture_from_pixels(r, DRM_FORMAT_XRGB8888, WARM_SIZE * 4, WARM_SIZE, WARM_SIZE, pixels),
+    };
+    struct pass *pass = render_begin(r, target, NULL, 0);
+    if (pass) {
+        pass_add_rect(pass, &(struct rect_options){ .color = { 0, 0, 0, 1 } });
+        pass_add_rect(pass, &(struct rect_options){ .color = { 0, 0, 0, 0.5f } });
+        const float half = 0.5f;
+        for (int i = 0; i < 2; i++)
+            for (int lut = 0; lut < 2; lut++)
+                for (int blended = 0; blended < 2; blended++)
+                    if (textures[i]) pass_add_texture(pass, &(struct texture_options){
+                        .texture = textures[i], .lut = lut ? textures[0] : NULL,
+                        .alpha = blended ? &half : NULL });
+        static const float full[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
+        pass_flush(pass);
+        glEnable(GL_BLEND);
+        for (int i = 0; i < count; i++) {
+            glUseProgram(shaders[i]->id);
+            glUniform3f(shaders[i]->resolution, WARM_SIZE, WARM_SIZE, 1);
+            render_quad(r, shaders[i], full, full, NULL);
+        }
+        pass_submit(pass);
+    }
+    glFinish();
+    for (int i = 0; i < 2; i++) texture_destroy(textures[i]);
+    buffer_drop(target);
+}
+
+static char *read_source(const char *dir, const char *name) {
+    char *path = NULL, *source = NULL;
+    size_t size = 0;
+    if (asprintf(&path, "%s/%s", dir, name) < 0) return NULL;
+    FILE *in = fopen(path, "re"), *out = in ? open_memstream(&source, &size) : NULL;
+    char chunk[16384];
+    size_t n;
+    while (out && size <= WARM_SOURCE_LIMIT && (n = fread(chunk, 1, sizeof(chunk), in)) > 0)
+        fwrite(chunk, 1, n, out);
+    if (out && fclose(out) != 0) {
+        free(source);
+        source = NULL;
+    }
+    if (in) fclose(in);
+    free(path);
+    return source;
+}
+
+int tomoe_warm_shaders(const char *node, const char *dir, const char *marker,
+        const char *name) {
+    struct render *r = render_open(strdup(node));
+    if (!r || !programs_init(r)) {
+        if (r) render_free(r);
+        return 1;
+    }
+    bool every = !name || !*name;
+    struct dirent **entries = NULL;
+    int count = every ? scandir(dir, &entries, shader_file, alphasort) : 1, linked = 0;
+    struct program **shaders = calloc(count > 0 ? (size_t)count : 1, sizeof(*shaders));
+    for (int i = 0; i < count; i++) {
+        const char *file = every ? entries[i]->d_name : name;
+        char *source = shaders ? read_source(dir, file) : NULL;
+        struct program *shader = source ? render_shader_create(r, source, NULL) : NULL;
+        if (shader) {
+            warm_save(dir, file, shader);
+            shaders[linked++] = shader;
+        }
+        free(source);
+        if (every) free(entries[i]);
+    }
+    free(entries);
+    warm_draws(r, shaders, linked);
+    for (int i = 0; i < linked; i++) render_shader_destroy(shaders[i]);
+    free(shaders);
+    render_free(r);
+    if (marker && *marker) {
+        int fd = open(marker, O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
+        if (fd >= 0) close(fd);
+    }
+    return 0;
 }
 
 static void scene_reserve(struct scene *s) {
@@ -2609,6 +3220,8 @@ static void scene_reserve(struct scene *s) {
 struct render *render_create(int drm_fd) {
     struct render *r = render_open(render_node_name(drm_fd));
     if (!r) return NULL;
+    warm_setup(r);
+    warm(r);
     if (!programs_ready(r)) {
         render_free(r);
         return NULL;

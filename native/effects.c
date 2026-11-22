@@ -41,9 +41,9 @@ struct effects {
     struct result results[BLUR_RESULTS];
     struct level scratch[31];
     struct level backdrop;
-    struct chain glass;
-    uint64_t stamp, blurs, reused;
-    uint64_t scratch_used, glass_used;
+    struct chain glass, frost;
+    uint64_t stamp, blurs, reused, frost_stamp, frost_done;
+    uint64_t scratch_used, frost_used, glass_used;
     struct {
         uint8_t *seen;
         size_t seen_bytes;
@@ -270,7 +270,6 @@ bool effect_texture(struct frame *f, const struct texture_options *options,
             tint ? tint[3] : 0);
         quad(f, p, dst, texcoords, clip.x, clip.y);
         glBindTexture(target, 0);
-        op_end(f->pass, &draw_clip);
         return true;
     }
     struct scene_quad scene = { .kind = SCENE_TEXTURE, .texture = options->texture,
@@ -511,6 +510,11 @@ void effects_plan(struct tomoe *s, struct oplist *list) {
         else chain->dead = true;
     }
     bool freed = false;
+    if (e->frost.level.texture && e->stamp - e->frost_used >= 2) {
+        chain_release(&e->frost);
+        e->frost_done = 0;
+        freed = true;
+    }
     if (e->glass.level.texture && e->stamp - e->glass_used >= 2) {
         chain_release(&e->glass);
         freed = true;
@@ -860,6 +864,270 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
     op_end(f->pass, &clip);
 }
 
+enum { BENEATH_REACH = 32 };
+
+static bool backdrop(struct frame *f, struct program *p, struct fbox box, struct box covered) {
+    struct effects *e = f->server->effects;
+    struct box need = { covered.x - BENEATH_REACH, covered.y - BENEATH_REACH,
+        covered.width + 2 * BENEATH_REACH, covered.height + 2 * BENEATH_REACH };
+    if (!e || need.width < 1 || need.height < 1) return false;
+    if ((e->backdrop.width < need.width || e->backdrop.height < need.height) &&
+            !level_ensure(&e->backdrop, need.width > e->backdrop.width ? need.width :
+                e->backdrop.width, need.height > e->backdrop.height ? need.height :
+                e->backdrop.height)) return false;
+    pass_flush(f->pass);
+    GLuint target = render_buffer_fbo(f->server->renderer, f->buffer);
+    struct box bounds = { 0, 0, f->buffer->width, f->buffer->height }, shown;
+    bool inside = f->transform == WL_OUTPUT_TRANSFORM_NORMAL &&
+        box_intersection(&shown, &need, &bounds);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, e->backdrop.framebuffer);
+    if (!inside || !box_equal(&shown, &need)) {
+        struct box clear[4] = { { 0, 0, need.width, need.height } };
+        int count = 1;
+        if (inside) {
+            int x = shown.x - need.x, y = shown.y - need.y;
+            clear[0] = (struct box){ 0, 0, need.width, y };
+            clear[1] = (struct box){ 0, y + shown.height, need.width,
+                need.height - y - shown.height };
+            clear[2] = (struct box){ 0, y, x, shown.height };
+            clear[3] = (struct box){ x + shown.width, y,
+                need.width - x - shown.width, shown.height };
+            count = 4;
+        }
+        glEnable(GL_SCISSOR_TEST);
+        glClearColor(0, 0, 0, 1);
+        for (int i = 0; i < count; i++) {
+            if (box_empty(&clear[i])) continue;
+            glScissor(clear[i].x, clear[i].y, clear[i].width, clear[i].height);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
+        glDisable(GL_SCISSOR_TEST);
+    }
+    if (inside) {
+        int x = shown.x - need.x, y = shown.y - need.y;
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, target);
+        glBlitFramebuffer(shown.x, shown.y, shown.x + shown.width, shown.y + shown.height,
+            x, y, x + shown.width, y + shown.height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, target);
+    glViewport(0, 0, f->buffer->width, f->buffer->height);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, e->backdrop.texture);
+    glUseProgram(p->id);
+    glUniform4f(p->beneath, need.x - box.x, box.y + box.height - need.y,
+        1.0 / e->backdrop.width, -1.0 / e->backdrop.height);
+    return true;
+}
+
+enum { SHADER_DATA = 192, SHADER_WINDOWS = 8 };
+
+uint64_t effects_frost_stamp(struct tomoe *s) {
+    return s->effects ? ++s->effects->frost_stamp : 0;
+}
+
+static int frost_reach(struct frame *f) {
+    int margin = f->server->settings.blur_margin;
+    return margin > BENEATH_REACH ? margin : BENEATH_REACH;
+}
+
+static bool frost_prepare(struct frame *f, struct fbox area, const struct shader_inputs *inputs,
+        GLuint target) {
+    struct effects *e = f->server->effects;
+    uint64_t stamp = inputs ? inputs->frost_stamp : 0;
+    e->frost_used = e->stamp;
+    if (stamp && e->frost_done == stamp) return e->frost.level.texture != 0;
+    e->frost_done = stamp;
+    if (f->transform != WL_OUTPUT_TRANSFORM_NORMAL) return false;
+    const struct settings *st = &f->server->settings;
+    struct box bounds = { 0, 0, f->buffer->width, f->buffer->height };
+    struct box samples[BLUR_SAMPLES];
+    int count = 0;
+    struct fbox origin = local_box(f, area);
+    const struct rect *rects = NULL;
+    int n = 0;
+    if (inputs && inputs->frost_ring) {
+        rects = region_rectangles(inputs->frost_ring, &n);
+        if (n > BLUR_SAMPLES) {
+            rects = region_extents(inputs->frost_ring);
+            n = 1;
+        }
+    }
+    for (int i = 0; i < n; i++) {
+        struct box part = covering(f, (struct fbox){ origin.x + rects[i].x1,
+            origin.y + rects[i].y1, rects[i].x2 - rects[i].x1, rects[i].y2 - rects[i].y1 });
+        if (box_intersection(&samples[count], &part, &bounds)) count++;
+    }
+    if (!n) {
+        struct box drawn = covering(f, inputs && inputs->part ? local_box(f, *inputs->part) : origin);
+        if (box_intersection(&samples[0], &drawn, &bounds)) count = 1;
+    }
+    if (!count) return false;
+    int passes = st->blur_passes > 1 ? st->blur_passes - 1 : 1;
+    if (passes > 30) passes = 30;
+    bool ok = blur_levels(f, &e->frost, bounds, samples, count, passes, st->blur_offset, target, 1);
+    pass_scene_attributes_dirty(f->pass);
+    glBindFramebuffer(GL_FRAMEBUFFER, target);
+    glViewport(0, 0, f->buffer->width, f->buffer->height);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    return ok;
+}
+
+static void shader_marks_op(struct frame *f, struct op *op, struct box covered,
+        const struct shader_inputs *inputs) {
+    if (!op || !inputs->marks_owner) return;
+    op->marks = inputs->marks_owner;
+    op->content_seq = inputs->marks_seq;
+    op->src = (struct fbox){ covered.x + f->x, covered.y + f->y, covered.width, covered.height };
+    op->mapped = f->transform == WL_OUTPUT_TRANSFORM_NORMAL;
+}
+
+void effect_shader(struct frame *f, struct program *p, struct fbox area, double time, int frame,
+        const struct shader_inputs *inputs) {
+    struct fbox box = local_box(f, area);
+    struct fbox drawn = inputs && inputs->part ? local_box(f, *inputs->part) : box;
+    double mouse_x = p->mouse < 0 ? 0 : f->server->pointer_x - f->x - box.x;
+    double mouse_y = p->mouse < 0 ? 0 : f->y + box.y + box.height - f->server->pointer_y;
+    int count = p->trail >= 0 || p->trail_count >= 0 ? f->server->pointer_trail_count : 0;
+    int data_count = inputs && p->data >= 0 ? inputs->data_count : 0;
+    int window_count = inputs && (p->windows >= 0 || p->window_count >= 0) ?
+        inputs->window_count : 0;
+    if (data_count > SHADER_DATA) data_count = SHADER_DATA;
+    if (window_count > SHADER_WINDOWS) window_count = SHADER_WINDOWS;
+    bool selection = inputs && inputs->selection && p->selection >= 0;
+    bool marks = inputs && inputs->marks && inputs->marks_box && p->marks >= 0;
+    double params[15 + 4 * POINTER_TRAIL + SHADER_DATA + 4 * SHADER_WINDOWS + 16 + 5];
+    float trail[4 * POINTER_TRAIL];
+    double fields[] = { 7, box.x, box.y, box.width, box.height, (double)(uintptr_t)p, time,
+        mouse_x, mouse_y, count, window_count, drawn.x, drawn.y, drawn.width, drawn.height };
+    memcpy(params, fields, sizeof(fields));
+    size_t used = sizeof(fields) / sizeof(fields[0]);
+    if (count) {
+        double now = f->sample > 0 ? f->sample : animation_now();
+        for (int i = 0; i < count; i++) {
+            const struct pointer_sample *sample = &f->server->pointer_trail[
+                (f->server->pointer_trail_head - count + i + POINTER_TRAIL) % POINTER_TRAIL];
+            float x = sample->x - f->x - box.x;
+            float y = f->y + box.y + box.height - sample->y;
+            float age = now - sample->t;
+            params[used++] = x;
+            params[used++] = y;
+            params[used++] = age;
+            params[used++] = 1;
+            trail[4 * i] = x;
+            trail[4 * i + 1] = y;
+            trail[4 * i + 2] = age;
+            trail[4 * i + 3] = 1;
+        }
+    }
+    for (int i = 0; i < data_count; i++) params[used++] = inputs->data[i];
+    for (int i = 0; i < 4 * window_count; i++) params[used++] = inputs->windows[i];
+    for (int i = 0; selection && i < 16; i++) params[used++] = inputs->selection[i];
+    if (marks) {
+        params[used++] = (double)(uintptr_t)inputs->marks;
+        for (int i = 0; i < 4; i++) params[used++] = inputs->marks_box[i];
+    }
+    struct box covered = covering(f, drawn);
+    bool frosted = p->frost >= 0;
+    size_t before = pass_record_count(f->pass);
+    if (p->channel < 0 && !frosted) {
+        if (pass_record(f->pass, NULL, covered, (struct box){0}, params, used)) {
+            if (marks) shader_marks_op(f, pass_recorded(f->pass, before), covered, inputs);
+            struct op *op = inputs && inputs->opaque ? pass_recorded(f->pass, before) : NULL;
+            if (op) {
+                int x0 = (int)ceil(drawn.x), y0 = (int)ceil(drawn.y);
+                cover_rect(f, op, x0, y0, (int)floor(drawn.x + drawn.width) - x0,
+                    (int)floor(drawn.y + drawn.height) - y0);
+            }
+            return;
+        }
+    } else {
+        int r = frosted ? frost_reach(f) : BENEATH_REACH;
+        struct box reach = { covered.x - r, covered.y - r, covered.width + 2 * r,
+            covered.height + 2 * r };
+        double seed[] = { reach.x, reach.y, reach.width, reach.height, f->transform,
+            f->width, f->height, f->x, f->y };
+        if (pass_record_blur(f->pass, covered, reach, (struct box){0}, NULL, params, used,
+                ++f->blurs,
+                seed, planes_cross(f, reach) ? 0 : sizeof(seed) / sizeof(seed[0]))) {
+            if (marks) shader_marks_op(f, pass_recorded(f->pass, before), covered, inputs);
+            return;
+        }
+    }
+    struct op_clip clip;
+    if (!op_begin(f->pass, OP_SHADER, covered, &clip)) return;
+    pass_flush(f->pass);
+    bool frost_ok = frosted && frost_prepare(f, area, inputs,
+        render_buffer_fbo(f->server->renderer, f->buffer));
+    if (p->channel >= 0 && !backdrop(f, p, box, covered)) {
+        op_end(f->pass, &clip);
+        return;
+    }
+    glUseProgram(p->id);
+    if (frosted) {
+        struct effects *e = f->server->effects;
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, frost_ok ? e->frost.level.texture : 0);
+        glUniform1i(p->frost, 2);
+        double fw = (double)(e->frost.level.width << 1), fh = (double)(e->frost.level.height << 1);
+        if (p->frost_box >= 0) {
+            if (fw > 0 && fh > 0)
+                glUniform4f(p->frost_box, -box.x, box.y + box.height, 1.0 / fw, -1.0 / fh);
+            else
+                glUniform4f(p->frost_box, 0, 0, 0, 0);
+        }
+        glActiveTexture(GL_TEXTURE0);
+    }
+    glUniform3f(p->resolution, box.width, box.height, 1);
+    glUniform1f(p->time, time);
+    glUniform1i(p->frame, frame);
+    glUniform4f(p->mouse, mouse_x, mouse_y, 0, 0);
+    glUniform1i(p->channel, 0);
+    glUniform1i(p->trail_count, count);
+    if (count) glUniform4fv(p->trail, count, trail);
+    if (p->data >= 0) {
+        float data[SHADER_DATA] = { 0 };
+        if (data_count) memcpy(data, inputs->data, data_count * sizeof(float));
+        glUniform4fv(p->data, SHADER_DATA / 4, data);
+    }
+    glUniform1i(p->window_count, window_count);
+    if (window_count) glUniform4fv(p->windows, window_count, inputs->windows);
+    if (p->selection >= 0) {
+        static const float zeros[16] = { 0 };
+        glUniform4fv(p->selection, 4, selection ? inputs->selection : zeros);
+    }
+    if (p->marks_box >= 0) {
+        static const float zero_box[4] = { 0 };
+        glUniform4fv(p->marks_box, 1, inputs && inputs->marks_box ? inputs->marks_box : zero_box);
+    }
+    if (p->marks >= 0) {
+        GLenum target;
+        GLuint texture;
+        bool alpha;
+        glActiveTexture(GL_TEXTURE1);
+        if (inputs && inputs->marks &&
+                render_texture_gl((struct texture *)inputs->marks, &target, &texture, &alpha)) {
+            glBindTexture(target, texture);
+            glTexParameteri(target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        } else {
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+        glUniform1i(p->marks, 1);
+        glActiveTexture(GL_TEXTURE0);
+    }
+    quad(f, p, drawn, NULL, box.x, box.y);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    if (frosted) {
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+    glActiveTexture(GL_TEXTURE0);
+    op_end(f->pass, &clip);
+}
+
 enum { GLASS_FROST_PASSES = 1, GLASS_FROST_REACH = 6 };
 static const double GLASS_FROST = 1.5;
 
@@ -900,7 +1168,7 @@ bool effect_glass(struct frame *f, struct program *p, struct texture *map, struc
         glBindTexture(GL_TEXTURE_2D, lens);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glUniform1i(p->glass, 1);
+        glUniform1i(glGetUniformLocation(p->id, "tomoe_glass"), 1);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, e->glass.level.texture);
         glUniform1i(p->channel, 0);

@@ -9,9 +9,10 @@ WLR ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wlr-protocols)/unstable
 WP ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols)
 WAYLAND_XML ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-scanner)/wayland.xml
 
-LIBS = libinput glesv2 egl gbm
+LIBS = freetype2 libinput glesv2 egl gbm
 LINK = $(shell $(PKG_CONFIG) --libs $(LIBS))
 PORTAL_LIBS = gbm
+SUPPORT = executions watches notifications mpris backlight battery network system
 PROTOCOLS = \
 	$(WLR)/wlr-layer-shell-unstable-v1.xml \
 	$(WLR)/wlr-screencopy-unstable-v1.xml \
@@ -63,7 +64,7 @@ PROTOCOLS = \
 
 NAMES = $(basename $(notdir $(PROTOCOLS)))
 HEADERS = build/wayland-server-protocol.h build/wayland-client-protocol.h $(NAMES:%=build/%-protocol.h) $(NAMES:%=build/%-client-protocol.h)
-LIBRARIES = lisp wayland xkb udev
+LIBRARIES = png bus lisp wayland xkb pipewire udev
 LIB_SOURCES = $(foreach l,$(LIBRARIES),$(wildcard lib/$(l)/*.c))
 LIB_HEADERS = $(wildcard lib/*/*.h lib/*/include/*.h lib/wayland/scanner/*.h)
 LIB_INCLUDE = $(LIBRARIES:%=-Ilib/%/include) -Ilib/wayland/scanner
@@ -74,8 +75,8 @@ WAYLAND_CLIENT = $(WAYLAND_CORE) build/obj/lib/wayland/client.o
 NATIVE = $(patsubst native/%.c,build/obj/%.o,$(wildcard native/*.c)) $(LIB_OBJECTS) $(NAMES:%=build/obj/%-protocol.o) $(WAYLAND_SERVER) build/obj/lib/wayland/client.o
 CFLAGS_CODE = $(OPT) $(LTO) $(CPU)
 CFLAGS_BASE = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter
-CFLAGS_NATIVE = $(CFLAGS_BASE) -DTOMOE_VERSION='"$(VERSION)"' -DTOMOE_PATH_PREFIX='"$(PATH_PREFIX)"' -Ibuild -Inative $(LIB_INCLUDE) $(shell $(PKG_CONFIG) --cflags $(LIBS))
-CFLAGS_SUPPORT = $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -DTOMOE_VERSION='"$(VERSION)"'
+CFLAGS_NATIVE = $(CFLAGS_BASE) -DTOMOE_VERSION='"$(VERSION)"' -DTOMOE_PATH_PREFIX='"$(PATH_PREFIX)"' -DTOMOE_FONT_DIR='"$(FONT_DIR)"' -Ibuild -Inative $(LIB_INCLUDE) $(shell $(PKG_CONFIG) --cflags $(LIBS))
+CFLAGS_SUPPORT = $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -DTOMOE_VERSION='"$(VERSION)"' -Ilib/bus/include
 CFLAGS_PORTAL = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild -Ilib/bus/include -Ilib/wayland/include -Ilib/wayland/scanner -Ilib/pipewire/include $(shell $(PKG_CONFIG) --cflags $(PORTAL_LIBS))
 LIB_CFLAGS_bus = $(CFLAGS_SUPPORT)
 LIB_CFLAGS_pipewire = $(CFLAGS_SUPPORT)
@@ -104,8 +105,10 @@ build/tomoe-portal: $(PORTAL) $(PORTAL_PROTOCOLS:%=build/obj/%-protocol.o) $(WAY
 build/obj/portal-%.o: native/portal/%.c $(wildcard native/portal/*.h) $(LIB_HEADERS) $(HEADERS) | build/obj
 	$(CC) $(CFLAGS_PORTAL) -c $< -o $@
 
-build/tomoe: $(NATIVE)
-	$(CC) $(LTO) $(NATIVE) -o $@ $(LINK) -lm
+build/tomoe: $(NATIVE) $(SUPPORT:%=build/%.o)
+	$(CC) $(LTO) $(NATIVE) $(SUPPORT:%=build/%.o) -o $@ $(LINK) -lm \
+		-Wl,--export-dynamic-symbol=tomoe_png_glyph_info \
+		-Wl,--export-dynamic-symbol=tomoe_png_glyph_rows
 
 build/obj/main.o: $(wildcard lisp/*.lisp)
 
@@ -118,6 +121,9 @@ build/obj/lib/%.o: lib/%.c $(LIB_HEADERS) build/wayland-server-protocol.h build/
 
 build/obj/%-protocol.o: build/%-protocol.c $(HEADERS) | build/obj
 	$(CC) $(CFLAGS_NATIVE) -c $< -o $@
+
+build/%.o: support/%.c $(wildcard support/*.h) | build
+	$(CC) $(CFLAGS_SUPPORT) -c $< -o $@
 
 build/wayland-server-protocol.h: $(WAYLAND_XML) | build
 	wayland-scanner -c server-header $< $@

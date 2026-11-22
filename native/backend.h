@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 struct tomoe;
+struct ui_shape;
 
 enum { LOG_ERROR = 1, LOG_WARNING, LOG_INFO, LOG_DEBUG };
 extern int log_verbosity;
@@ -24,6 +25,7 @@ const char *tomoe_cursor_state(struct tomoe *server, uint64_t have_generation);
 void tomoe_focus(struct tomoe *server, uint32_t id);
 uint32_t tomoe_keyboard_focus(struct tomoe *server);
 void tomoe_close(struct tomoe *server, uint32_t id);
+void tomoe_screenshot(struct tomoe *server, int interactive);
 int tomoe_clipboard_copy(struct tomoe *server, const char *path, const char *mime, int remove);
 const char *tomoe_window_identifier(struct tomoe *server, uint32_t id);
 int tomoe_grab(struct tomoe *server, uint32_t id, int mode);
@@ -32,6 +34,8 @@ int tomoe_grab_mode(struct tomoe *server);
 void tomoe_window_state(struct tomoe *server, uint32_t id, int fullscreen,
     int maximize);
 uint32_t tomoe_keysym(const char *name);
+int tomoe_warm_shaders(const char *node, const char *directory, const char *marker,
+    const char *name);
 void tomoe_clear_bindings(struct tomoe *server);
 int tomoe_outputs_begin(struct tomoe *server);
 int tomoe_outputs_pending(struct tomoe *server);
@@ -72,9 +76,38 @@ int tomoe_present_window_style(struct tomoe *server, uint32_t id, int radius, in
     int tearing, int64_t focused, int64_t unfocused);
 int tomoe_present_window_visual(struct tomoe *server, uint32_t id, double opacity,
     uint32_t tint, double scale, double rotation, int translate_x, int translate_y);
+int tomoe_present_ui_surface(struct tomoe *server, const char *owner,
+    uint64_t source_id, const char *name, const char *output,
+    uint64_t plan_id, int x, int y, int width, int height, int layer,
+    int click_through, int slide, int blur, uint32_t attach, int attach_axes, int drawn);
+int tomoe_present_ui_clip(struct tomoe *server, int x, int y, int width, int height);
+uint64_t tomoe_ui_asset_load(struct tomoe *server, const char *owner,
+    uint64_t source_id, int kind, const char *path, const char *name);
+uint64_t tomoe_ui_asset_size(struct tomoe *server, uint64_t id);
+void tomoe_ui_assets_discard(struct tomoe *server);
+int tomoe_present_ui_asset_ref(struct tomoe *server, uint64_t id);
+int tomoe_present_ui_asset(struct tomoe *server, uint64_t id,
+    double x, double y, double width, double height, int tint, uint32_t rgba);
+int tomoe_present_ui_shape(struct tomoe *server, const struct ui_shape *shape);
+int tomoe_present_ui_text(struct tomoe *server, double x, double y,
+    const char *text, const char *font, double size, double line_height, uint32_t rgba,
+    int rotate, int markup);
+int tomoe_present_ui_arc(struct tomoe *server, double cx, double cy, double radius,
+    double thickness, double start, double end, uint32_t rgba);
+int tomoe_present_ui_hit(struct tomoe *server, const char *key, const char *command,
+    const char *hover, int x, int y, int width, int height);
+int tomoe_present_ui_end(struct tomoe *server);
+int tomoe_present_ui_cancel(struct tomoe *server, const char *owner, const char *name,
+    const char *output);
+uint64_t tomoe_ui_text_size(const char *text, const char *font,
+    double size, double line_height, int markup);
+const char *tomoe_ui_stats(struct tomoe *server);
 int tomoe_present_settings(struct tomoe *server);
 int tomoe_present_setting(struct tomoe *server, const char *key, double value);
 int tomoe_present_setting_text(struct tomoe *server, const char *key, const char *text);
+int tomoe_present_sounds(struct tomoe *server);
+const char *tomoe_present_sound(struct tomoe *server, int event, const char *path, double gain);
+const char *tomoe_sound_stats(struct tomoe *server);
 const char *tomoe_native_errors(void);
 int tomoe_motion(struct tomoe *server, int fast, int hover, int regions, int edges, int distance);
 int tomoe_motion_region(struct tomoe *server, const char *name, int x, int y, int width, int height);
