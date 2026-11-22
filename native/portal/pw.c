@@ -152,11 +152,12 @@ static size_t build_buffers(struct pwv *v, uint8_t *pod) {
     pww_build_init(&b, pod, 1024);
     pww_pod_object_begin(&b, &f, SPA_TYPE_OBJECT_PARAMBUFFERS, SPA_PARAM_BUFFERS);
     pww_pod_prop_choice_int(&b, SPA_PARAM_BUFFERS_BUFFERS, SPA_CHOICE_RANGE, counts, 3);
-    int planes = v->video.planes > 0 ? v->video.planes : 1;
+    bool dmabuf = v->alloc == PWV_ALLOC_DMABUF && (!v->negotiated_len || v->video.modifier_set);
+    int planes = dmabuf && v->video.planes > 0 ? v->video.planes : 1;
     pww_pod_prop_int(&b, SPA_PARAM_BUFFERS_BLOCKS, planes);
-    if (v->alloc == PWV_ALLOC_DMABUF && planes == 1) {
+    if (dmabuf && planes == 1) {
         types[0] = (1 << SPA_DATA_DMABUF) | (1 << SPA_DATA_MEMFD);
-    } else if (v->alloc == PWV_ALLOC_DMABUF) {
+    } else if (dmabuf) {
         types[0] = 1 << SPA_DATA_DMABUF;
     } else {
         size_t stride = (size_t)v->video.width * 4;
@@ -716,6 +717,7 @@ static int dispatch(void *data, uint32_t id, uint32_t opcode, struct pww_parse *
             if (v->publish_gen == gen && v->video.modifier_fixated) {
                 memcpy(v->negotiated_pod, pod, 8 + body);
                 v->negotiated_len = 8 + body;
+                v->buffers_len = build_buffers(v, v->buffers_pod);
                 send_port_update(v);
             }
             return 0;

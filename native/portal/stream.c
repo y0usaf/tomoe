@@ -514,7 +514,7 @@ static bool stream_add_buffer(void *data, struct pwv_buffer *buffer) {
     struct stream *s = data;
     if (s->dying || s->slot_count >= SLOTS_MAX || !buffer->buffer) return false;
     uint32_t negotiated = buffer->buffer->n_datas ? buffer->buffer->datas[0].type : 0;
-    bool want_dmabuf = s->alloc != ALLOC_SHM && (negotiated & (1u << SPA_DATA_DMABUF));
+    bool want_dmabuf = s->dmabuf && s->alloc != ALLOC_SHM && (negotiated & (1u << SPA_DATA_DMABUF));
     struct slot *slot = slot_create(s, want_dmabuf);
     if (!slot) {
         if (s->alloc != ALLOC_SHM) {
