@@ -88,7 +88,15 @@ PORTAL_PROTOCOLS = linux-dmabuf-v1 ext-image-copy-capture-v1 ext-image-capture-s
 
 vpath %.xml $(sort $(dir $(PROTOCOLS)))
 
-all: build/tomoe build/tomoe-portal
+XWM = $(patsubst native/xwm/%.c,build/obj/xwm-%.o,$(wildcard native/xwm/*.c))
+
+all: build/tomoe build/tomoe-portal build/tomoe-xwm
+
+build/tomoe-xwm: $(XWM)
+	$(CC) $(LTO) $^ -o $@
+
+build/obj/xwm-%.o: native/xwm/%.c native/xwm/xwm.h native/xwm_proto.h | build/obj
+	$(CC) $(CFLAGS_BASE) -Inative -Inative/xwm -c $< -o $@
 
 build/tomoe-portal: $(PORTAL) $(PORTAL_PROTOCOLS:%=build/obj/%-protocol.o) $(WAYLAND_CLIENT)
 	$(CC) $(LTO) $^ -o $@ $(shell $(PKG_CONFIG) --libs $(PORTAL_LIBS))

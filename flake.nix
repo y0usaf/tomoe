@@ -184,12 +184,13 @@
               WLR=${pkgs.wlr-protocols}/share/wlr-protocols/unstable \
               WP=${pkgs.wayland-protocols}/share/wayland-protocols \
               WAYLAND_XML=${pkgs.wayland-scanner}/share/wayland/wayland.xml \
-              build/tomoe build/tomoe-portal
+              build/tomoe build/tomoe-portal build/tomoe-xwm
             runHook postBuild
           '';
           installPhase = ''
             runHook preInstall
             install -Dm755 build/tomoe $out/bin/tomoe
+            install -Dm755 build/tomoe-xwm $out/libexec/tomoe-xwm
             install -d $out/share/tomoe/lisp
             install -m 644 lisp/*.lisp $out/share/tomoe/lisp/
             install -Dm644 -t $out/share/doc/tomoe LICENSE NOTICE COPYING-LGPL-2.1 COPYING-MPL-1.1

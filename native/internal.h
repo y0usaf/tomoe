@@ -1188,7 +1188,6 @@ struct tomoe {
     struct wl_event_source *lock_deadline_source;
     struct target drag_icon;
     struct xwayland *xwayland;
-    struct xwm *xwm;
 };
 struct layer_state {
     uint32_t anchor, width, height;
@@ -1795,14 +1794,7 @@ void input_add(struct tomoe *s, struct input_device *device);
 
 bool xwayland_listen(struct tomoe *s);
 int xwayland_start(struct tomoe *s);
-void xwayland_pair_window(struct tomoe *s, uint32_t xid, uint64_t serial);
-bool xwm_start(struct tomoe *s, int fd);
-void xwm_stop(struct tomoe *s);
 void xwayland_finish(struct tomoe *s);
-void xwayland_wm_failed(struct tomoe *s);
-void xwayland_pair_surface(struct tomoe *s, uint64_t serial, struct surface *surface);
-void xwm_associate(struct tomoe *s, uint32_t xid, struct surface *surface);
-void xwm_client_gone(struct tomoe *s);
 void xwm_configure(struct xdg_toplevel *toplevel, int width, int height);
 void xwm_place(struct xdg_toplevel *toplevel, int x, int y);
 void xwm_activate(struct xdg_toplevel *toplevel, bool activated);
