@@ -78,6 +78,7 @@ static int start_dependent(int *pidfd, char *const argv[], char *const envp[]) {
         execvpe(argv[0], argv, envp);
         _exit(127);
     }
+    setpgid(child, child);
     int fd = pidfd_open(child, 0);
     if (fd < 0) {
         int error = errno;
@@ -950,7 +951,7 @@ int tomoe_exec_poll(struct execution *job) {
     return job->status;
 }
 
-int tomoe_exec_code(struct execution *job) { return job->code; }
+int tomoe_exec_code(struct execution *job) { return job ? job->code : 0; }
 
 int tomoe_exec_fd(struct execution *job, int which) {
     if (!job) return -1;
