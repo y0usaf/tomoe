@@ -176,6 +176,8 @@ struct xwm {
     bool failed;
 };
 
+enum { SETUP_NONE, SETUP_WAIT, SETUP_ATOMS, SETUP_READY };
+
 struct xwm_window {
     struct xlist link;
     struct xwm *xwm;
@@ -326,7 +328,6 @@ static uint16_t r_send(struct xwm *x, struct req *r) {
     r->data[2] = (unsigned char)length;
     r->data[3] = (unsigned char)(length >> 8);
     uint16_t seq = ++x->seq;
-    if (!seq) seq = ++x->seq;
     x_write(x, r->data, r->len);
     free(r->data);
     r->data = NULL;
@@ -364,7 +365,7 @@ static size_t packet_length(struct xwm *x, const unsigned char *p, size_t availa
     if (available < 8) return 0;
     uint8_t type = p[0] & 0x7f;
     if (type == 0) return 32;
-    if (type == 1 && !x->seq)
+    if (type == 1 && x->setup_state == SETUP_WAIT)
         return 8 + ((size_t)p[6] | (size_t)p[7] << 8) * 4;
     size_t words = (size_t)p[4] | (size_t)p[5] << 8 | (size_t)p[6] << 16 |
         (size_t)p[7] << 24;
@@ -905,6 +906,7 @@ static void handle_create(struct xwm *x, const unsigned char *pkt) {
     uint32_t xid = (uint32_t)pkt[8] | (uint32_t)pkt[9] << 8 |
         (uint32_t)pkt[10] << 16 | (uint32_t)pkt[11] << 24;
     if (window_for(x, xid)) return;
+    if (x->rid_mask && (xid & ~x->rid_mask) == x->rid_base) return;
     int wx = (int16_t)(pkt[12] | pkt[13] << 8);
     int wy = (int16_t)(pkt[14] | pkt[15] << 8);
     int width = (uint16_t)(pkt[16] | pkt[17] << 8);
@@ -1814,9 +1816,12 @@ static bool convert_property_notify(struct xwm *x, uint32_t window, uint32_t ato
 
 static void convert_timeout(int fd, uint32_t events, void *data) {
     struct xwm *x = data;
-    uint64_t expirations;
+    uint64_t expirations = 0;
     (void)events;
-    if (read(fd, &expirations, sizeof(expirations)) < 0) {}
+    ssize_t n;
+    do n = read(fd, &expirations, sizeof(expirations));
+    while (n < 0 && errno == EINTR);
+    if (n != (ssize_t)sizeof(expirations) || !expirations) return;
     if (convert_active(x)) {
         fprintf(stderr, "tomoe-xwm: selection conversion timed out\n");
         convert_finish(x, false);
@@ -1889,10 +1894,12 @@ static void handle_xfixes(struct xwm *x, const unsigned char *pkt) {
     int slot = primary ? 1 : 0;
     if (owner == ours) {
         x->own[slot] = true;
+        x->sel_generation[slot]++;
         return;
     }
     x->own[slot] = false;
     if (!owner) {
+        x->sel_generation[slot]++;
         struct xwm_msg_sel_clear msg = { .primary = primary ? 1 : 0 };
         sidecar_send(x->sc, XWM_EVT_SELECTION_CLEAR, &msg, sizeof(msg), -1);
         return;
@@ -1900,7 +1907,6 @@ static void handle_xfixes(struct xwm *x, const unsigned char *pkt) {
     adopt_selection(x, primary);
 }
 
-enum { SETUP_NONE, SETUP_WAIT, SETUP_ATOMS, SETUP_READY };
 
 static void setup_complete(struct xwm *x);
 
@@ -2307,6 +2313,7 @@ void xwm_handle_cmd(struct xwm *x, const struct xwm_hdr *hdr, const uint8_t *pay
                 p = nul + 1;
             }
         }
+        x->sel_generation[slot]++;
         if (x->ready) intern_selection(x, slot);
         if (x->ready) {
             uint32_t selection = lookup_atom(x, cmd.primary ? A_PRIMARY : A_CLIPBOARD);
