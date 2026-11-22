@@ -1,10 +1,10 @@
 #include <errno.h>
 #include <fcntl.h>
-#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/timerfd.h>
 #include <time.h>
 #include <unistd.h>
 #include "xwm.h"
@@ -17,7 +17,8 @@ enum {
     A_NET_ACTIVE_WINDOW, A_NET_CLIENT_LIST, A_NET_CLIENT_LIST_STACKING, A_NET_SUPPORTED,
     A_NET_SUPPORTING_WM_CHECK, A_NET_WM_WINDOW_TYPE, A_NET_WM_WINDOW_TYPE_DIALOG,
     A_NET_CLOSE_WINDOW, A_UTF8_STRING, A_TEXT, A_TARGETS, A_TIMESTAMP, A_INCR, A_CLIPBOARD,
-    A_PRIMARY, A_CLIPBOARD_MANAGER, A_WL_SURFACE_SERIAL, A_WL_SURFACE_ID, A_COUNT,
+    A_PRIMARY, A_CLIPBOARD_MANAGER, A_WL_SURFACE_SERIAL, A_WL_SURFACE_ID, A_TOMOE_CONVERT,
+    A_COUNT,
 };
 
 static const char *const atom_names[A_COUNT] = {
@@ -57,6 +58,7 @@ static const char *const atom_names[A_COUNT] = {
     [A_CLIPBOARD_MANAGER] = "CLIPBOARD_MANAGER",
     [A_WL_SURFACE_SERIAL] = "WL_SURFACE_SERIAL",
     [A_WL_SURFACE_ID] = "WL_SURFACE_ID",
+    [A_TOMOE_CONVERT] = "_TOMOE_CONVERT",
 };
 
 enum {
@@ -77,18 +79,10 @@ enum {
 #define X11_NONE 0u
 #define X11_CURRENT_TIME 0u
 #define INCR_CHUNK (64 * 1024)
-#define XWM_WAIT_MS 500
+#define CONVERT_TIMEOUT_MS 5000
 #define XWM_OUT_LIMIT (1u << 20)
 
-static uint64_t xwm_now(void) {
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000;
-}
 
-static uint64_t xwm_deadline(void) {
-    return xwm_now() + XWM_WAIT_MS;
-}
 
 struct xwm_window;
 
@@ -98,10 +92,51 @@ struct deferred {
     unsigned char data[];
 };
 
+struct xwm;
+
 struct wl_sel_cache {
     bool present;
     char *mimes[64];
     size_t count;
+};
+
+typedef void (*reply_fn)(struct xwm *x, const unsigned char *reply, size_t len, void *ctx);
+
+struct pending {
+    struct xlist link;
+    uint16_t seq;
+    reply_fn fn;
+    void *ctx;
+    void (*drop)(void *ctx);
+};
+
+struct atom_entry {
+    uint32_t atom;
+    char *mime;
+};
+
+enum { CONVERT_TARGETS, CONVERT_DATA };
+enum { CS_ATOM, CS_NOTIFY, CS_PROP, CS_INCR_WAIT, CS_INCR_PROP };
+
+struct convert {
+    struct xlist link;
+    uint64_t id;
+    uint32_t window;
+    int kind, state;
+    bool primary, active;
+    uint32_t target, type, offset;
+    uint64_t generation;
+    char *mime;
+    int fd;
+    unsigned char *data;
+    size_t len, cap, chunk;
+};
+
+struct adopt {
+    bool primary;
+    uint64_t generation;
+    char *mimes[64];
+    size_t count, outstanding;
 };
 
 struct xwm {
@@ -112,7 +147,7 @@ struct xwm {
     size_t in_len, in_cap;
     unsigned char *out;
     size_t out_len, out_cap;
-    struct xlist deferred;
+    struct xlist pending;
     uint16_t seq;
     uint32_t rid_base, rid_mask, rid_next;
     uint32_t root, max_request;
@@ -127,6 +162,16 @@ struct xwm {
     uint32_t active;
     bool own[2];
     struct wl_sel_cache wl_sel[2];
+    struct atom_entry *cache;
+    size_t cache_count, cache_cap;
+    size_t interning[2];
+    struct xlist sel_waiting[2];
+    struct xlist converts;
+    uint64_t sel_generation[2];
+    uint64_t convert_ids;
+    int convert_timer_fd;
+    struct xev_source *convert_timer;
+    int setup_queries;
     bool stopping;
     bool failed;
 };
@@ -304,41 +349,13 @@ static bool x_ensure(struct xwm *x, size_t need) {
     return true;
 }
 
-static ssize_t x_recv(struct xwm *x, int wait, uint64_t deadline) {
+static ssize_t x_recv(struct xwm *x) {
     for (;;) {
-        if (wait && x->out_len > 0) {
-            x_flush(x);
-            if (x->failed) return -1;
-        }
         if (!x_ensure(x, 4096)) return -1;
         ssize_t n = recv(x->fd, x->in + x->in_len, x->in_cap - x->in_len, MSG_DONTWAIT);
         if (n >= 0) return n;
         if (errno == EINTR) continue;
-        if ((errno == EAGAIN || errno == EWOULDBLOCK) && !wait) return -2;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            int timeout = XWM_WAIT_MS;
-            if (deadline) {
-                uint64_t now = xwm_now();
-                if (now >= deadline) return -3;
-                uint64_t remaining = deadline - now;
-                timeout = remaining > (uint64_t)XWM_WAIT_MS ? XWM_WAIT_MS : (int)remaining;
-            }
-            short events = POLLIN | (x->out_len > 0 ? POLLOUT : 0);
-            struct pollfd pollfd = { .fd = x->fd, .events = events };
-            int ready = poll(&pollfd, 1, timeout);
-            if (ready == 0) {
-                if (deadline && xwm_now() < deadline) continue;
-                fprintf(stderr, "tomoe-xwm: recv stalled on %d\n", x->fd);
-                return -3;
-            }
-            if (ready < 0 && errno == EINTR) continue;
-            if (ready < 0) return -1;
-            if (pollfd.revents & POLLOUT) {
-                x_flush(x);
-                if (x->failed) return -1;
-            }
-            continue;
-        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return -2;
         return -1;
     }
 }
@@ -355,82 +372,35 @@ static size_t packet_length(struct xwm *x, const unsigned char *p, size_t availa
     return 32;
 }
 
-static unsigned char *x_packet(struct xwm *x, size_t *length, uint64_t deadline) {
-    for (;;) {
-        if (deadline && xwm_now() >= deadline) return NULL;
-        size_t need = x->in_len >= 4 ? packet_length(x, x->in, x->in_len) : 0;
-        if (need && x->in_len >= need) {
-            unsigned char *packet = malloc(need);
-            if (!packet) return NULL;
-            memcpy(packet, x->in, need);
-            memmove(x->in, x->in + need, x->in_len - need);
-            x->in_len -= need;
-            *length = need;
-            return packet;
-        }
-        ssize_t n = x_recv(x, 1, deadline);
-        if (n == -3) return NULL;
-        if (n <= 0) {
-            x_fail(x, n ? "recv failed" : "connection closed", n ? errno : 0);
-            return NULL;
-        }
-        x->in_len += (size_t)n;
-    }
-}
 
-static void defer(struct xwm *x, unsigned char *packet, size_t len) {
-    struct deferred *entry = malloc(sizeof(*entry) + len);
-    if (!entry) {
-        free(packet);
+
+static void expect(struct xwm *x, uint16_t seq, reply_fn fn, void *ctx, void (*drop)(void *ctx)) {
+    struct pending *p = calloc(1, sizeof(*p));
+    if (!p) {
+        if (drop) drop(ctx);
+        x_fail(x, "out of memory", ENOMEM);
         return;
     }
-    entry->len = len;
-    memcpy(entry->data, packet, len);
-    xlist_insert(x->deferred.prev, &entry->link);
-    free(packet);
+    p->seq = seq;
+    p->fn = fn;
+    p->ctx = ctx;
+    p->drop = drop;
+    xlist_insert(x->pending.prev, &p->link);
 }
 
-static unsigned char *x_wait(struct xwm *x, uint16_t seq, size_t *length, int *error,
-        uint64_t deadline) {
-    for (;;) {
-        size_t len = 0;
-        unsigned char *packet = x_packet(x, &len, deadline);
-        if (!packet) return NULL;
-        uint16_t packet_seq = (uint16_t)(packet[2] | packet[3] << 8);
-        if (packet_seq == seq && (packet[0] == 0 || packet[0] == 1)) {
-            if (packet[0] == 0) {
-                if (error) *error = packet[1];
-                free(packet);
-                return NULL;
-            }
-            *length = len;
-            return packet;
-        }
-        defer(x, packet, len);
+static bool pending_dispatch(struct xwm *x, const unsigned char *packet, size_t len) {
+    uint16_t seq = (uint16_t)(packet[2] | packet[3] << 8);
+    struct pending *p, *next;
+    xlist_for_each_safe(p, next, &x->pending, link) {
+        if (p->seq != seq) continue;
+        xlist_remove(&p->link);
+        p->fn(x, packet[0] == 1 ? packet : NULL, packet[0] == 1 ? len : 0, p->ctx);
+        free(p);
+        return true;
     }
+    return false;
 }
 
-static uint32_t atom_intern(struct xwm *x, const char *name, bool only_if_exists) {
-    struct req r = {0};
-    size_t len = strlen(name);
-    r_begin(&r, 16);
-    r_flag(&r, 1, only_if_exists ? 1 : 0);
-    r_u16(&r, (uint16_t)len);
-    r_u16(&r, 0);
-    r_bytes(&r, name, len);
-    uint16_t seq = r_send(x, &r);
-    size_t reply_len = 0;
-    int error = 0;
-    unsigned char *reply = x_wait(x, seq, &reply_len, &error, xwm_deadline());
-    if (!reply || reply_len < 12) {
-        free(reply);
-        return 0;
-    }
-    uint32_t atom = (uint32_t)reply[8] | (uint32_t)reply[9] << 8 |
-        (uint32_t)reply[10] << 16 | (uint32_t)reply[11] << 24;
-    free(reply);
-    return atom;
-}
 
 struct property {
     uint32_t type, after;
@@ -470,65 +440,12 @@ static void property_from_reply(const unsigned char *reply, size_t reply_len,
     if (out->data && bytes) memcpy(out->data, reply + 32, bytes);
 }
 
-static bool get_property(struct xwm *x, uint32_t window, uint32_t property, uint32_t type,
-        uint32_t offset, uint32_t length, struct property *out, uint64_t deadline) {
-    struct req r = {0};
-    r_begin(&r, 20);
-    r_u32(&r, window);
-    r_u32(&r, property);
-    r_u32(&r, type);
-    r_u32(&r, offset);
-    r_u32(&r, length);
-    uint16_t seq = r_send(x, &r);
-    size_t reply_len = 0;
-    int error = 0;
-    unsigned char *reply = x_wait(x, seq, &reply_len, &error, deadline);
-    if (!reply) return false;
-    property_from_reply(reply, reply_len, out);
-    free(reply);
-    return true;
-}
 
 static void property_finish(struct property *property) {
     free(property->data);
     property->data = NULL;
 }
 
-static bool read_property_all(struct xwm *x, uint32_t window, uint32_t property,
-        struct property *out, uint64_t deadline) {
-    memset(out, 0, sizeof(*out));
-    uint32_t offset = 0;
-    for (;;) {
-        struct property part;
-        if (!get_property(x, window, property, 0, offset, x->max_request / 4, &part,
-                deadline)) {
-            property_finish(out);
-            return false;
-        }
-        uint32_t items = (uint32_t)((part.length + 3) / 4);
-        if (!out->data) {
-            out->type = part.type;
-            out->format = part.format;
-            out->data = part.data;
-            out->length = part.length;
-        } else {
-            unsigned char *data = realloc(out->data, out->length + part.length);
-            if (!data) {
-                property_finish(&part);
-                property_finish(out);
-                return false;
-            }
-            out->data = data;
-            memcpy(out->data + out->length, part.data, part.length);
-            out->length += part.length;
-            free(part.data);
-        }
-        bool more = part.after > 0;
-        offset += items;
-        if (!more || !items) break;
-    }
-    return true;
-}
 
 static void change_property(struct xwm *x, uint8_t mode, uint32_t window, uint32_t property,
         uint32_t type, int format, const void *data, uint32_t items) {
@@ -676,27 +593,6 @@ static void kill_client(struct xwm *x, uint32_t resource) {
     r_send(x, &r);
 }
 
-static bool query_extension(struct xwm *x, const char *name, int *opcode, int *event) {
-    struct req r = {0};
-    size_t len = strlen(name);
-    r_begin(&r, 98);
-    r_u16(&r, (uint16_t)len);
-    r_u16(&r, 0);
-    r_bytes(&r, name, len);
-    uint16_t seq = r_send(x, &r);
-    size_t reply_len = 0;
-    int error = 0;
-    unsigned char *reply = x_wait(x, seq, &reply_len, &error, xwm_deadline());
-    if (!reply || reply_len < 32) {
-        free(reply);
-        return false;
-    }
-    bool present = reply[8] != 0;
-    *opcode = reply[9];
-    *event = reply[10];
-    free(reply);
-    return present;
-}
 
 static void extension_request(struct xwm *x, int opcode, int minor, const uint32_t *values,
         size_t count) {
@@ -1140,12 +1036,14 @@ static void handle_configure_request(struct xwm *x, const unsigned char *pkt) {
 }
 
 static bool transfer_incr(struct xwm *x, uint32_t window, uint32_t property, uint8_t state);
+static bool convert_property_notify(struct xwm *x, uint32_t window, uint32_t atom, uint8_t state);
 
 static void handle_property_notify(struct xwm *x, const unsigned char *pkt) {
     uint32_t xid = (uint32_t)pkt[4] | (uint32_t)pkt[5] << 8 |
         (uint32_t)pkt[6] << 16 | (uint32_t)pkt[7] << 24;
     uint32_t atom = (uint32_t)pkt[8] | (uint32_t)pkt[9] << 8 |
         (uint32_t)pkt[10] << 16 | (uint32_t)pkt[11] << 24;
+    if (convert_property_notify(x, xid, atom, pkt[16])) return;
     if (transfer_incr(x, xid, atom, pkt[16])) return;
     struct xwm_window *w = window_for(x, xid);
     if (!w) return;
@@ -1307,147 +1205,53 @@ static void write_async(struct xwm *x, int fd, unsigned char *data, size_t len) 
     }
     xlist_insert(&x->writers, &writer->link);
 }
-static uint32_t mime_atom(struct xwm *x, const char *mime) {
+
+
+
+static uint32_t cache_atom(struct xwm *x, const char *mime) {
     if (strcmp(mime, "text/plain;charset=utf-8") == 0) return lookup_atom(x, A_UTF8_STRING);
     if (strcmp(mime, "text/plain") == 0) return lookup_atom(x, A_TEXT);
-    return atom_intern(x, mime, false);
+    for (size_t i = 0; i < x->cache_count; i++)
+        if (strcmp(x->cache[i].mime, mime) == 0) return x->cache[i].atom;
+    return 0;
 }
 
-static char *atom_mime(struct xwm *x, uint32_t atom) {
-    if (atom == lookup_atom(x, A_UTF8_STRING)) return strdup("text/plain;charset=utf-8");
-    if (atom == lookup_atom(x, A_TEXT) || atom == XA_STRING) return strdup("text/plain");
+static const char *cache_mime(struct xwm *x, uint32_t atom) {
+    if (atom == lookup_atom(x, A_UTF8_STRING)) return "text/plain;charset=utf-8";
+    if (atom == lookup_atom(x, A_TEXT) || atom == XA_STRING) return "text/plain";
+    for (size_t i = 0; i < x->cache_count; i++)
+        if (x->cache[i].atom == atom) return x->cache[i].mime;
+    return NULL;
+}
+
+static void cache_add(struct xwm *x, uint32_t atom, const char *mime) {
+    if (!atom || cache_atom(x, mime)) return;
+    if (x->cache_count == x->cache_cap) {
+        size_t cap = x->cache_cap ? x->cache_cap * 2 : 32;
+        struct atom_entry *grown = realloc(x->cache, cap * sizeof(*grown));
+        if (!grown) return;
+        x->cache = grown;
+        x->cache_cap = cap;
+    }
+    char *copy = strdup(mime);
+    if (!copy) return;
+    x->cache[x->cache_count++] = (struct atom_entry){ atom, copy };
+}
+
+static uint16_t send_intern(struct xwm *x, const char *name) {
     struct req r = {0};
-    r_begin(&r, 17);
-    r_u32(&r, atom);
-    uint16_t seq = r_send(x, &r);
-    size_t len = 0;
-    int error = 0;
-    unsigned char *reply = x_wait(x, seq, &len, &error, xwm_deadline());
-    if (!reply || len < 32) {
-        free(reply);
-        return NULL;
-    }
-    size_t name_len = (uint16_t)(reply[8] | reply[9] << 8);
-    if (name_len > len - 32) name_len = len - 32;
-    char *name = malloc(name_len + 1);
-    if (!name) {
-        free(reply);
-        return NULL;
-    }
-    memcpy(name, reply + 32, name_len);
-    name[name_len] = 0;
-    free(reply);
-    if (!strchr(name, '/')) {
-        free(name);
-        return NULL;
-    }
-    return name;
+    size_t len = strlen(name);
+    r_begin(&r, 16);
+    r_flag(&r, 1, 0);
+    r_u16(&r, (uint16_t)len);
+    r_u16(&r, 0);
+    r_bytes(&r, name, len);
+    return r_send(x, &r);
 }
 
-static unsigned char *convert_from_x(struct xwm *x, uint32_t window, uint32_t selection,
-        uint32_t target, size_t *length, uint32_t *type) {
-    uint64_t deadline = xwm_deadline();
-    convert_selection(x, window, selection, target, x->convert_property, X11_CURRENT_TIME);
-    for (;;) {
-        size_t len = 0;
-        unsigned char *packet = x_packet(x, &len, deadline);
-        if (!packet) return NULL;
-        if ((packet[0] & 0x7f) == 31) {
-            uint32_t requestor = (uint32_t)packet[8] | (uint32_t)packet[9] << 8 |
-                (uint32_t)packet[10] << 16 | (uint32_t)packet[11] << 24;
-            uint32_t property = (uint32_t)packet[20] | (uint32_t)packet[21] << 8 |
-                (uint32_t)packet[22] << 16 | (uint32_t)packet[23] << 24;
-            if (requestor == window && property == x->convert_property) {
-                free(packet);
-                break;
-            }
-            if (requestor == window && property == X11_NONE) {
-                free(packet);
-                return NULL;
-            }
-        }
-        defer(x, packet, len);
-    }
-    struct property property;
-    if (!read_property_all(x, window, x->convert_property, &property, deadline) ||
-            property.type == X11_NONE) {
-        property_finish(&property);
-        return NULL;
-    }
-    if (property.type == lookup_atom(x, A_INCR)) {
-        uint32_t hint = property.length >= 4 ? ((uint32_t *)property.data)[0] : 0;
-        property_finish(&property);
-        (void)hint;
-        delete_property(x, window, x->convert_property);
-        unsigned char *data = NULL;
-        size_t total = 0, capacity = 0;
-        for (;;) {
-            unsigned char *notify = NULL;
-            for (;;) {
-                size_t len = 0;
-                unsigned char *packet = x_packet(x, &len, deadline);
-                if (!packet) {
-                    free(data);
-                    return NULL;
-                }
-                if ((packet[0] & 0x7f) == 28) {
-                    uint32_t w = (uint32_t)packet[4] | (uint32_t)packet[5] << 8 |
-                        (uint32_t)packet[6] << 16 | (uint32_t)packet[7] << 24;
-                    uint32_t atom = (uint32_t)packet[8] | (uint32_t)packet[9] << 8 |
-                        (uint32_t)packet[10] << 16 | (uint32_t)packet[11] << 24;
-                    if (w == window && atom == x->convert_property && packet[16] == 0) {
-                        free(packet);
-                        notify = (unsigned char *)1;
-                        break;
-                    }
-                    if (w == window && atom == x->convert_property) {
-                        free(packet);
-                        continue;
-                    }
-                }
-                defer(x, packet, len);
-            }
-            if (!notify) {
-                free(data);
-                return NULL;
-            }
-            struct property part;
-            if (!read_property_all(x, window, x->convert_property, &part, deadline) ||
-                    part.type == X11_NONE) {
-                property_finish(&part);
-                free(data);
-                return NULL;
-            }
-            if (!part.length) {
-                property_finish(&part);
-                delete_property(x, window, x->convert_property);
-                break;
-            }
-            if (total + part.length > capacity) {
-                size_t cap = capacity ? capacity : 65536;
-                while (cap < total + part.length) cap *= 2;
-                unsigned char *grown = realloc(data, cap);
-                if (!grown) {
-                    property_finish(&part);
-                    free(data);
-                    return NULL;
-                }
-                data = grown;
-                capacity = cap;
-            }
-            memcpy(data + total, part.data, part.length);
-            total += part.length;
-            property_finish(&part);
-            delete_property(x, window, x->convert_property);
-        }
-        *length = total;
-        *type = XA_STRING;
-        return data;
-    }
-    *length = property.length;
-    *type = property.type;
-    delete_property(x, window, x->convert_property);
-    return property.data;
+static uint32_t reply_u32(const unsigned char *reply, size_t at) {
+    return (uint32_t)reply[at] | (uint32_t)reply[at + 1] << 8 | (uint32_t)reply[at + 2] << 16 |
+        (uint32_t)reply[at + 3] << 24;
 }
 
 static void serve_targets(struct xwm *x, bool primary, const unsigned char *pkt) {
@@ -1470,7 +1274,8 @@ static void serve_targets(struct xwm *x, bool primary, const unsigned char *pkt)
     atoms[used++] = lookup_atom(x, A_TARGETS);
     atoms[used++] = lookup_atom(x, A_TIMESTAMP);
     for (size_t i = 0; i < cache->count && used < 64; i++) {
-        uint32_t atom = mime_atom(x, cache->mimes[i]);
+        uint32_t atom = cache_atom(x, cache->mimes[i]);
+        if (!atom) continue;
         bool duplicate = false;
         for (size_t j = 0; j < used; j++) if (atoms[j] == atom) duplicate = true;
         if (!duplicate) atoms[used++] = atom;
@@ -1597,6 +1402,18 @@ static void handle_selection_request(struct xwm *x, const unsigned char *pkt) {
         selection_notify(x, requestor, selection, target, X11_NONE, time);
         return;
     }
+    int slot = primary ? 1 : 0;
+    if (x->interning[slot]) {
+        struct deferred *wait = malloc(sizeof(*wait) + 32);
+        if (!wait) {
+            selection_notify(x, requestor, selection, target, X11_NONE, time);
+            return;
+        }
+        wait->len = 32;
+        memcpy(wait->data, pkt, 32);
+        xlist_insert(x->sel_waiting[slot].prev, &wait->link);
+        return;
+    }
     if (target == lookup_atom(x, A_TARGETS)) {
         serve_targets(x, primary, pkt);
         return;
@@ -1613,7 +1430,7 @@ static void handle_selection_request(struct xwm *x, const unsigned char *pkt) {
         selection_notify(x, requestor, selection, target, X11_NONE, time);
         return;
     }
-    char *mime = atom_mime(x, target);
+    const char *mime = cache_mime(x, target);
     const char *send_mime = NULL;
     if (mime) {
         for (size_t i = 0; i < cache->count; i++)
@@ -1626,7 +1443,6 @@ static void handle_selection_request(struct xwm *x, const unsigned char *pkt) {
                 }
         }
     }
-    free(mime);
     if (!send_mime) {
         selection_notify(x, requestor, selection, target, X11_NONE, time);
         return;
@@ -1669,48 +1485,395 @@ static void handle_selection_request(struct xwm *x, const unsigned char *pkt) {
     sidecar_send(x->sc, XWM_EVT_SELECTION_REQUEST, buf, (uint32_t)(sizeof(req) + mlen), pipes[1]);
 }
 
-static void adopt_selection(struct xwm *x, bool primary) {
-    uint32_t selection = lookup_atom(x, primary ? A_PRIMARY : A_CLIPBOARD);
-    uint32_t window = primary ? x->primary_window : x->clipboard_window;
-    size_t length = 0;
-    uint32_t type = 0;
-    unsigned char *data = convert_from_x(x, window, selection, lookup_atom(x, A_TARGETS),
-        &length, &type);
-    char *mimes[64];
-    size_t count = 0;
-    if (data && type == XA_ATOM) {
-        size_t atoms = length / 4;
-        const uint32_t *values = (const uint32_t *)data;
-        for (size_t i = 0; i < atoms && count < 64; i++) {
-            if (values[i] == lookup_atom(x, A_TARGETS) || values[i] == lookup_atom(x, A_TIMESTAMP) ||
-                    values[i] == lookup_atom(x, A_INCR)) continue;
-            char *mime = atom_mime(x, values[i]);
-            if (!mime) continue;
-            bool duplicate = false;
-            for (size_t j = 0; j < count; j++)
-                if (strcmp(mimes[j], mime) == 0) duplicate = true;
-            if (duplicate) free(mime);
-            else mimes[count++] = mime;
+static void convert_start_next(struct xwm *x);
+static struct convert *convert_active(struct xwm *x);
+
+static uint32_t convert_window(struct xwm *x, const struct convert *c) {
+    (void)x;
+    return c->window;
+}
+
+static void *convert_tag(const struct convert *c) {
+    return (void *)(uintptr_t)c->id;
+}
+
+static struct convert *convert_tagged(struct xwm *x, void *ctx) {
+    struct convert *c = convert_active(x);
+    return c && c->id == (uint64_t)(uintptr_t)ctx ? c : NULL;
+}
+
+static void convert_arm(struct xwm *x, int ms) {
+    struct itimerspec spec = {0};
+    spec.it_value.tv_sec = ms / 1000;
+    spec.it_value.tv_nsec = (long)(ms % 1000) * 1000000L;
+    if (x->convert_timer_fd >= 0) timerfd_settime(x->convert_timer_fd, 0, &spec, NULL);
+}
+
+static struct convert *convert_active(struct xwm *x) {
+    if (xlist_empty(&x->converts)) return NULL;
+    struct convert *c = xcontainer_of(x->converts.next, c, link);
+    return c->active ? c : NULL;
+}
+
+static void convert_free(struct convert *c) {
+    if (c->fd >= 0) close(c->fd);
+    free(c->data);
+    free(c->mime);
+    free(c);
+}
+
+static void adopt_free(void *ctx) {
+    struct adopt *a = ctx;
+    if (!a || --a->outstanding) return;
+    for (size_t i = 0; i < a->count; i++) free(a->mimes[i]);
+    free(a);
+}
+
+static void adopt_offer(struct xwm *x, struct adopt *a) {
+    if (a->generation == x->sel_generation[a->primary ? 1 : 0]) {
+        if (!a->count) {
+            a->mimes[a->count++] = strdup("text/plain;charset=utf-8");
+            a->mimes[a->count++] = strdup("text/plain");
+        }
+        uint8_t buf[4096];
+        struct xwm_msg_sel_offer hdr = { .primary = a->primary ? 1 : 0, .count = 0 };
+        size_t pos = sizeof(hdr);
+        for (size_t i = 0; i < a->count; i++) {
+            if (!a->mimes[i]) continue;
+            size_t mlen = strlen(a->mimes[i]) + 1;
+            if (pos + mlen > sizeof(buf)) break;
+            memcpy(buf + pos, a->mimes[i], mlen);
+            pos += mlen;
+            hdr.count++;
+        }
+        memcpy(buf, &hdr, sizeof(hdr));
+        sidecar_send(x->sc, XWM_EVT_SELECTION_OFFER, buf, (uint32_t)pos, -1);
+    }
+    for (size_t i = 0; i < a->count; i++) free(a->mimes[i]);
+    free(a);
+}
+
+static void adopt_add(struct adopt *a, const char *mime) {
+    for (size_t i = 0; i < a->count; i++)
+        if (strcmp(a->mimes[i], mime) == 0) return;
+    if (a->count < 64) a->mimes[a->count] = strdup(mime);
+    if (a->count < 64 && a->mimes[a->count]) a->count++;
+}
+
+struct atom_name {
+    struct adopt *adopt;
+    uint32_t atom;
+};
+
+static void atom_name_drop(void *ctx) {
+    struct atom_name *n = ctx;
+    adopt_free(n->adopt);
+    free(n);
+}
+
+static void atom_name_reply(struct xwm *x, const unsigned char *reply, size_t len, void *ctx) {
+    struct atom_name *n = ctx;
+    struct adopt *a = n->adopt;
+    if (reply && len >= 32) {
+        size_t name_len = (uint16_t)(reply[8] | reply[9] << 8);
+        if (name_len > len - 32) name_len = len - 32;
+        char *name = strndup((const char *)reply + 32, name_len);
+        if (name && strchr(name, '/')) {
+            cache_add(x, n->atom, name);
+            adopt_add(a, name);
+        }
+        free(name);
+    }
+    free(n);
+    if (--a->outstanding == 0) adopt_offer(x, a);
+}
+
+static void adopt_targets(struct xwm *x, struct convert *c, bool ok) {
+    struct adopt *a = calloc(1, sizeof(*a));
+    if (!a) return;
+    a->primary = c->primary;
+    a->generation = c->generation;
+    a->outstanding = 1;
+    if (ok && c->type == XA_ATOM) {
+        size_t atoms = c->len / 4;
+        for (size_t i = 0; i < atoms; i++) {
+            uint32_t atom = reply_u32(c->data, i * 4);
+            if (atom == lookup_atom(x, A_TARGETS) || atom == lookup_atom(x, A_TIMESTAMP) ||
+                    atom == lookup_atom(x, A_INCR)) continue;
+            const char *known = cache_mime(x, atom);
+            if (known) {
+                if (strchr(known, '/')) adopt_add(a, known);
+                continue;
+            }
+            struct atom_name *n = calloc(1, sizeof(*n));
+            if (!n) continue;
+            n->adopt = a;
+            n->atom = atom;
+            a->outstanding++;
+            struct req r = {0};
+            r_begin(&r, 17);
+            r_u32(&r, atom);
+            expect(x, r_send(x, &r), atom_name_reply, n, atom_name_drop);
         }
     }
-    free(data);
-    if (!count) {
-        mimes[count++] = strdup("text/plain;charset=utf-8");
-        mimes[count++] = strdup("text/plain");
+    if (--a->outstanding == 0) adopt_offer(x, a);
+}
+
+static void convert_finish(struct xwm *x, bool ok) {
+    struct convert *c = convert_active(x);
+    if (!c) return;
+    xlist_remove(&c->link);
+    convert_arm(x, 0);
+    if (c->window && !x->stopping && !x->failed) simple_window(x, 4, c->window);
+    if (c->kind == CONVERT_DATA) {
+        if (ok) {
+            write_async(x, c->fd, c->data, c->len);
+            c->fd = -1;
+            c->data = NULL;
+        }
+    } else {
+        adopt_targets(x, c, ok);
     }
-    uint8_t buf[4096];
-    struct xwm_msg_sel_offer hdr = { .primary = primary ? 1 : 0, .count = 0 };
-    size_t pos = sizeof(hdr);
-    for (size_t i = 0; i < count; i++) {
-        size_t mlen = strlen(mimes[i]) + 1;
-        if (pos + mlen > sizeof(buf)) break;
-        memcpy(buf + pos, mimes[i], mlen);
-        pos += mlen;
-        hdr.count++;
+    convert_free(c);
+    if (!x->stopping) convert_start_next(x);
+}
+
+
+static void convert_property_reply(struct xwm *x, const unsigned char *reply, size_t len, void *ctx);
+
+static void convert_read(struct xwm *x, struct convert *c) {
+    struct req r = {0};
+    r_begin(&r, 20);
+    r_u32(&r, convert_window(x, c));
+    r_u32(&r, x->convert_property);
+    r_u32(&r, 0);
+    r_u32(&r, c->offset);
+    r_u32(&r, x->max_request / 4);
+    expect(x, r_send(x, &r), convert_property_reply, convert_tag(c), NULL);
+    convert_arm(x, CONVERT_TIMEOUT_MS);
+}
+
+static bool convert_append(struct convert *c, const unsigned char *data, size_t length) {
+    if (c->len + length > c->cap) {
+        size_t cap = c->cap ? c->cap : 65536;
+        while (cap < c->len + length) cap *= 2;
+        unsigned char *grown = realloc(c->data, cap);
+        if (!grown) return false;
+        c->data = grown;
+        c->cap = cap;
     }
-    memcpy(buf, &hdr, sizeof(hdr));
-    sidecar_send(x->sc, XWM_EVT_SELECTION_OFFER, buf, (uint32_t)pos, -1);
-    for (size_t i = 0; i < count; i++) free(mimes[i]);
+    if (length) memcpy(c->data + c->len, data, length);
+    c->len += length;
+    return true;
+}
+
+static void convert_property_reply(struct xwm *x, const unsigned char *reply, size_t len, void *ctx) {
+    struct convert *c = convert_tagged(x, ctx);
+    if (!c) return;
+    if (!reply) {
+        convert_finish(x, false);
+        return;
+    }
+    struct property property;
+    property_from_reply(reply, len, &property);
+    uint32_t window = convert_window(x, c);
+    if (c->state == CS_PROP && c->offset == 0 && property.type == lookup_atom(x, A_INCR)) {
+        property_finish(&property);
+        delete_property(x, window, x->convert_property);
+        c->state = CS_INCR_WAIT;
+        c->type = XA_STRING;
+        convert_arm(x, CONVERT_TIMEOUT_MS);
+        return;
+    }
+    if (property.type == X11_NONE) {
+        property_finish(&property);
+        convert_finish(x, false);
+        return;
+    }
+    if (c->state == CS_PROP && c->offset == 0) c->type = property.type;
+    bool ok = convert_append(c, property.data, property.length);
+    c->chunk += property.length;
+    c->offset += (uint32_t)(property.length / 4);
+    uint32_t after = property.after;
+    property_finish(&property);
+    if (!ok) {
+        convert_finish(x, false);
+        return;
+    }
+    if (after) {
+        convert_read(x, c);
+        return;
+    }
+    delete_property(x, window, x->convert_property);
+    if (c->state == CS_PROP) {
+        convert_finish(x, true);
+        return;
+    }
+    if (!c->chunk) {
+        convert_finish(x, true);
+        return;
+    }
+    c->state = CS_INCR_WAIT;
+    convert_arm(x, CONVERT_TIMEOUT_MS);
+}
+
+static void convert_send(struct xwm *x, struct convert *c) {
+    uint32_t selection = lookup_atom(x, c->primary ? A_PRIMARY : A_CLIPBOARD);
+    convert_selection(x, convert_window(x, c), selection, c->target, x->convert_property,
+        X11_CURRENT_TIME);
+    c->state = CS_NOTIFY;
+    convert_arm(x, CONVERT_TIMEOUT_MS);
+}
+
+static void convert_atom_reply(struct xwm *x, const unsigned char *reply, size_t len, void *ctx) {
+    struct convert *c = convert_tagged(x, ctx);
+    if (!c || c->state != CS_ATOM) return;
+    if (!reply || len < 12 || !reply_u32(reply, 8)) {
+        convert_finish(x, false);
+        return;
+    }
+    c->target = reply_u32(reply, 8);
+    cache_add(x, c->target, c->mime);
+    convert_send(x, c);
+}
+
+static void convert_start_next(struct xwm *x) {
+    while (!xlist_empty(&x->converts)) {
+        struct convert *c = xcontainer_of(x->converts.next, c, link);
+        if (c->active) return;
+        if (c->kind == CONVERT_TARGETS &&
+                c->generation != x->sel_generation[c->primary ? 1 : 0]) {
+            xlist_remove(&c->link);
+            convert_free(c);
+            continue;
+        }
+        c->active = true;
+        c->id = ++x->convert_ids;
+        c->window = r_rid(x);
+        uint32_t values[32] = {0};
+        values[11] = MASK_PROPERTY_CHANGE;
+        create_window(x, c->window, x->root, 0, 1, 1, 1, CW_EVENT_MASK, values);
+        if (!c->target) {
+            c->state = CS_ATOM;
+            expect(x, send_intern(x, c->mime), convert_atom_reply, convert_tag(c), NULL);
+            convert_arm(x, CONVERT_TIMEOUT_MS);
+            return;
+        }
+        convert_send(x, c);
+        return;
+    }
+}
+
+static void convert_enqueue(struct xwm *x, int kind, bool primary, uint32_t target,
+        const char *mime, int fd) {
+    struct convert *c = calloc(1, sizeof(*c));
+    if (!c || (mime && !(c->mime = strdup(mime)))) {
+        if (fd >= 0) close(fd);
+        free(c);
+        return;
+    }
+    c->kind = kind;
+    c->primary = primary;
+    c->target = target;
+    c->fd = fd;
+    c->generation = x->sel_generation[primary ? 1 : 0];
+    xlist_insert(x->converts.prev, &c->link);
+    convert_start_next(x);
+}
+
+static void handle_selection_notify(struct xwm *x, const unsigned char *pkt) {
+    struct convert *c = convert_active(x);
+    if (!c || c->state != CS_NOTIFY) return;
+    uint32_t requestor = reply_u32(pkt, 8);
+    uint32_t selection = reply_u32(pkt, 12);
+    uint32_t target = reply_u32(pkt, 16);
+    uint32_t property = reply_u32(pkt, 20);
+    if (requestor != convert_window(x, c) || target != c->target ||
+            selection != lookup_atom(x, c->primary ? A_PRIMARY : A_CLIPBOARD)) return;
+    if (property != X11_NONE && property != x->convert_property) return;
+    if (property == X11_NONE) {
+        convert_finish(x, false);
+        return;
+    }
+    c->state = CS_PROP;
+    c->offset = 0;
+    convert_read(x, c);
+}
+
+static bool convert_property_notify(struct xwm *x, uint32_t window, uint32_t atom, uint8_t state) {
+    struct convert *c = convert_active(x);
+    if (!c || window != convert_window(x, c) || atom != x->convert_property) return false;
+    if (state == 0 && c->state == CS_INCR_WAIT) {
+        c->state = CS_INCR_PROP;
+        c->offset = 0;
+        c->chunk = 0;
+        convert_read(x, c);
+    }
+    return true;
+}
+
+static void convert_timeout(int fd, uint32_t events, void *data) {
+    struct xwm *x = data;
+    uint64_t expirations;
+    (void)events;
+    if (read(fd, &expirations, sizeof(expirations)) < 0) {}
+    if (convert_active(x)) {
+        fprintf(stderr, "tomoe-xwm: selection conversion timed out\n");
+        convert_finish(x, false);
+    }
+}
+
+struct intern {
+    int slot;
+    char *mime;
+};
+
+static void intern_drop(void *ctx) {
+    struct intern *in = ctx;
+    free(in->mime);
+    free(in);
+}
+
+static void intern_reply(struct xwm *x, const unsigned char *reply, size_t len, void *ctx) {
+    struct intern *in = ctx;
+    if (reply && len >= 12) cache_add(x, reply_u32(reply, 8), in->mime);
+    int slot = in->slot;
+    intern_drop(in);
+    if (x->interning[slot] && --x->interning[slot]) return;
+    struct xlist waiting;
+    xlist_init(&waiting);
+    while (!xlist_empty(&x->sel_waiting[slot])) {
+        struct xlist *e = x->sel_waiting[slot].next;
+        xlist_remove(e);
+        xlist_insert(waiting.prev, e);
+    }
+    while (!xlist_empty(&waiting)) {
+        struct deferred *d = xcontainer_of(waiting.next, d, link);
+        xlist_remove(&d->link);
+        handle_selection_request(x, d->data);
+        free(d);
+    }
+}
+
+static void intern_selection(struct xwm *x, int slot) {
+    struct wl_sel_cache *cache = &x->wl_sel[slot];
+    for (size_t i = 0; cache->present && i < cache->count; i++) {
+        if (cache_atom(x, cache->mimes[i])) continue;
+        struct intern *in = calloc(1, sizeof(*in));
+        if (!in || !(in->mime = strdup(cache->mimes[i]))) {
+            free(in);
+            continue;
+        }
+        in->slot = slot;
+        x->interning[slot]++;
+        expect(x, send_intern(x, cache->mimes[i]), intern_reply, in, intern_drop);
+    }
+}
+
+static void adopt_selection(struct xwm *x, bool primary) {
+    int slot = primary ? 1 : 0;
+    x->sel_generation[slot]++;
+    convert_enqueue(x, CONVERT_TARGETS, primary, lookup_atom(x, A_TARGETS), NULL, -1);
 }
 
 static void handle_xfixes(struct xwm *x, const unsigned char *pkt) {
@@ -1739,8 +1902,53 @@ static void handle_xfixes(struct xwm *x, const unsigned char *pkt) {
 
 enum { SETUP_NONE, SETUP_WAIT, SETUP_ATOMS, SETUP_READY };
 
+static void setup_complete(struct xwm *x);
+
+static void extension_reply(struct xwm *x, const unsigned char *reply, size_t len, void *ctx) {
+    bool composite = ctx != NULL;
+    if (reply && len >= 32 && reply[8]) {
+        int opcode = reply[9];
+        int event = reply[10];
+        if (composite) {
+            uint32_t version[2] = { 0, 4 };
+            extension_request(x, opcode, 0, version, 2);
+            struct req r = {0};
+            r_begin(&r, (uint8_t)opcode);
+            r_flag(&r, 1, 2);
+            r_u32(&r, x->root);
+            r_u8(&r, 1);
+            r_u8(&r, 0); r_u8(&r, 0); r_u8(&r, 0);
+            r_send(x, &r);
+        } else {
+            x->xfixes = opcode;
+            x->xfixes_event = event;
+            uint32_t version[2] = { 3, 0 };
+            xfixes_request(x, 0, version, 2);
+            uint32_t select[3];
+            select[0] = x->clipboard_window;
+            select[1] = lookup_atom(x, A_CLIPBOARD);
+            select[2] = 7;
+            xfixes_request(x, 2, select, 3);
+            select[0] = x->primary_window;
+            select[1] = lookup_atom(x, A_PRIMARY);
+            xfixes_request(x, 2, select, 3);
+        }
+    }
+    if (--x->setup_queries == 0) setup_complete(x);
+}
+
+static void send_query_extension(struct xwm *x, const char *name, bool composite) {
+    struct req r = {0};
+    size_t len = strlen(name);
+    r_begin(&r, 98);
+    r_u16(&r, (uint16_t)len);
+    r_u16(&r, 0);
+    r_bytes(&r, name, len);
+    expect(x, r_send(x, &r), extension_reply, composite ? (void *)x : NULL, NULL);
+}
+
 static void setup_finish(struct xwm *x) {
-    x->convert_property = atom_intern(x, "_TOMOE_CONVERT", false);
+    x->convert_property = lookup_atom(x, A_TOMOE_CONVERT);
     x->wm_window = r_rid(x);
     uint32_t values[32] = {0};
     values[11] = 0;
@@ -1772,33 +1980,17 @@ static void setup_finish(struct xwm *x) {
         sizeof(supported) / sizeof(*supported));
     refresh_client_list(x);
     refresh_active(x);
-    int opcode = 0, event = 0;
-    if (query_extension(x, "Composite", &opcode, &event)) {
-        uint32_t version[2] = { 0, 4 };
-        extension_request(x, opcode, 0, version, 2);
-        struct req r = {0};
-        r_begin(&r, (uint8_t)opcode);
-        r_flag(&r, 1, 2);
-        r_u32(&r, x->root);
-        r_u8(&r, 1);
-        r_u8(&r, 0); r_u8(&r, 0); r_u8(&r, 0);
-        r_send(x, &r);
-    }
-    if (query_extension(x, "XFIXES", &opcode, &event)) {
-        x->xfixes = opcode;
-        x->xfixes_event = event;
-        uint32_t version[2] = { 3, 0 };
-        xfixes_request(x, 0, version, 2);
-        uint32_t select[3];
-        select[0] = x->clipboard_window;
-        select[1] = lookup_atom(x, A_CLIPBOARD);
-        select[2] = 7;
-        xfixes_request(x, 2, select, 3);
-        select[0] = x->primary_window;
-        select[1] = lookup_atom(x, A_PRIMARY);
-        xfixes_request(x, 2, select, 3);
-    }
+    x->setup_queries = 2;
+    send_query_extension(x, "Composite", true);
+    send_query_extension(x, "XFIXES", false);
+}
+
+static void intern_selection(struct xwm *x, int slot);
+
+static void setup_complete(struct xwm *x) {
     set_owner(x, x->wm_window, lookup_atom(x, A_WM_S0), X11_CURRENT_TIME);
+    intern_selection(x, 0);
+    intern_selection(x, 1);
     for (int primary = 0; primary < 2; primary++) {
         if (!x->wl_sel[primary].present) continue;
         set_owner(x, primary ? x->primary_window : x->clipboard_window,
@@ -1870,6 +2062,7 @@ static void setup_atom_reply(struct xwm *x, unsigned char *reply, size_t length)
 
 static void x_handle(struct xwm *x, unsigned char *packet, size_t length) {
     uint8_t type = packet[0] & 0x7f;
+    if (type == 0 && pending_dispatch(x, packet, length)) return;
     if (type == 0) {
         uint16_t seq = (uint16_t)(packet[2] | packet[3] << 8);
         struct prop_request *request, *next_request;
@@ -1882,6 +2075,11 @@ static void x_handle(struct xwm *x, unsigned char *packet, size_t length) {
         return;
     }
     if (type == 1) {
+        if (x->setup_state == SETUP_WAIT) {
+            setup_reply(x, packet, length);
+            return;
+        }
+        if (pending_dispatch(x, packet, length)) return;
         if (x->setup_state == SETUP_WAIT) setup_reply(x, packet, length);
         else if (x->setup_state == SETUP_ATOMS) setup_atom_reply(x, packet, length);
         else if (x->ready) handle_property_reply(x, packet, length);
@@ -1901,6 +2099,7 @@ static void x_handle(struct xwm *x, unsigned char *packet, size_t length) {
     case 23: handle_configure_request(x, packet); break;
     case 28: handle_property_notify(x, packet); break;
     case 30: handle_selection_request(x, packet); break;
+    case 31: handle_selection_notify(x, packet); break;
     case 33: handle_client_message(x, packet); break;
     default: break;
     }
@@ -1919,12 +2118,6 @@ static void x_drain_buffered(struct xwm *x) {
         x_handle(x, packet, need);
         free(packet);
     }
-    while (!x->failed && !xlist_empty(&x->deferred)) {
-        struct deferred *entry = xcontainer_of(x->deferred.next, entry, link);
-        xlist_remove(&entry->link);
-        x_handle(x, entry->data, entry->len);
-        free(entry);
-    }
 }
 
 static void xwm_event(int fd, uint32_t events, void *data) {
@@ -1933,7 +2126,7 @@ static void xwm_event(int fd, uint32_t events, void *data) {
     if (events & EPOLLOUT) x_flush(x);
     if (events & (EPOLLIN | EPOLLHUP | EPOLLERR)) {
         for (;;) {
-            ssize_t n = x_recv(x, 0, 0);
+            ssize_t n = x_recv(x);
             if (n == -2) break;
             if (n <= 0) {
                 x_fail(x, n ? "recv failed" : "connection closed", n ? errno : 0);
@@ -1951,13 +2144,22 @@ struct xwm *xwm_create(struct xwm_sidecar *sc, int wmfd) {
     if (!x) return NULL;
     x->sc = sc;
     x->fd = wmfd;
-    xlist_init(&x->deferred);
+    xlist_init(&x->pending);
+    xlist_init(&x->converts);
+    xlist_init(&x->sel_waiting[0]);
+    xlist_init(&x->sel_waiting[1]);
     xlist_init(&x->windows);
     xlist_init(&x->writers);
     xlist_init(&x->transfers);
     xlist_init(&x->props);
+    x->convert_timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+    if (x->convert_timer_fd >= 0)
+        x->convert_timer = xev_add(sc, x->convert_timer_fd, EPOLLIN, convert_timeout, x);
     x->source = xev_add(sc, wmfd, EPOLLIN, xwm_event, x);
-    if (!x->source) {
+    if (!x->source || !x->convert_timer) {
+        if (x->source) xev_del(sc, x->source);
+        if (x->convert_timer) xev_del(sc, x->convert_timer);
+        if (x->convert_timer_fd >= 0) close(x->convert_timer_fd);
         free(x);
         return NULL;
     }
@@ -1986,11 +2188,28 @@ void xwm_destroy(struct xwm *x) {
         xlist_remove(&request->link);
         free(request);
     }
-    struct deferred *entry, *next_entry;
-    xlist_for_each_safe(entry, next_entry, &x->deferred, link) {
-        xlist_remove(&entry->link);
-        free(entry);
+    struct pending *p, *next_pending;
+    xlist_for_each_safe(p, next_pending, &x->pending, link) {
+        xlist_remove(&p->link);
+        if (p->drop) p->drop(p->ctx);
+        free(p);
     }
+    struct convert *c, *next_convert;
+    xlist_for_each_safe(c, next_convert, &x->converts, link) {
+        xlist_remove(&c->link);
+        convert_free(c);
+    }
+    for (int slot = 0; slot < 2; slot++) {
+        struct deferred *d, *next_d;
+        xlist_for_each_safe(d, next_d, &x->sel_waiting[slot], link) {
+            xlist_remove(&d->link);
+            free(d);
+        }
+    }
+    for (size_t i = 0; i < x->cache_count; i++) free(x->cache[i].mime);
+    free(x->cache);
+    if (x->convert_timer) xev_del(x->sc, x->convert_timer);
+    if (x->convert_timer_fd >= 0) close(x->convert_timer_fd);
     wl_sel_clear(&x->wl_sel[0]);
     wl_sel_clear(&x->wl_sel[1]);
     free(x->in);
@@ -2088,6 +2307,7 @@ void xwm_handle_cmd(struct xwm *x, const struct xwm_hdr *hdr, const uint8_t *pay
                 p = nul + 1;
             }
         }
+        if (x->ready) intern_selection(x, slot);
         if (x->ready) {
             uint32_t selection = lookup_atom(x, cmd.primary ? A_PRIMARY : A_CLIPBOARD);
             uint32_t window = cmd.primary ? x->primary_window : x->clipboard_window;
@@ -2112,19 +2332,8 @@ void xwm_handle_cmd(struct xwm *x, const struct xwm_hdr *hdr, const uint8_t *pay
         mime[copy] = '\0';
         int out_fd = fd;
         fd = -1;
-        uint32_t selection = lookup_atom(x, cmd.primary ? A_PRIMARY : A_CLIPBOARD);
-        uint32_t window = cmd.primary ? x->primary_window : x->clipboard_window;
-        uint32_t target = mime_atom(x, mime);
-        size_t length = 0;
-        uint32_t type = 0;
-        unsigned char *data = convert_from_x(x, window, selection, target, &length, &type);
-        if (!data) {
-            close(out_fd);
-        } else {
-            (void)type;
-            write_async(x, out_fd, data, length);
-        }
-        x_drain_buffered(x);
+        fcntl(out_fd, F_SETFD, FD_CLOEXEC);
+        convert_enqueue(x, CONVERT_DATA, cmd.primary != 0, cache_atom(x, mime), mime, out_fd);
         break;
     }
     default:
