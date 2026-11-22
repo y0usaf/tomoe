@@ -198,6 +198,7 @@ static bool bridge_send(struct xwm_bridge *b, uint16_t type, const void *payload
     size_t total = sizeof(struct xwm_hdr) + len;
     if (b->out_bytes + total > BRIDGE_OUT_MAX) {
         if (fd >= 0) close(fd);
+        bridge_schedule_disconnect(b);
         return false;
     }
     struct bridge_out_item *it = calloc(1, sizeof(*it));
@@ -881,7 +882,9 @@ static void handle_message(struct xwm_bridge *b, const struct xwm_hdr *hdr,
         if (hdr->len < sizeof(struct xwm_msg_sel_clear)) break;
         struct xwm_msg_sel_clear msg;
         memcpy(&msg, payload, sizeof(msg));
-        selection_x11_clear(b->server, msg.primary != 0);
+        bool x11 = false;
+        if (selection_source_info(b->server, msg.primary != 0, &x11, NULL, NULL) && x11)
+            selection_x11_clear(b->server, msg.primary != 0);
         break;
     }
     case XWM_EVT_SELECTION_REQUEST: {

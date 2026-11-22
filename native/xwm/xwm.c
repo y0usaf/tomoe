@@ -1907,6 +1907,26 @@ static void x_handle(struct xwm *x, unsigned char *packet, size_t length) {
     (void)length;
 }
 
+static void x_drain_buffered(struct xwm *x) {
+    while (!x->failed && x->in_len >= 4) {
+        size_t need = packet_length(x, x->in, x->in_len);
+        if (!need || x->in_len < need) break;
+        unsigned char *packet = malloc(need);
+        if (!packet) break;
+        memcpy(packet, x->in, need);
+        memmove(x->in, x->in + need, x->in_len - need);
+        x->in_len -= need;
+        x_handle(x, packet, need);
+        free(packet);
+    }
+    while (!x->failed && !xlist_empty(&x->deferred)) {
+        struct deferred *entry = xcontainer_of(x->deferred.next, entry, link);
+        xlist_remove(&entry->link);
+        x_handle(x, entry->data, entry->len);
+        free(entry);
+    }
+}
+
 static void xwm_event(int fd, uint32_t events, void *data) {
     struct xwm *x = data;
     (void)fd;
@@ -1921,23 +1941,7 @@ static void xwm_event(int fd, uint32_t events, void *data) {
             }
             x->in_len += (size_t)n;
         }
-        while (!x->failed && x->in_len >= 4) {
-            size_t need = packet_length(x, x->in, x->in_len);
-            if (!need || x->in_len < need) break;
-            unsigned char *packet = malloc(need);
-            if (!packet) break;
-            memcpy(packet, x->in, need);
-            memmove(x->in, x->in + need, x->in_len - need);
-            x->in_len -= need;
-            x_handle(x, packet, need);
-            free(packet);
-        }
-        while (!x->failed && !xlist_empty(&x->deferred)) {
-            struct deferred *entry = xcontainer_of(x->deferred.next, entry, link);
-            xlist_remove(&entry->link);
-            x_handle(x, entry->data, entry->len);
-            free(entry);
-        }
+        x_drain_buffered(x);
     }
 }
 
@@ -2116,10 +2120,11 @@ void xwm_handle_cmd(struct xwm *x, const struct xwm_hdr *hdr, const uint8_t *pay
         unsigned char *data = convert_from_x(x, window, selection, target, &length, &type);
         if (!data) {
             close(out_fd);
-            break;
+        } else {
+            (void)type;
+            write_async(x, out_fd, data, length);
         }
-        (void)type;
-        write_async(x, out_fd, data, length);
+        x_drain_buffered(x);
         break;
     }
     default:
