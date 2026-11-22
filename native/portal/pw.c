@@ -74,6 +74,7 @@ struct pwv {
     uint8_t negotiated_pod[1024];
     size_t negotiated_len;
     uint32_t param_flags;
+    uint32_t buffers_flags;
     uint32_t publish_gen;
 };
 
@@ -282,7 +283,7 @@ static int send_port_update(struct pwv *v) {
     pww_pod_id(&b, SPA_PARAM_FORMAT);
     pww_pod_int(&b, SPA_PARAM_INFO_READ | SPA_PARAM_INFO_WRITE);
     pww_pod_id(&b, SPA_PARAM_BUFFERS);
-    pww_pod_int(&b, flags);
+    pww_pod_int(&b, SPA_PARAM_INFO_READ | (v->buffers_flags & SPA_PARAM_INFO_SERIAL));
     pww_pod_id(&b, SPA_PARAM_LATENCY);
     pww_pod_int(&b, SPA_PARAM_INFO_WRITE);
     pww_pod_id(&b, SPA_PARAM_TAG);
@@ -717,6 +718,7 @@ static int dispatch(void *data, uint32_t id, uint32_t opcode, struct pww_parse *
             if (v->publish_gen == gen && v->video.modifier_fixated) {
                 memcpy(v->negotiated_pod, pod, 8 + body);
                 v->negotiated_len = 8 + body;
+                v->buffers_flags ^= SPA_PARAM_INFO_SERIAL;
                 v->buffers_len = build_buffers(v, v->buffers_pod);
                 send_port_update(v);
             }
@@ -755,6 +757,7 @@ static void wire_ready(void *data, int fd, uint32_t mask) {
 
 static int publish_params(struct pwv *v) {
     v->param_flags ^= SPA_PARAM_INFO_SERIAL;
+    v->buffers_flags ^= SPA_PARAM_INFO_SERIAL;
     v->format_len = build_format(v, v->format_pod, false);
     v->format_modifier_len = 0;
     if (v->alloc != PWV_ALLOC_MEMORY)

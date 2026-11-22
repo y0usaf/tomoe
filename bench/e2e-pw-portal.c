@@ -18,6 +18,7 @@ struct consumer {
     struct pw_stream *stream;
     struct spa_source *timer;
     bool require_modifier;
+    bool shm_only;
     bool saw_unfixated;
     bool saw_fixated;
     bool have_modifier;
@@ -82,7 +83,13 @@ static void on_process(void *userdata) {
     c->frames++;
     pw_stream_queue_buffer(c->stream, b);
     if (c->saw_fixated && c->frames >= c->target_frames) {
-        c->exit_code = 0;
+        if (c->shm_only && c->data_type != SPA_DATA_MemFd) {
+            fprintf(stderr, "e2e-pw-portal: expected SPA_DATA_MemFd (%u), got %u\n",
+                (unsigned)SPA_DATA_MemFd, c->data_type);
+            c->exit_code = 1;
+        } else {
+            c->exit_code = 0;
+        }
         pw_main_loop_quit(c->loop);
     }
 }
@@ -110,6 +117,7 @@ int main(int argc, char **argv) {
     int timeout_sec = 8;
     int target_frames = 1;
     bool require_modifier = true;
+    bool shm_only = false;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--node") == 0 && i + 1 < argc) {
             target_id = (uint32_t)strtoul(argv[++i], NULL, 10);
@@ -119,6 +127,9 @@ int main(int argc, char **argv) {
             target_frames = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--allow-shm") == 0) {
             require_modifier = false;
+        } else if (strcmp(argv[i], "--shm-only") == 0) {
+            require_modifier = false;
+            shm_only = true;
         }
     }
     if (target_id == PW_ID_ANY) {
@@ -129,6 +140,7 @@ int main(int argc, char **argv) {
     struct consumer c;
     memset(&c, 0, sizeof(c));
     c.require_modifier = require_modifier;
+    c.shm_only = shm_only;
     c.target_frames = target_frames;
     c.exit_code = 1;
     c.loop = pw_main_loop_new(NULL);
@@ -172,12 +184,14 @@ int main(int argc, char **argv) {
             &SPA_FRACTION(60, 1), &SPA_FRACTION(0, 1), &SPA_FRACTION(1000, 1)),
         0);
     const struct spa_pod *params[2];
-    params[0] = spa_pod_builder_pop(&bm, &f0);
-    uint32_t n_params = 1;
+    uint32_t n_params = 0;
+    if (!shm_only) {
+        params[n_params++] = spa_pod_builder_pop(&bm, &f0);
+    }
     uint8_t buf_shm[1024];
     if (!require_modifier) {
         struct spa_pod_builder bs = SPA_POD_BUILDER_INIT(buf_shm, sizeof(buf_shm));
-        params[1] = spa_pod_builder_add_object(&bs,
+        params[n_params++] = spa_pod_builder_add_object(&bs,
             SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
             SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_video),
             SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw),
@@ -191,7 +205,6 @@ int main(int argc, char **argv) {
                 &SPA_RECTANGLE(1280, 720), &SPA_RECTANGLE(1, 1), &SPA_RECTANGLE(16384, 16384)),
             SPA_FORMAT_VIDEO_framerate, SPA_POD_CHOICE_RANGE_Fraction(
                 &SPA_FRACTION(60, 1), &SPA_FRACTION(0, 1), &SPA_FRACTION(1000, 1)));
-        n_params = 2;
     }
     struct timespec ts = { .tv_sec = timeout_sec, .tv_nsec = 0 };
     c.timer = pw_loop_add_timer(pw_main_loop_get_loop(c.loop), on_timeout, &c);

@@ -190,7 +190,7 @@ pkgs.testers.runNixOSTest {
         "node_id = int(streams[0][0])\n"
         "bench = subprocess.Popen([sys.argv[1], '--phase', 'frames', '--seconds', '4', '--windows', '1'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
         "try:\n"
-        "    r = subprocess.run([sys.argv[2], '--node', str(node_id), '--timeout', '6', '--frames', '1'])\n"
+        "    r = subprocess.run([sys.argv[2], '--node', str(node_id), '--timeout', '6', '--frames', '1'] + sys.argv[3:])\n"
         "finally:\n"
         "    bench.terminate()\n"
         "    try:\n"
@@ -207,6 +207,12 @@ pkgs.testers.runNixOSTest {
         f"${client}/bin/bench-client ${pwPortal}/bin/tomoe-e2e-pw-portal"
     )
     print(f"E2E_PW_PORTAL rc={pw_rc} out={pw_out.strip()}")
+    pw_shm_rc, pw_shm_out = machine.execute(
+        f"{sh_env} WAYLAND_DISPLAY={wl_display} DBUS_SESSION_BUS_ADDRESS={bus_addr} "
+        f"PIPEWIRE_RUNTIME_DIR=/run/e2e/rt ${pyDbus}/bin/python3 /run/e2e/pw_driver.py "
+        f"${client}/bin/bench-client ${pwPortal}/bin/tomoe-e2e-pw-portal --shm-only"
+    )
+    print(f"E2E_PW_PORTAL_SHM rc={pw_shm_rc} out={pw_shm_out.strip()}")
     if pw_rc != 0:
         _, plog = machine.execute("journalctl -u e2e-portal --no-pager -n 40")
         print(f"E2E_PORTAL_LOG:\n{plog}")
@@ -227,5 +233,6 @@ pkgs.testers.runNixOSTest {
     assert not leftover, f"leftover sockets in /run/e2e/rt: {leftover}"
     assert sub_rc == 0, f"e2e-subsurface failed (rc={sub_rc}): {sub_out}"
     assert pw_rc == 0, f"e2e-pw-portal failed (rc={pw_rc}): {pw_out}"
+    assert pw_shm_rc == 0, f"e2e-pw-portal --shm-only failed (rc={pw_shm_rc}): {pw_shm_out}"
   '';
 }
