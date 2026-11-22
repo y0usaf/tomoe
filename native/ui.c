@@ -1313,7 +1313,8 @@ static bool op_paint(struct ui_surface *surface, const struct ui_op *op,
         struct dpath path;
         dpath_init(&path);
         shape_path(&path, op, 0.0, 0.0);
-        bool ok = fill_path(canvas, area, &path, op->rgba);
+        uint32_t rgba = op->fill != UI_FILL_SOLID && op->stop_count > 0 ? op->stop_rgba[0] : op->rgba;
+        bool ok = fill_path(canvas, area, &path, rgba);
         dpath_fini(&path);
         return ok;
     }

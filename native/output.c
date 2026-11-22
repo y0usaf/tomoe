@@ -1030,6 +1030,7 @@ static const char *commit_outputs(struct tomoe *s,
         struct output *o;
         wl_list_for_each(o, &s->outputs, link) {
             if (o->screen != states[i].output) continue;
+            o->drawn_buffer = NULL;
             ring_finish(&o->ring);
             o->ring = rings[i];
             ring_reserve(s, &o->ring);
@@ -1440,6 +1441,7 @@ static void output_destroy(struct wl_listener *listener, void *data) {
     finish_output_capture(o);
     buffer_unlock(o->presented[0]);
     buffer_unlock(o->presented[1]);
+    o->drawn_buffer = NULL;
     ring_finish(&o->ring);
     oplist_finish(&o->ops);
     oplist_finish(&o->spare_ops);

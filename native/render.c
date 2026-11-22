@@ -2514,7 +2514,7 @@ static void render_free(struct render *r) {
         close(held->fd);
         if (held->pass) {
             buffer_unlock(held->pass->buffer);
-            free(held->pass);
+            pass_give(held->pass);
         }
         free(held);
     }
