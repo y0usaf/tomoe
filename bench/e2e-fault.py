@@ -183,21 +183,38 @@ def check_idle_flush(tomoe_bin, client_bin):
             time.sleep(0.05)
         env = dict(os.environ, WAYLAND_DISPLAY=sock, WAYLAND_DEBUG="client")
         client = subprocess.Popen([client_bin, "--input", "virtual", "--phase", "idle", "--seconds",
-            str(1.5 + FLUSH_SWITCHES * 0.3), "--windows", "2"], env=env, stdout=subprocess.DEVNULL,
+            str(16 + FLUSH_SWITCHES * 0.3), "--windows", "2"], env=env, stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE, text=True)
-        time.sleep(1.0)
+        lines = []
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([client.stderr], [], [], 0.2)
+            if not ready:
+                continue
+            line = client.stderr.readline()
+            if not line:
+                break
+            lines.append(line)
+            if re.search(r"wl_keyboard#\d+\.enter", line):
+                break
+        if not any(re.search(r"wl_keyboard#\d+\.enter", l) for l in lines):
+            client.kill()
+            raise SystemExit("idle-flush: FAIL no window took keyboard focus within 15s")
+        time.sleep(0.2)
         for _ in range(FLUSH_SWITCHES):
             subprocess.run([tomoe_bin, "--socket", sock, "event",
                 '(:type :key :owner "e2e-flush" :command "focus-next-window")'],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
             time.sleep(0.3)
-        _, trace = client.communicate(timeout=30)
+        client.kill()
+        _, rest = client.communicate(timeout=30)
+        trace = "".join(lines) + rest
     finally:
         tomoe.terminate()
         tomoe.wait(timeout=10)
     events = []
     for line in trace.splitlines():
-        m = re.match(r"\[(\d+\.\d+)\].*?(wl_keyboard#\d+\.enter|xdg_toplevel#\d+\.configure\()", line)
+        m = re.match(r"\[\s*(\d+\.\d+)\].*?(wl_keyboard#\d+\.enter|xdg_toplevel#\d+\.configure\()", line)
         if m:
             events.append((float(m.group(1)), "enter" if "enter" in m.group(2) else "configure"))
     gaps = []
@@ -208,7 +225,9 @@ def check_idle_flush(tomoe_bin, client_bin):
         gaps.append(round(after[0] - t, 3) if after else None)
     switched = gaps[-FLUSH_SWITCHES:]
     if len(switched) < FLUSH_SWITCHES or None in switched:
-        raise SystemExit(f"idle-flush: FAIL focus switches without a configure: {gaps}")
+        raise SystemExit(f"idle-flush: FAIL focus switches without a configure: {gaps} "
+            f"(trace lines {len(trace.splitlines())}, enters {trace.count('.enter(')}, "
+            f"configures {trace.count('.configure(')}, head {trace.splitlines()[:2]})")
     if max(switched) >= FLUSH_BOUND_MS:
         raise SystemExit(f"idle-flush: FAIL configure stranded after keyboard enter (ms): {switched}")
     return f"idle_flush=max{max(switched)}ms"
