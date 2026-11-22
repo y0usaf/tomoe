@@ -33,7 +33,7 @@
                 echo "libgbm still calls libdrm"
                 exit 1
               fi
-              patchelf --remove-needed libdrm.so.2 $lib
+              patchelf --remove-needed libdrm.so.2 --remove-needed libgcc_s.so.1 --remove-needed libm.so.6 $lib
               patchelf --shrink-rpath $lib
             '';
           });
@@ -68,6 +68,9 @@
             ];
             NIX_CFLAGS_COMPILE = toString (old.NIX_CFLAGS_COMPILE or "") +
               " -DFT_CONFIG_OPTION_USE_PNG";
+            postFixup = (old.postFixup or "") + ''
+              rm -f $out/lib/*.la
+            '';
           });
           libs = lean pkgs;
           dropIn =
