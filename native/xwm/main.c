@@ -456,7 +456,11 @@ static void bridge_ready(int fd, uint32_t events, void *data) {
                 size_t frame = sizeof(hdr) + hdr.len;
                 if (sc->in_len - offset < frame) break;
                 int pfd = (hdr.flags & XWM_FLAG_HAS_FD) ? take_in_fd(sc) : -1;
-                if (sc->xwm) xwm_handle_cmd(sc->xwm, &hdr, sc->in_buf + offset + sizeof(hdr), pfd);
+                if (hdr.type == XWM_CMD_PING && hdr.len >= sizeof(struct xwm_msg_ping)) {
+                    sidecar_send(sc, XWM_EVT_PONG, sc->in_buf + offset + sizeof(hdr),
+                        sizeof(struct xwm_msg_ping), -1);
+                    if (pfd >= 0) close(pfd);
+                } else if (sc->xwm) xwm_handle_cmd(sc->xwm, &hdr, sc->in_buf + offset + sizeof(hdr), pfd);
                 else if (pfd >= 0) close(pfd);
                 offset += frame;
             }

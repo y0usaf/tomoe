@@ -22,6 +22,7 @@ enum xwm_msg_type {
     XWM_EVT_SELECTION_OFFER = 11,
     XWM_EVT_SELECTION_CLEAR = 12,
     XWM_EVT_SELECTION_REQUEST = 13,
+    XWM_EVT_PONG = 14,
 
     XWM_CMD_CONFIGURE = 101,
     XWM_CMD_ACTIVATE = 102,
@@ -29,6 +30,7 @@ enum xwm_msg_type {
     XWM_CMD_CLOSE = 104,
     XWM_CMD_WAYLAND_SELECTION = 105,
     XWM_CMD_SEND_SELECTION = 106,
+    XWM_CMD_PING = 107,
 };
 
 enum xwm_state_req_kind {
@@ -45,6 +47,10 @@ struct xwm_hdr {
     uint16_t type;
     uint32_t len;
     uint32_t flags;
+};
+
+struct xwm_msg_ping {
+    uint32_t serial;
 };
 
 struct xwm_msg_pid {

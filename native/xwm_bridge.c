@@ -14,6 +14,8 @@
 #define BRIDGE_IN_CAP (XWM_MAX_PAYLOAD + sizeof(struct xwm_hdr) + 1024)
 #define BRIDGE_OUT_MAX (512u << 10)
 #define BRIDGE_FD_CAP 64
+#define BRIDGE_PING_DEADLINE_MS 3000
+#define BRIDGE_KEEPALIVE_MS 10000
 
 struct xwm_bridge;
 
@@ -90,6 +92,10 @@ struct xwm_bridge {
     struct wl_event_source *retry_source;
     struct wl_event_source *disconnect_idle;
     struct wl_event_source *kill_source;
+    struct wl_event_source *ping_deadline;
+    struct wl_event_source *keepalive;
+    uint32_t ping_serial;
+    bool ping_pending;
     struct timespec started_at;
     int failures;
     uint8_t *in_buf;
@@ -190,7 +196,7 @@ static void bridge_schedule_disconnect(struct xwm_bridge *b) {
             wl_display_get_event_loop(b->server->display), bridge_disconnect_idle, b);
 }
 
-static bool bridge_send(struct xwm_bridge *b, uint16_t type, const void *payload, uint32_t len, int fd) {
+static bool bridge_send_raw(struct xwm_bridge *b, uint16_t type, const void *payload, uint32_t len, int fd) {
     if (!b || b->fd < 0 || b->broken || len > XWM_MAX_PAYLOAD) {
         if (fd >= 0) close(fd);
         return false;
@@ -230,6 +236,43 @@ static bool bridge_send(struct xwm_bridge *b, uint16_t type, const void *payload
         return false;
     }
     return true;
+}
+
+static int bridge_ping_expired(void *data) {
+    struct xwm_bridge *b = data;
+    if (!b->ping_pending || b->stopping) return 0;
+    tomoe_log(LOG_ERROR, "tomoe: tomoe-xwm %d did not answer a liveness ping in %d ms; restarting it",
+        (int)b->sidecar_pid, BRIDGE_PING_DEADLINE_MS);
+    b->ping_pending = false;
+    if (b->sidecar_pid > 0) kill(b->sidecar_pid, SIGKILL);
+    bridge_disconnect(b, true);
+    return 0;
+}
+
+static void bridge_ping(struct xwm_bridge *b) {
+    if (b->fd < 0 || b->broken || b->stopping || b->ping_pending) return;
+    if (!b->ping_deadline)
+        b->ping_deadline = wl_event_loop_add_timer(wl_display_get_event_loop(b->server->display),
+            bridge_ping_expired, b);
+    if (!b->ping_deadline) return;
+    struct xwm_msg_ping ping = { .serial = ++b->ping_serial };
+    if (!bridge_send_raw(b, XWM_CMD_PING, &ping, sizeof(ping), -1)) return;
+    b->ping_pending = true;
+    wl_event_source_timer_update(b->ping_deadline, BRIDGE_PING_DEADLINE_MS);
+}
+
+static int bridge_keepalive(void *data) {
+    struct xwm_bridge *b = data;
+    if (b->stopping || b->xwayland_pid <= 0 || b->fd < 0) return 0;
+    bridge_ping(b);
+    wl_event_source_timer_update(b->keepalive, BRIDGE_KEEPALIVE_MS);
+    return 0;
+}
+
+static bool bridge_send(struct xwm_bridge *b, uint16_t type, const void *payload, uint32_t len, int fd) {
+    bool sent = bridge_send_raw(b, type, payload, len, fd);
+    if (sent) bridge_ping(b);
+    return sent;
 }
 
 static void logical_to_world(struct tomoe *s, int lx, int ly, int *ox, int *oy, double *scale) {
@@ -715,6 +758,16 @@ static void handle_message(struct xwm_bridge *b, const struct xwm_hdr *hdr,
     switch (hdr->type) {
     case XWM_EVT_HELLO:
         break;
+    case XWM_EVT_PONG: {
+        if (hdr->len < sizeof(struct xwm_msg_ping)) break;
+        struct xwm_msg_ping pong;
+        memcpy(&pong, payload, sizeof(pong));
+        if (b->ping_pending && pong.serial == b->ping_serial) {
+            b->ping_pending = false;
+            if (b->ping_deadline) wl_event_source_timer_update(b->ping_deadline, 0);
+        }
+        break;
+    }
     case XWM_EVT_XWAYLAND_PID: {
         if (hdr->len < sizeof(struct xwm_msg_pid)) break;
         struct xwm_msg_pid msg;
@@ -723,6 +776,10 @@ static void handle_message(struct xwm_bridge *b, const struct xwm_hdr *hdr,
             x11_state_clear(b);
         } else {
             b->xwayland_pid = (pid_t)msg.pid;
+            if (!b->keepalive)
+                b->keepalive = wl_event_loop_add_timer(wl_display_get_event_loop(b->server->display),
+                    bridge_keepalive, b);
+            if (b->keepalive) wl_event_source_timer_update(b->keepalive, BRIDGE_KEEPALIVE_MS);
             xwm_wayland_selection(b->server, false, true);
             xwm_wayland_selection(b->server, true, true);
         }
@@ -1014,6 +1071,9 @@ static int bridge_kill_escalate(void *data) {
 
 static void bridge_disconnect(struct xwm_bridge *b, bool schedule_retry) {
     b->broken = false;
+    b->ping_pending = false;
+    if (b->ping_deadline) wl_event_source_timer_update(b->ping_deadline, 0);
+    if (b->keepalive) wl_event_source_timer_update(b->keepalive, 0);
     if (b->disconnect_idle) {
         wl_event_source_remove(b->disconnect_idle);
         b->disconnect_idle = NULL;
@@ -1188,6 +1248,14 @@ void xwayland_finish(struct tomoe *s) {
     if (b->kill_source) {
         wl_event_source_remove(b->kill_source);
         b->kill_source = NULL;
+    }
+    if (b->ping_deadline) {
+        wl_event_source_remove(b->ping_deadline);
+        b->ping_deadline = NULL;
+    }
+    if (b->keepalive) {
+        wl_event_source_remove(b->keepalive);
+        b->keepalive = NULL;
     }
     pid_t pid = b->sidecar_pid;
     b->sidecar_pid = 0;
