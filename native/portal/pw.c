@@ -80,6 +80,7 @@ struct pwv {
 static void wire_ready(void *data, int fd, uint32_t mask);
 static void process_ready(void *data, int fd, uint32_t mask);
 static void run_cycle(struct pwv *v);
+static int publish_params(struct pwv *v);
 
 static uint64_t monotonic_ns(void) {
     struct timespec now;
@@ -705,6 +706,7 @@ static int dispatch(void *data, uint32_t id, uint32_t opcode, struct pww_parse *
                 v->video.modifier_set = false;
                 v->video.modifier_fixated = false;
                 if (v->events.format) v->events.format(v->data, NULL);
+                publish_params(v);
                 send_port_update(v);
                 return 0;
             }
