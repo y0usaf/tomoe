@@ -25,7 +25,7 @@ static const char *const channel_names[TIMING_CHANNELS] = {
     "latch-input", "latch-commit", "present-input", "present-commit", "present-interval",
     "frame-tail",
     "frame-wait-render",
-    "cursor-newest", "cursor-oldest",
+    "cursor-newest", "cursor-oldest", "loop-tick",
 };
 
 static struct channel channels[TIMING_CHANNELS];

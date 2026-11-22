@@ -141,6 +141,7 @@ failed:
 int tomoe_step(struct tomoe *s, int timeout_ms) {
     if (s->failed) return -1;
     if (!s->running) return 1;
+    uint64_t pre_start = timing_enabled ? timing_now() : 0;
     if (s->renderer) render_retire_fences(s->renderer);
     if (s->outputs_deferred && !render_frames_held(s->renderer)) {
         s->outputs_deferred = false;
@@ -151,7 +152,9 @@ int tomoe_step(struct tomoe *s, int timeout_ms) {
     screens_frame_after_events(s);
     wl_display_flush_clients(s->display);
     screens_idle_frames(s);
-    int status = wl_event_loop_dispatch(wl_display_get_event_loop(s->display), timeout_ms);
+    struct wl_event_loop *loop = wl_display_get_event_loop(s->display);
+    uint64_t pre_ns = timing_enabled ? timing_now() - pre_start : 0;
+    int status = wl_event_loop_dispatch(loop, timeout_ms);
     if (status < 0 && errno != EINTR) return -1;
     keyboard_sync_leds(s);
     refresh_scene(s);
@@ -160,6 +163,12 @@ int tomoe_step(struct tomoe *s, int timeout_ms) {
     lock_refresh(s);
     screens_idle_frames(s);
     wl_display_flush_clients(s->display);
+    if (timing_enabled) {
+        uint64_t wake_ns = wl_event_loop_last_wake_ns(loop);
+        uint64_t now = timing_now();
+        uint64_t post_ns = (wake_ns && now >= wake_ns) ? (now - wake_ns) : 0;
+        timing_add(TIMING_LOOP_TICK, pre_ns + post_ns);
+    }
     return s->failed ? -1 : (s->running ? 0 : 1);
 }
 void tomoe_destroy(struct tomoe *s) {

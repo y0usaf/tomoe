@@ -44,6 +44,7 @@ struct wl_event_loop {
     struct wl_list destroy_list;
     struct wl_list free_list;
     struct slab *slabs;
+    uint64_t last_wake_ns;
 };
 
 static bool slab_add(struct wl_event_loop *loop) {
@@ -312,8 +313,12 @@ int wl_event_source_remove(struct wl_event_source *source) {
 }
 
 static void dispatch_idle(struct wl_event_loop *loop) {
-    while (!wl_list_empty(&loop->idle_list)) {
-        struct wl_event_source *source = wl_container_of(loop->idle_list.next, source, link);
+    struct wl_list pending;
+    wl_list_init(&pending);
+    wl_list_insert_list(&pending, &loop->idle_list);
+    wl_list_init(&loop->idle_list);
+    while (!wl_list_empty(&pending)) {
+        struct wl_event_source *source = wl_container_of(pending.next, source, link);
         source->func.idle(source->data);
         wl_event_source_remove(source);
     }
@@ -322,7 +327,11 @@ static void dispatch_idle(struct wl_event_loop *loop) {
 int wl_event_loop_dispatch(struct wl_event_loop *loop, int timeout) {
     struct epoll_event ep[32];
     dispatch_idle(loop);
+    if (!wl_list_empty(&loop->idle_list)) timeout = 0;
     int count = epoll_wait(loop->epoll_fd, ep, 32, timeout);
+    struct timespec wake;
+    if (clock_gettime(CLOCK_MONOTONIC, &wake) == 0)
+        loop->last_wake_ns = (uint64_t)wake.tv_sec * 1000000000ULL + (uint64_t)wake.tv_nsec;
     if (count < 0) return -1;
     for (int i = 0; i < count; i++) {
         if (ep[i].data.ptr == &loop->timers) {
@@ -346,4 +355,8 @@ int wl_event_loop_dispatch(struct wl_event_loop *loop, int timeout) {
 
 int wl_event_loop_get_fd(struct wl_event_loop *loop) {
     return loop->epoll_fd;
+}
+
+uint64_t wl_event_loop_last_wake_ns(const struct wl_event_loop *loop) {
+    return loop ? loop->last_wake_ns : 0;
 }

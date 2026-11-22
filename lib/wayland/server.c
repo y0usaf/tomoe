@@ -16,7 +16,9 @@
 #include "wire.h"
 
 #define SERVER_ID_START 0xff000000u
-#define MAX_OBJECTS 0x00f00000u
+#define MAX_OBJECTS 65536u
+#define CLIENT_MAX_MESSAGES_PER_TICK 256u
+#define CLIENT_MAX_FDS_PER_TICK 32u
 
 struct wl_resource {
     struct wl_client *client;
@@ -33,6 +35,7 @@ struct wl_resource {
 struct wl_client {
     struct wl_display *display;
     struct wl_event_source *source;
+    struct wl_event_source *resume;
     struct wl_resource *display_resource;
     struct wl_resource **objects;
     uint32_t object_count, object_cap;
@@ -140,7 +143,7 @@ static bool grow(void **array, uint32_t *cap, uint32_t need, size_t size) {
 }
 
 static int reserve_client_id(struct wl_client *client, uint32_t id) {
-    if (id >= SERVER_ID_START || id > MAX_OBJECTS) {
+    if (id >= SERVER_ID_START || id >= MAX_OBJECTS) {
         errno = EINVAL;
         return -1;
     }
@@ -353,47 +356,30 @@ static void destroy_client_with_error(struct wl_client *client, const char *reas
     wl_client_destroy(client);
 }
 
-static int client_data(int fd, uint32_t mask, void *data) {
-    struct wl_client *client = data;
+static void client_resume(void *data);
+
+static void client_dispatch(struct wl_client *client) {
     struct wire *wire = &client->wire;
-    (void)fd;
-    if (mask & WL_EVENT_HANGUP) {
-        wl_client_destroy(client);
-        return 1;
-    }
-    if (mask & WL_EVENT_ERROR) {
-        destroy_client_with_error(client, "socket error");
-        return 1;
-    }
-    if (mask & WL_EVENT_WRITABLE) {
-        int len = wire_flush(wire);
-        if (len < 0 && errno != EAGAIN) {
-            destroy_client_with_error(client, "failed to flush client connection");
-            return 1;
-        } else if (len >= 0) {
-            wl_event_source_fd_update(client->source, WL_EVENT_READABLE);
-        }
-    }
-    int len = 0;
-    if (mask & WL_EVENT_READABLE) {
-        len = wire_read(wire);
-        if (len == 0 || (len < 0 && errno != EAGAIN)) {
-            destroy_client_with_error(client, "failed to read client connection");
-            return 1;
-        }
-    }
     uint32_t message[WL_MAX_MESSAGE_SIZE / 4];
+    uint32_t processed = 0;
+    uint32_t fds_taken = 0;
+    uint32_t len = wire_pending(wire);
     while (len >= 8) {
+        if (processed >= CLIENT_MAX_MESSAGES_PER_TICK || fds_taken >= CLIENT_MAX_FDS_PER_TICK) {
+            if (!client->resume)
+                client->resume = wl_event_loop_add_idle(client->display->loop, client_resume, client);
+            break;
+        }
         const uint32_t *p = wire_peek(wire);
         uint32_t header[2];
         memcpy(header, p, sizeof(header));
         uint32_t id = header[0], opcode = header[1] & 0xffff, size = header[1] >> 16;
-        if (size > WL_MAX_MESSAGE_SIZE) {
+        if (size < 8 || (size & 3) || size > WL_MAX_MESSAGE_SIZE) {
             wl_resource_post_error(client->display_resource, WL_DISPLAY_ERROR_INVALID_METHOD,
-                "message length %u exceeds %d", size, WL_MAX_MESSAGE_SIZE);
+                "invalid message length %u", size);
             break;
         }
-        if ((uint32_t)len < size) break;
+        if (len < size) break;
         struct wl_resource *resource = lookup(client, id);
         if (!resource) {
             wl_resource_post_error(client->display_resource, WL_DISPLAY_ERROR_INVALID_OBJECT,
@@ -415,14 +401,11 @@ static int client_data(int fd, uint32_t mask, void *data) {
         }
         union wl_argument args[WIRE_MAX_ARGS];
         struct wl_array arrays[WIRE_MAX_ARGS];
-        int count = -1;
-        if (size >= 8) {
-            memcpy(message, p, size);
-            count = wire_decode(wire, message, size, m, args, arrays);
-        } else {
-            LOG("message too short, invalid header\n");
-        }
-        wire_consume(wire, size < 8 ? 8 : size);
+        uint32_t fds_before = wire->fds_in_count;
+        memcpy(message, p, size);
+        int count = wire_decode(wire, message, size, m, args, arrays);
+        if (wire->fds_in_count < fds_before) fds_taken += fds_before - wire->fds_in_count;
+        wire_consume(wire, size);
         bool valid = count >= 0;
         if (valid) {
             const char *signature = m->signature;
@@ -476,10 +459,52 @@ static int client_data(int fd, uint32_t mask, void *data) {
             break;
         }
         wire_invoke(implementation[opcode], client, resource, m, args);
+        processed++;
         if (client->error) break;
-        len = (int)wire_pending(wire);
+        len = wire_pending(wire);
     }
     if (client->error) destroy_client_with_error(client, "error in client communication");
+}
+
+static void client_resume(void *data) {
+    struct wl_client *client = data;
+    client->resume = NULL;
+    if (client->error) {
+        destroy_client_with_error(client, "error in client communication");
+        return;
+    }
+    client_dispatch(client);
+}
+
+static int client_data(int fd, uint32_t mask, void *data) {
+    struct wl_client *client = data;
+    struct wire *wire = &client->wire;
+    (void)fd;
+    if (mask & WL_EVENT_HANGUP) {
+        wl_client_destroy(client);
+        return 1;
+    }
+    if (mask & WL_EVENT_ERROR) {
+        destroy_client_with_error(client, "socket error");
+        return 1;
+    }
+    if (mask & WL_EVENT_WRITABLE) {
+        int len = wire_flush(wire);
+        if (len < 0 && errno != EAGAIN) {
+            destroy_client_with_error(client, "failed to flush client connection");
+            return 1;
+        } else if (len >= 0) {
+            wl_event_source_fd_update(client->source, WL_EVENT_READABLE);
+        }
+    }
+    if (mask & WL_EVENT_READABLE) {
+        int len = wire_read(wire);
+        if (len == 0 || (len < 0 && errno != EAGAIN)) {
+            destroy_client_with_error(client, "failed to read client connection");
+            return 1;
+        }
+        client_dispatch(client);
+    }
     return 1;
 }
 
@@ -603,6 +628,10 @@ void wl_client_destroy(struct wl_client *client) {
         if (client->objects[i]) destroy_resource(client->objects[i]);
     for (uint32_t i = 0; i < client->server_count; i++)
         if (client->server_objects[i]) destroy_resource(client->server_objects[i]);
+    if (client->resume) {
+        wl_event_source_remove(client->resume);
+        client->resume = NULL;
+    }
     wl_event_source_remove(client->source);
     client->wire.fd = -1;
     wire_release(&client->wire);

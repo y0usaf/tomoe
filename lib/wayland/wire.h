@@ -9,8 +9,8 @@
 #define WIRE_MAX_ARGS 20
 #define WIRE_IN_SIZE 4096
 #define WIRE_OUT_FLUSH 4096
-#define WIRE_OUT_LIMIT (1u << 20)
-#define WIRE_FDS_IN 256
+#define WIRE_OUT_LIMIT (256u << 10)
+#define WIRE_FDS_IN 64
 #define WIRE_FDS_OUT 28
 
 struct wire {
