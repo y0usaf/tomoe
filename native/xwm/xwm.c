@@ -152,6 +152,10 @@ struct req {
 static void x_fail(struct xwm *x, const char *reason, int error) {
     if (x->failed || x->stopping) return;
     x->failed = true;
+    if (x->source) {
+        xev_del(x->sc, x->source);
+        x->source = NULL;
+    }
     fprintf(stderr, "tomoe-xwm: X11 manager failed on %d: %s%s%s\n",
         x->fd, reason, error ? ": " : "", error ? strerror(error) : "");
     sidecar_wm_failed(x->sc);
