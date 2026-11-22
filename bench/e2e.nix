@@ -220,8 +220,8 @@ pkgs.testers.runNixOSTest {
         f"${client}/bin/bench-client ${pwPortal}/bin/tomoe-e2e-pw-portal --shm-only"
     )
     print(f"E2E_PW_PORTAL_SHM rc={pw_shm_rc} out={pw_shm_out.strip()}")
-    if pw_rc != 0:
-        _, plog = machine.execute("journalctl -u e2e-portal --no-pager -n 40")
+    if pw_rc != 0 or pw_shm_rc != 0:
+        _, plog = machine.execute("journalctl -u e2e-portal -u e2e-pipewire --no-pager -n 60")
         print(f"E2E_PORTAL_LOG:\n{plog}")
 
     machine.execute("systemctl stop e2e-portal e2e-wireplumber e2e-pipewire e2e-dbus")
