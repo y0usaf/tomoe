@@ -830,7 +830,7 @@ struct pwv *pwv_start(struct loop *loop, const char *node_name, const char *desc
     pww_pod_string(&b, "PipeWire:Interface:ClientNode");
     pww_pod_int(&b, 6);
     pww_pod_struct_begin(&b, &dict);
-    pww_pod_int(&b, 10);
+    pww_pod_int(&b, 9);
     pww_pod_string(&b, "media.type");
     pww_pod_string(&b, "Video");
     pww_pod_string(&b, "media.category");
