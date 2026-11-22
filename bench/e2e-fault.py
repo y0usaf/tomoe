@@ -293,6 +293,51 @@ def clipboard_wayland_to_x(env, size):
         owner.wait()
 
 
+CUSTOM_MIME = "application/x-tomoe-e2e"
+
+
+def clipboard_custom(env):
+    data = os.urandom(3072).hex().encode()
+    owner = subprocess.Popen(["wl-copy", "--foreground", "--type", CUSTOM_MIME], env=env,
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    owner.stdin.write(data)
+    owner.stdin.close()
+    try:
+        deadline = time.monotonic() + X11_TIMEOUT
+        got = b""
+        while time.monotonic() < deadline:
+            got = run_timeout(["xclip", "-selection", "clipboard", "-o", "-target", CUSTOM_MIME],
+                env).stdout
+            if got == data:
+                break
+            time.sleep(0.2)
+        if got != data:
+            raise SystemExit(f"x11: FAIL Wayland->X {CUSTOM_MIME}: got {len(got)} bytes")
+    finally:
+        owner.kill()
+        owner.wait()
+    data = os.urandom(3072).hex().encode()
+    owner = subprocess.Popen(["xclip", "-selection", "clipboard", "-i", "-quiet", "-t", CUSTOM_MIME],
+        env=env, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    owner.stdin.write(data)
+    owner.stdin.close()
+    try:
+        deadline = time.monotonic() + X11_TIMEOUT
+        got = b""
+        types = ""
+        while time.monotonic() < deadline:
+            types = run_timeout(["wl-paste", "--list-types"], env).stdout.decode(errors="replace")
+            if CUSTOM_MIME in types.split():
+                got = run_timeout(["wl-paste", "--no-newline", "--type", CUSTOM_MIME], env).stdout
+                if got == data:
+                    return
+            time.sleep(0.2)
+        raise SystemExit(f"x11: FAIL X->Wayland {CUSTOM_MIME}: types {types.split()} got {len(got)} bytes")
+    finally:
+        owner.kill()
+        owner.wait()
+
+
 def check_x11(path, tomoe_bin):
     sock = os.path.basename(path)
     env = dict(os.environ, WAYLAND_DISPLAY=sock, DISPLAY=x_display())
@@ -313,10 +358,11 @@ def check_x11(path, tomoe_bin):
         clipboard_x_to_wayland(env, 24 << 20)
         clipboard_wayland_to_x(env, 4096)
         clipboard_wayland_to_x(env, 2 << 20)
+        clipboard_custom(env)
     finally:
         logo.kill()
         logo.wait()
-    return "x11=mapped,clip-x2w(4K,24M),clip-w2x(4K,2M)"
+    return "x11=mapped,clip-x2w(4K,24M),clip-w2x(4K,2M),custom-mime-both"
 
 
 def main():
