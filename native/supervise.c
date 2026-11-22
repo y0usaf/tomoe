@@ -109,6 +109,7 @@ static int start_dependent(int *pidfd, char *const argv[], char *const envp[]) {
         execvpe(argv[0], argv, envp);
         _exit(127);
     }
+    setpgid(child, child);
     int fd = pidfd_open(child, 0);
     if (fd < 0) {
         int error = errno;

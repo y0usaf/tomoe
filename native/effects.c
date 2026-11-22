@@ -270,6 +270,7 @@ bool effect_texture(struct frame *f, const struct texture_options *options,
             tint ? tint[3] : 0);
         quad(f, p, dst, texcoords, clip.x, clip.y);
         glBindTexture(target, 0);
+        op_end(f->pass, &draw_clip);
         return true;
     }
     struct scene_quad scene = { .kind = SCENE_TEXTURE, .texture = options->texture,
