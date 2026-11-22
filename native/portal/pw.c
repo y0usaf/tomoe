@@ -74,6 +74,7 @@ struct pwv {
     uint8_t negotiated_pod[1024];
     size_t negotiated_len;
     uint32_t param_flags;
+    uint32_t publish_gen;
 };
 
 static void wire_ready(void *data, int fd, uint32_t mask);
@@ -577,12 +578,9 @@ static int handle_transport(struct pwv *v, struct pww_parse *p) {
     return 0;
 }
 
-static int parse_format(struct pwv *v, struct pww_parse *p) {
-    uint32_t type, body;
-    const uint8_t *pod = pww_parse_pod(p, &type, &body);
-    if (!pod || type != SPA_TYPE_OBJECT) return 0;
+static int parse_format(struct pwv *v, const uint8_t *pod, size_t len) {
     struct spa_video_info_raw info;
-    if (spa_parse_video_format(pod, 8 + body, &info) < 0) return 0;
+    if (spa_parse_video_format(pod, len, &info) < 0) return -1;
     uint32_t refresh = v->video.refresh;
     if (info.max_framerate.denom && info.max_framerate.num)
         refresh = info.max_framerate.num / info.max_framerate.denom;
@@ -702,12 +700,23 @@ static int dispatch(void *data, uint32_t id, uint32_t opcode, struct pww_parse *
             uint32_t type, body;
             const uint8_t *pod = pww_parse_pod(p, &type, &body);
             clear_buffers(v);
-            if (!pod || type != SPA_TYPE_OBJECT || 8 + body > sizeof(v->negotiated_pod))
+            v->negotiated_len = 0;
+            if (!pod || type != SPA_TYPE_OBJECT) {
+                v->video.modifier_set = false;
+                v->video.modifier_fixated = false;
+                if (v->events.format) v->events.format(v->data, NULL);
+                send_port_update(v);
                 return 0;
-            memcpy(v->negotiated_pod, pod, 8 + body);
-            v->negotiated_len = 8 + body;
-            send_port_update(v);
-            return parse_format(v, p);
+            }
+            if (8 + body > sizeof(v->negotiated_pod)) return 0;
+            uint32_t gen = v->publish_gen;
+            if (parse_format(v, pod, 8 + body) < 0) return 0;
+            if (v->publish_gen == gen && v->video.modifier_fixated) {
+                memcpy(v->negotiated_pod, pod, 8 + body);
+                v->negotiated_len = 8 + body;
+                send_port_update(v);
+            }
+            return 0;
         }
         return 0;
     }
@@ -756,6 +765,8 @@ int pwv_publish(struct pwv *v, const struct pwv_video *video, int alloc) {
     if (!v) return -1;
     bool streaming = v->n_buffers > 0;
     if (streaming) send_active(v, false);
+    v->publish_gen++;
+    v->negotiated_len = 0;
     v->video = *video;
     v->alloc = alloc;
     publish_params(v);

@@ -389,6 +389,7 @@ static void frame_failed(void *data, struct ext_image_copy_capture_frame_v1 *fra
             portal_log("the compositor keeps refusing our buffers; capturing through memory");
             s->alloc = ALLOC_SHM;
             s->dmabuf = false;
+            s->modifier_fixated = false;
             s->renegotiating = true;
             if (s->pw) stream_republish(s);
             return;
@@ -470,9 +471,17 @@ static void stream_republish(struct stream *s);
 static void stream_format(void *data, const struct pwv_video *video) {
     struct stream *s = data;
     if (s->dying) return;
+    if (!video) {
+        s->dmabuf = false;
+        s->modifier_fixated = false;
+        return;
+    }
     bool dmabuf = video->modifier_set && (s->gbm || s->udmabuf >= 0);
     s->dmabuf = dmabuf;
-    if (!dmabuf) return;
+    if (!dmabuf) {
+        s->modifier_fixated = false;
+        return;
+    }
     s->modifier = video->modifier;
     bool republish = !video->modifier_fixated && !s->modifier_fixated;
     if (s->alloc == ALLOC_GBM && s->gbm) {
@@ -512,6 +521,7 @@ static bool stream_add_buffer(void *data, struct pwv_buffer *buffer) {
             portal_log("cannot allocate a DMA-BUF capture buffer; capturing through memory");
             s->alloc = ALLOC_SHM;
             s->dmabuf = false;
+            s->modifier_fixated = false;
             s->renegotiating = true;
             stream_republish(s);
         }
@@ -811,6 +821,7 @@ static void capture_buffer_size(void *data, struct ext_image_copy_capture_sessio
         portal_log("the source changed size to %dx%d", width, height);
         s->width = (int)width;
         s->height = (int)height;
+        s->modifier_fixated = false;
         s->renegotiating = true;
         if (s->pw) stream_republish(s);
         return;

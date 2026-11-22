@@ -481,17 +481,25 @@ static void apply_state(struct surface *surface, struct surface_state *next) {
     if (buffer) apply_buffer(surface);
     region_intersect_rect(&surface->input_region, &surface->current.input, 0, 0,
         surface->current.width, surface->current.height);
+    bool sub_structural = false;
     struct subsurface *sub, *next_sub;
+    struct wl_list *prev = &surface->below;
     wl_list_for_each(sub, &surface->pending_below, pending_link) {
+        if (sub->link.prev != prev) sub_structural = true;
         wl_list_remove(&sub->link);
-        wl_list_insert(surface->below.prev, &sub->link);
+        wl_list_insert(prev, &sub->link);
+        prev = &sub->link;
     }
+    prev = &surface->above;
     wl_list_for_each(sub, &surface->pending_above, pending_link) {
+        if (sub->link.prev != prev) sub_structural = true;
         wl_list_remove(&sub->link);
-        wl_list_insert(surface->above.prev, &sub->link);
+        wl_list_insert(prev, &sub->link);
+        prev = &sub->link;
     }
     struct wl_list *lists[] = { &surface->below, &surface->above };
     for (int i = 0; i < 2; i++) wl_list_for_each_safe(sub, next_sub, lists[i], link) {
+        if (sub->x != sub->pending_x || sub->y != sub->pending_y) sub_structural = true;
         sub->x = sub->pending_x;
         sub->y = sub->pending_y;
         if (sub->has_cache && sub->synchronized) {
@@ -499,6 +507,7 @@ static void apply_state(struct surface *surface, struct surface_state *next) {
             surface_unlock(sub->surface, sub->cache);
         }
         if (!sub->added) {
+            sub_structural = true;
             sub->added = true;
             subsurface_consider_map(sub);
         }
@@ -508,7 +517,7 @@ static void apply_state(struct surface *surface, struct surface_state *next) {
     if (surface->role && surface->role->commit && (surface->role_resource || surface->role->no_object))
         surface->role->commit(surface);
     wl_signal_emit_mutable(&surface->events.commit, surface);
-    bool structural = surface->mapped != prev_mapped ||
+    bool structural = sub_structural || surface->mapped != prev_mapped ||
         surface->current.width != prev_w || surface->current.height != prev_h ||
         (committed & (STATE_VIEWPORT | STATE_OFFSET | STATE_INPUT |
             STATE_SCALE | STATE_TRANSFORM));

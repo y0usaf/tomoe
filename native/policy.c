@@ -538,9 +538,7 @@ void policy_drain(struct tomoe *s) {
         uint64_t scale = (uint64_t)batch_count;
         uint64_t steps = s->policy_steps && scale > UINT64_MAX / s->policy_steps ?
             UINT64_MAX : s->policy_steps * scale;
-        uint64_t deadline = s->policy_deadline_ns && scale > UINT64_MAX / s->policy_deadline_ns ?
-            UINT64_MAX : s->policy_deadline_ns * scale;
-        lisp_set_limits(steps, deadline);
+        lisp_set_limits(steps, s->policy_deadline_ns);
         if (lisp_call(POLICY_HOOK_DISPATCH, 1, &events, &result, error, sizeof(error)))
             tomoe_log(LOG_ERROR, "tomoe: dispatch failed: %s", error);
         lisp_end_turn();

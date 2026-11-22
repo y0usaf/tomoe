@@ -2,6 +2,9 @@
 let
   client = pkgs.callPackage ./client.nix { };
   capture = pkgs.callPackage ./capture.nix { };
+  subsurface = pkgs.callPackage ./e2e-subsurface.nix { };
+  pwPortal = pkgs.callPackage ./e2e-pw-portal.nix { };
+  pyDbus = pkgs.python3.withPackages (ps: [ ps.dbus-python ]);
 in
 pkgs.testers.runNixOSTest {
   name = "tomoe-e2e";
@@ -24,7 +27,12 @@ pkgs.testers.runNixOSTest {
       tomoe
       client
       capture
-      pkgs.python3
+      subsurface
+      pwPortal
+      pyDbus
+      pkgs.dbus
+      pkgs.pipewire
+      pkgs.wireplumber
       pkgs.procps
     ];
     environment.pathsToLink = [ "/share/dbus-1" ];
@@ -37,9 +45,28 @@ pkgs.testers.runNixOSTest {
     import time
 
     machine.wait_for_unit("seatd.service")
+    machine.wait_for_file("/dev/dri/card0")
     machine.succeed("mkdir -p /run/e2e/rt /run/e2e/cfg /run/e2e/cap && chmod 700 /run/e2e/rt")
     machine.succeed(
-        "printf '(in-package #:tomoe-user)\n(load-policy \"desktop\")\n' > /run/e2e/cfg/init.lisp"
+        "cat <<'EOF' > /run/e2e/cfg/init.lisp\n"
+        "(in-package #:tomoe-user)\n"
+        "(load-policy \"desktop\")\n"
+        "(define-extension \"e2e-vout\" (:reads (:outputs :windows)) (snapshot state event)\n"
+        "  (declare (ignore state event))\n"
+        "  (let* ((outs (context snapshot :outputs))\n"
+        "         (first-out (find-if (lambda (o) (not (equal (getf o :name) \"VOUT-2\"))) outs))\n"
+        "         (first-name (and first-out (getf first-out :name)))\n"
+        "         (fw (if first-out (getf first-out :width 1024) 1024))\n"
+        "         (sub-win (find \"e2e-subsurface\" (context snapshot :windows)\n"
+        "                        :test #'equal :key (lambda (w) (getf w :title)))))\n"
+        "    (values nil\n"
+        "            (remove nil\n"
+        "                    (list (and first-name (configure-output first-name :position '(0 0)))\n"
+        "                          (virtual-output \"VOUT-2\" :mode '(1280 720 60))\n"
+        "                          (configure-output \"VOUT-2\" :position (list fw 0))\n"
+        "                          (and sub-win (set-view 0 0 1))\n"
+        "                          (and sub-win (place (getf sub-win :id) (- fw 250) 50 600 300 t)))))))\n"
+        "EOF"
     )
 
     env_vars = {
@@ -63,11 +90,11 @@ pkgs.testers.runNixOSTest {
     inspect = ""
     for _ in range(300):
         rc, out = machine.execute(f"{sh_env} tomoe --socket e2e inspect")
-        if rc == 0 and out.strip():
+        if rc == 0 and "VOUT-2" in out:
             inspect = out
             break
         time.sleep(0.1)
-    assert inspect.strip(), "tomoe did not become ready"
+    assert inspect.strip(), "tomoe did not become ready with VOUT-2"
     assert not re.search(r":CONFIG-ERROR \(", inspect), f"tomoe config error: {inspect[:300]}"
 
     machine.succeed("test -S /run/e2e/rt/e2e")
@@ -91,6 +118,100 @@ pkgs.testers.runNixOSTest {
     )
     machine.succeed("test -s /run/e2e/cap/frame-000001.ppm")
 
+    sub_rc, sub_out = machine.execute(
+        f"{sh_env} WAYLAND_DISPLAY={wl_display} ${subsurface}/bin/tomoe-e2e-subsurface"
+    )
+    print(f"E2E_SUBSURFACE rc={sub_rc} out={sub_out.strip()}")
+
+    bus_addr = "unix:path=/run/e2e/rt/bus"
+    machine.succeed(
+        f"systemd-run --unit=e2e-dbus --collect {unit_env} "
+        "dbus-daemon --session --nofork --address=unix:path=/run/e2e/rt/bus"
+    )
+    for _ in range(100):
+        rc, _ = machine.execute("test -S /run/e2e/rt/bus")
+        if rc == 0:
+            break
+        time.sleep(0.05)
+    machine.succeed("test -S /run/e2e/rt/bus")
+
+    machine.succeed(
+        f"systemd-run --unit=e2e-pipewire --collect {unit_env} "
+        f"--setenv=DBUS_SESSION_BUS_ADDRESS={bus_addr} "
+        "--setenv=PIPEWIRE_RUNTIME_DIR=/run/e2e/rt "
+        "pipewire"
+    )
+    for _ in range(100):
+        rc, _ = machine.execute("test -S /run/e2e/rt/pipewire-0")
+        if rc == 0:
+            break
+        time.sleep(0.05)
+    machine.succeed("test -S /run/e2e/rt/pipewire-0")
+
+    machine.succeed(
+        f"systemd-run --unit=e2e-wireplumber --collect {unit_env} "
+        f"--setenv=DBUS_SESSION_BUS_ADDRESS={bus_addr} "
+        "--setenv=PIPEWIRE_RUNTIME_DIR=/run/e2e/rt "
+        "wireplumber"
+    )
+    time.sleep(1.0)
+
+    machine.succeed(
+        f"systemd-run --unit=e2e-portal --collect {unit_env} "
+        f"--setenv=WAYLAND_DISPLAY={wl_display} "
+        f"--setenv=DBUS_SESSION_BUS_ADDRESS={bus_addr} "
+        "--setenv=PIPEWIRE_RUNTIME_DIR=/run/e2e/rt "
+        "--setenv=TOMOE_SOCKET=/nonexistent "
+        "${tomoe}/libexec/xdg-desktop-portal-tomoe"
+    )
+
+    machine.succeed(
+        "cat <<'EOF' > /run/e2e/pw_driver.py\n"
+        "import os, subprocess, sys, time, dbus\n"
+        "bus = dbus.SessionBus()\n"
+        "for _ in range(100):\n"
+        "    if bus.name_has_owner('org.freedesktop.impl.portal.desktop.tomoe'):\n"
+        "        break\n"
+        "    time.sleep(0.05)\n"
+        "else:\n"
+        "    print('portal did not claim dbus name', file=sys.stderr)\n"
+        "    sys.exit(2)\n"
+        "obj = bus.get_object('org.freedesktop.impl.portal.desktop.tomoe', '/org/freedesktop/portal/desktop')\n"
+        "iface = dbus.Interface(obj, 'org.freedesktop.impl.portal.ScreenCast')\n"
+        "sp = dbus.ObjectPath('/org/freedesktop/portal/desktop/session/e2e/s1')\n"
+        "rc1, _ = iface.CreateSession(dbus.ObjectPath('/org/freedesktop/portal/desktop/request/e2e/r1'), sp, 'e2e', {})\n"
+        "assert int(rc1) == 0, f'CreateSession rc={rc1}'\n"
+        "rc2, _ = iface.SelectSources(dbus.ObjectPath('/org/freedesktop/portal/desktop/request/e2e/r2'), sp, 'e2e', {'types': dbus.UInt32(1)})\n"
+        "assert int(rc2) == 0, f'SelectSources rc={rc2}'\n"
+        "rc3, res = iface.Start(dbus.ObjectPath('/org/freedesktop/portal/desktop/request/e2e/r3'), sp, 'e2e', str(), {})\n"
+        "assert int(rc3) == 0, f'Start rc={rc3} res={res}'\n"
+        "streams = res.get('streams', [])\n"
+        "assert len(streams) > 0, f'no streams in {res}'\n"
+        "node_id = int(streams[0][0])\n"
+        "bench = subprocess.Popen([sys.argv[1], '--phase', 'frames', '--seconds', '4', '--windows', '1'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        "try:\n"
+        "    r = subprocess.run([sys.argv[2], '--node', str(node_id), '--timeout', '6', '--frames', '1'])\n"
+        "finally:\n"
+        "    bench.terminate()\n"
+        "    try:\n"
+        "        bench.wait(timeout=2)\n"
+        "    except Exception:\n"
+        "        bench.kill()\n"
+        "sys.exit(r.returncode)\n"
+        "EOF"
+    )
+
+    pw_rc, pw_out = machine.execute(
+        f"{sh_env} WAYLAND_DISPLAY={wl_display} DBUS_SESSION_BUS_ADDRESS={bus_addr} "
+        f"PIPEWIRE_RUNTIME_DIR=/run/e2e/rt ${pyDbus}/bin/python3 /run/e2e/pw_driver.py "
+        f"${client}/bin/bench-client ${pwPortal}/bin/tomoe-e2e-pw-portal"
+    )
+    print(f"E2E_PW_PORTAL rc={pw_rc} out={pw_out.strip()}")
+    if pw_rc != 0:
+        _, plog = machine.execute("journalctl -u e2e-portal --no-pager -n 40")
+        print(f"E2E_PORTAL_LOG:\n{plog}")
+
+    machine.execute("systemctl stop e2e-portal e2e-wireplumber e2e-pipewire e2e-dbus")
     machine.succeed("systemctl stop e2e-tomoe")
     for _ in range(50):
         rc, _ = machine.execute("pgrep -x tomoe")
@@ -104,5 +225,7 @@ pkgs.testers.runNixOSTest {
         if x == "e2e" or x.startswith("wayland-")
     ]
     assert not leftover, f"leftover sockets in /run/e2e/rt: {leftover}"
+    assert sub_rc == 0, f"e2e-subsurface failed (rc={sub_rc}): {sub_out}"
+    assert pw_rc == 0, f"e2e-pw-portal failed (rc={pw_rc}): {pw_out}"
   '';
 }
