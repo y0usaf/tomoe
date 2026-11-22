@@ -193,9 +193,7 @@ staged outputs when PENDING and on the committed ones otherwise."
   (let* ((id (getf window :id))
          (properties (getf window :properties))
          (border (%stage-border properties))
-         (translate (getf properties :translate))
-         (grid (getf properties :shader-grid))
-         (mesh-grid (getf properties :mesh-grid)))
+         (translate (getf properties :translate)))
     (unless (= 1 (%present-window id (getf window :x) (getf window :y)
                                   (getf window :width) (getf window :height)
                                   (if (getf window :visible) 1 0)
@@ -215,26 +213,10 @@ staged outputs when PENDING and on the committed ones otherwise."
                                          (%double-float (getf properties :rotation 0))
                                          (getf translate :x 0) (getf translate :y 0)))
       (error "Cannot stage window ~D visuals." id))
-    (unless (= 1 (%present-window-shader id (or (getf properties :shader) "")
-                                         (or (car grid) 1) (or (cdr grid) 1)
-                                         (or (getf properties :shader-margin) 0)
-                                         (%double-float (or (getf properties :shader-settle) 0))
-                                         (or (getf properties :shader-entry) "mainImage")))
-      (error "Cannot stage window ~D shader." id))
-    (unless (= 1 (%present-window-mesh id (or (car mesh-grid) 0) (or (cdr mesh-grid) 0)
-                                       (getf properties :mesh)))
-      (error "Cannot stage window ~D mesh." id))))
-
-(defun stage-native-sounds (sounds)
-  (unless (= 1 (%present-sounds)) (error "Cannot allocate candidate sounds."))
-  (loop for event in +sound-events+ for code from 0
-        for entry = (getf sounds event) do
-    (dolist (file (getf entry :files))
-      (let ((message (%present-sound code file (getf entry :gain))))
-        (when message (error "Cannot load sound ~A: ~A" file message))))))
+))
 
 (defun configure-native-presentation (context overrides restack outputs-changed bindings-changed
-                                      grab motion keyboard-changed settings-changed sounds-changed)
+                                      grab motion keyboard-changed settings-changed)
   "Prepare all owned native state, then publish the accepted presentation once."
   (let ((failure nil))
     (%catch
@@ -257,7 +239,6 @@ staged outputs when PENDING and on the committed ones otherwise."
                                            (getf config :repeat-rate) (getf config :repeat-delay)))
              (error "Cannot prepare keyboard configuration (invalid XKB names or allocation failure)."))))
        (when settings-changed (stage-native-settings (getf context :settings)))
-       (when sounds-changed (stage-native-sounds (getf context :sounds)))
        (let ((keyboard-grab (getf context :keyboard-grab)))
          (unless (= 1 (%present-keyboard-grab (or (getf keyboard-grab :owner) "")
                                               (or (getf keyboard-grab :source-id) 0)
@@ -275,7 +256,6 @@ staged outputs when PENDING and on the committed ones otherwise."
        (dolist (id (or (getf context :stacking) '(0)))
          (unless (= 1 (%present-stack id))
            (error "Cannot stage window stacking.")))
-       (stage-native-ui (getf context :surface-plans))
        (let ((message (%present-apply)))
          (when message (error "~A" message))))
      (lambda (text) (setf failure text)))

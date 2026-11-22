@@ -16,10 +16,11 @@ REFERENCE=${SPEEDLAB_REFERENCE:-}
 OUT=""
 FRESH=0
 ONLY=""
+CORE=0
 
 usage() {
 	cat <<'EOF'
-usage: bench/speedlab.sh [--reference BUILD] [--out FILE] [--fresh] [--persona A|B] CANDIDATE
+usage: bench/speedlab.sh [--core] [--reference BUILD] [--out FILE] [--fresh] [--persona A|B] [CANDIDATE]
        bench/speedlab.sh --compare BASE CANDIDATE
        bench/speedlab.sh --self-test
        bench/speedlab.sh --profile BUILD
@@ -32,6 +33,7 @@ everything it starts), peak and settled memory with a breakdown, and whether
 every output frame and every protocol event the rig's clients saw match the
 reference build's run.
 
+  --core              use a minimal core-only config and workload (no UI/resources/shaders)
   --reference BUILD   the build to compare against (default: bench/speedlab/reference)
   --compare BASE CANDIDATE
                       judge CANDIDATE against BASE instead of the frozen reference, with the
@@ -95,8 +97,10 @@ stage() {
 	local stage=$WORK/stage width height hz init
 	[[ $MODE =~ ^([0-9]+)x([0-9]+)@([0-9]+)$ ]] || die "SPEEDLAB_MODE must be WxH@HZ"
 	width=${BASH_REMATCH[1]} height=${BASH_REMATCH[2]} hz=${BASH_REMATCH[3]}
-	[[ -r $CONFIG ]] || die "no config at $CONFIG"
-	[[ -r $PALETTE ]] || die "no palette at $PALETTE"
+	if ((CORE == 0)); then
+		[[ -r $CONFIG ]] || die "no config at $CONFIG"
+		[[ -r $PALETTE ]] || die "no palette at $PALETTE"
+	fi
 	mkdir -p "$stage/home/.config/tomoe" "$stage/home/.cache/theme" "$stage/home/.local/share/icons"
 	id -un >"$stage/account"
 	id -u >"$stage/uid"
@@ -117,13 +121,55 @@ stage() {
 	fi
 	[[ -n $node ]] || die "no render node mesa can allocate on; set SPEEDLAB_RENDER_NODE"
 	printf '%s\n' "$node" >"$stage/render-node"
-	cp "$SPEEDLAB_SHARE/workload" "$stage/workload"
-	cp "$PALETTE" "$stage/palette-dark"
-	"$SPEEDLAB_TOOLS/bin/speedlab-palette" "$stage/palette-dark" "$stage/palette-light"
 	init=$stage/home/.config/tomoe/init.lisp
-	sed "s#(list \"$OUTPUT\"\([^()]*\):mode (list $width $height)#(list \"$OUTPUT\"\1:mode (list $width $height $hz)#" \
-		"$(realpath "$CONFIG")" >"$init"
-	cat >>"$init" <<LISP
+	if ((CORE)); then
+		cat >"$stage/workload" <<'WORKLOAD'
+0 open alpha 2e3440
+0 open beta 5a2e3e 48
+150 open gamma 3e5a2e
+450 mark open
+500 key super+j
+650 key super+k
+800 key super+j
+950 type speedlab
+1350 key super+f
+1650 key super+f
+1950 key super+j
+2200 mark keys
+2250 glide 2560 720 1000 520 200
+2500 press super
+2500 button left down
+2500 glide 1000 520 1500 620 160
+2700 button left up
+2700 release super
+2750 press super
+2750 button right down
+2750 glide 1500 620 1700 760 160
+2950 button right up
+2950 release super
+3000 mark pointer
+3050 animate gamma 48
+3050 key super+q
+3250 open delta 445a2e
+3500 mark churn
+WORKLOAD
+		: >"$stage/palette-dark"
+		: >"$stage/palette-light"
+		cat >"$init" <<LISP
+(in-package #:tomoe-user)
+(load-policy "desktop")
+(define-extension "speedlab-screen" (:reads () :state nil) (snapshot state event)
+  (declare (ignore snapshot event))
+  (values state (list (virtual-output "$OUTPUT" :mode (list $width $height $hz))
+                      (configure-output "HEADLESS-1" :disabled t)) nil))
+LISP
+	else
+		cp "$SPEEDLAB_SHARE/workload" "$stage/workload"
+		cp "$PALETTE" "$stage/palette-dark"
+		"$SPEEDLAB_TOOLS/bin/speedlab-palette" "$stage/palette-dark" "$stage/palette-light"
+		sed "s#(list \"$OUTPUT\"\([^()]*\):mode (list $width $height)#(list \"$OUTPUT\"\1:mode (list $width $height $hz)#" \
+			"$(realpath "$CONFIG")" >"$init"
+		cat >>"$init" <<LISP
 
 (in-package #:tomoe-user)
 (defun probe--sample (probe previous system)
@@ -136,8 +182,9 @@ stage() {
   (values state (list (virtual-output "$OUTPUT" :mode (list $width $height $hz))
                       (configure-output "HEADLESS-1" :disabled t)) nil))
 LISP
-	[[ -d $HOME/.config/fontconfig ]] && cp -rL --no-preserve=mode "$HOME/.config/fontconfig" "$stage/home/.config/"
-	[[ -d $HOME/.cache/fontconfig ]] && mkdir -p "$stage/home/.cache" && cp -rL --no-preserve=mode "$HOME/.cache/fontconfig" "$stage/home/.cache/"
+		[[ -d $HOME/.config/fontconfig ]] && cp -rL --no-preserve=mode "$HOME/.config/fontconfig" "$stage/home/.config/"
+		[[ -d $HOME/.cache/fontconfig ]] && mkdir -p "$stage/home/.cache" && cp -rL --no-preserve=mode "$HOME/.cache/fontconfig" "$stage/home/.cache/"
+	fi
 	local theme
 	for theme in "${XCURSOR_THEME:-}" hicolor; do
 		[[ -n $theme && -d $HOME/.local/share/icons/$theme ]] &&
@@ -174,7 +221,13 @@ run() {
 main_run() {
 	local binary=$1 reference key cached index pid temp
 	local -a pids=()
-	[[ -n $REFERENCE ]] || REFERENCE=$(<"$HERE/speedlab/reference")
+	if [[ -z $REFERENCE ]]; then
+		if ((CORE)) && [[ -r $HERE/speedlab/reference-core ]]; then
+			REFERENCE=$(<"$HERE/speedlab/reference-core")
+		else
+			REFERENCE=$(<"$HERE/speedlab/reference")
+		fi
+	fi
 	reference=$(resolve "$REFERENCE")
 	key=$(printf '%s %s %s %s %s' "$RIG" "$reference" "$(sha256sum "$reference" | cut -c1-64)" \
 		"$(<"$WORK/stage.hash")" "$BASE_RUNS" | sha256sum | cut -c1-32)
@@ -277,6 +330,7 @@ main() {
 	local persona="" candidate="" mode=verdict
 	while (($#)); do
 		case $1 in
+		--core) CORE=1 ;;
 		--self-test) mode=self-test ;;
 		--profile) mode=profile ;;
 		--reference) REFERENCE=$2; shift ;;
@@ -291,7 +345,7 @@ main() {
 		esac
 		shift
 	done
-	[[ -n $candidate || $mode == self-test ]] || { usage >&2; exit 2; }
+	[[ -n $candidate || $mode == self-test || $CORE == 1 ]] || { usage >&2; exit 2; }
 	[[ $BASE_RUNS =~ ^[0-9]+$ ]] && ((BASE_RUNS >= 3)) || die "SPEEDLAB_BASE_RUNS must be at least 3, not '$BASE_RUNS'"
 	env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u TOMOE_SOCKET "$ROOT/tools/isolate" --check || exit 2
 	WORK=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/agent/speedlab.XXXXXX")
@@ -303,7 +357,11 @@ main() {
 		return
 	fi
 	local binary
-	binary=$(resolve "$candidate")
+	if [[ -n $candidate ]]; then
+		binary=$(resolve "$candidate")
+	else
+		binary=$(build_tree "$ROOT")/bin/tomoe
+	fi
 	if [[ $mode == profile ]]; then
 		profile "$binary"
 		return

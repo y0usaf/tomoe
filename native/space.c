@@ -1,5 +1,4 @@
 #include "internal.h"
-#include "ui.h"
 #include <poll.h>
 #include <unistd.h>
 
@@ -333,103 +332,6 @@ bool window_drawn_box(struct tomoe *s, const struct presentation *plan, const st
 static double window_radius(struct tomoe *s, const struct target *t, const struct frame *f) {
     return (t->style.radius >= 0 ? t->style.radius : s->settings.border_radius) * f->zoom;
 }
-static float window_shader_seed(uint32_t id) {
-    uint32_t hash = id * 2654435761u;
-    hash ^= hash >> 15;
-    return (hash & 0xffffff) / 16777216.0f;
-}
-
-static bool window_shader_mesh(struct tomoe *s, struct frame *f, const struct target *t,
-        const struct texture_options *source, struct box local, float alpha) {
-    const struct window_shader *shader = t->shader;
-    int margin = shader->margin < 0 ? 0 : shader->margin > 4096 ? 4096 : shader->margin;
-    struct box area = { local.x - margin, local.y - margin,
-        local.width + 2 * margin, local.height + 2 * margin };
-    struct box shown;
-    box_transform(&shown, &area, transform_invert(f->transform), f->width, f->height);
-    double now = f->sample > 0 ? f->sample : animation_now();
-    int drag = s->grab_mode == 1 && s->grab_id == t->id;
-    float trail[4 * POINTER_TRAIL];
-    float path[4 * WINDOW_PATH];
-    int count = 0, path_count = 0;
-    if (drag || t->shader_time < shader->settle) {
-        count = s->pointer_trail_count;
-        for (int i = 0; i < count; i++) {
-            const struct pointer_sample *sample = &s->pointer_trail[
-                (s->pointer_trail_head - count + i + POINTER_TRAIL) % POINTER_TRAIL];
-            trail[4 * i] = (float)(sample->x - f->x - area.x);
-            trail[4 * i + 1] = (float)(f->y + area.y + area.height - sample->y);
-            trail[4 * i + 2] = (float)(now - sample->t);
-            trail[4 * i + 3] = 1;
-        }
-        struct window_path_sample history[WINDOW_PATH];
-        int samples = window_path_samples(s, t->id, history, WINDOW_PATH);
-        int limit = margin + (local.width > local.height ? local.width : local.height);
-        for (int i = 0; i < samples; i++) {
-            double dx = (t->x - history[i].x) * f->zoom;
-            double dy = (t->y - history[i].y) * f->zoom;
-            if (fabs(dx) > limit || fabs(dy) > limit) continue;
-            path[4 * path_count] = (float)dx;
-            path[4 * path_count + 1] = (float)-dy;
-            path[4 * path_count + 2] = (float)(now - history[i].t);
-            path[4 * path_count + 3] = 1;
-            path_count++;
-        }
-    }
-    struct mesh_options options = {
-        .texture = source->texture, .shader = shader->program, .dst_box = shown,
-        .src_box = source->src_box, .transform = source->transform,
-        .trail = count ? trail : NULL, .path = path_count ? path : NULL, .alpha = &alpha,
-        .wait_timeline = source->wait_timeline, .wait_point = source->wait_point,
-        .trail_count = count, .path_count = path_count,
-        .grid_x = shader->grid_x, .grid_y = shader->grid_y, .frame = 0, .drag = drag,
-        .time = t->shader_time, .progress = shader->settle > 0 ? t->shader_time / shader->settle : 1,
-        .seed = window_shader_seed(t->id),
-    };
-    options.box[0] = local.x - area.x;
-    options.box[1] = (area.y + area.height) - (local.y + local.height);
-    options.box[2] = local.width;
-    options.box[3] = local.height;
-    pass_add_mesh(f->pass, &options);
-    return true;
-}
-static bool window_mesh_frame(const struct window_mesh *mesh, const struct frame *f,
-        struct box screen, struct box *area) {
-    if (mesh->frame.width <= 0 || mesh->frame.height <= 0) return false;
-    double x = screen.x + mesh->frame.x * f->zoom;
-    double y = screen.y + mesh->frame.y * f->zoom;
-    double width = mesh->frame.width * f->zoom, height = mesh->frame.height * f->zoom;
-    if (width < 1 || height < 1) return false;
-    *area = (struct box){ (int)floor(x), (int)floor(y),
-        (int)ceil(x + width) - (int)floor(x), (int)ceil(y + height) - (int)floor(y) };
-    return true;
-}
-
-static bool window_mesh_draw(struct tomoe *s, struct frame *f, const struct target *t,
-        const struct texture_options *source, struct box screen, float alpha) {
-    const struct window_mesh *mesh = t->mesh;
-    const struct window_shader *shader = t->shader;
-    if (!shader || !shader->program) shader = window_mesh_shader(s);
-    if (!shader || !shader->program) return false;
-    struct box area;
-    if (!window_mesh_frame(mesh, f, screen, &area)) return false;
-    struct box shown;
-    box_transform(&shown, &area, transform_invert(f->transform), f->width, f->height);
-    struct mesh_options options = {
-        .texture = source->texture, .shader = shader->program, .mesh = mesh,
-        .dst_box = shown, .src_box = source->src_box, .transform = source->transform,
-        .alpha = &alpha, .wait_timeline = source->wait_timeline,
-        .wait_point = source->wait_point, .grid_x = mesh->grid_x, .grid_y = mesh->grid_y,
-        .position_transform = transform_invert(f->transform),
-        .time = t->shader_time, .progress = 1, .seed = window_shader_seed(t->id),
-    };
-    options.origin[0] = screen.x;
-    options.origin[1] = screen.y;
-    options.scale = f->zoom;
-    pass_add_mesh(f->pass, &options);
-    return true;
-}
-
 static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct frame *data = opaque;
     const struct plane_item *plane = data->planes ? plane_for(data->planes, leaf->surface) : NULL;
@@ -437,9 +339,7 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct box local = leaf->screen;
     const struct target *t = leaf->target;
     bool window = t && t->kind == TARGET_WINDOW;
-    struct box reach = local;
-    bool meshed = window && t->mesh && window_mesh_frame(t->mesh, data, leaf->screen, &reach);
-    if (!meshed && box_empty(&leaf->shown)) return false;
+    if (box_empty(&leaf->shown)) return false;
     bool transformed = window && (t->visual.scale != 1 || t->drawn_width > 0);
     if (transformed) {
         struct fbox box = window_box(t, data);
@@ -452,11 +352,7 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
             (window ? pixel_round(t->offset_y * data->zoom) : 0));
     }
     int64_t x = local.x, y = local.y;
-    int64_t left = (int64_t)reach.x - data->x, top = (int64_t)reach.y - data->y;
-    if (meshed) {
-        if (left >= data->width || top >= data->height ||
-                left + reach.width <= 0 || top + reach.height <= 0) return false;
-    } else if (x >= data->width || y >= data->height ||
+    if (x >= data->width || y >= data->height ||
             x + local.width <= 0 || y + local.height <= 0) return false;
     struct box dst;
     box_transform(&dst, &local, transform_invert(data->transform), data->width, data->height);
@@ -494,11 +390,6 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
         .rotation = window ? t->visual.rotation : 0,
         .tint = window ? t->visual.tint : NULL,
     };
-    if (meshed) {
-        if (window_mesh_draw(s, data, t, &options, leaf->screen, alpha)) return false;
-    } else if (window && t->shader && t->shader->program && local.width > 0 && local.height > 0) {
-        if (window_shader_mesh(s, data, t, &options, local, alpha)) return false;
-    }
     double radius = window && !t->fullscreen ? window_radius(s, t, data) : 0;
     bool clipped = !box_equal(&leaf->shown, &leaf->screen) && options.rotation == 0;
     if (window && t->client_width > 0 && !transformed && options.rotation == 0 &&
@@ -638,7 +529,7 @@ static void decorate_layer(struct tomoe *s, const struct target *t, struct frame
 static void decorate(struct tomoe *s, const struct target *t, struct frame *f) {
     if (t->kind == TARGET_LAYER) decorate_layer(s, t, f);
     if (t->kind != TARGET_WINDOW || t->fullscreen || t->client_width <= 0) return;
-    if (t->visual.rotation != 0 || t->mesh) return;
+    if (t->visual.rotation != 0) return;
     const struct settings *st = &s->settings;
     bool focused = t->id == f->focused;
     double zoom = f->zoom;
@@ -682,16 +573,12 @@ static void draw_scene(struct output *o, struct frame *data, const struct presen
         .box = { .width = data->buffer->width, .height = data->buffer->height },
         .color = { locked ? 0.3f : 0.05f, locked ? 0.1f : 0.05f, locked ? 0.1f : 0.05f, 1 },
         .blend_mode = BLEND_NONE });
-    bool frozen = !locked && screenshot_render_frozen(o, data);
+    (void)chrome;
     if (locked) {
         walk_scene(o->server, o->server->lock_tree, NULL, 0, 0, false, render_leaf, data);
-    } else if (frozen) {
     } else if (plan) {
-        static const int ui_band[] = { 1, 2, 5 };
-        int layer = 0;
         for (size_t i = 0; i < plan->target_count; i++) {
             const struct presentation_target *root = &plan->targets[i];
-            for (; layer < 3 && root->band >= ui_band[layer]; layer++) ui_render(o, data, plan, layer);
             if (!root->visible) continue;
             struct target target = root->target;
             target.fullscreen = root->fullscreen;
@@ -699,21 +586,13 @@ static void draw_scene(struct output *o, struct frame *data, const struct presen
             walk_presentation_root(o->server, plan, root, root->node, 0, 0, render_leaf, data);
         }
         ghosts_draw(o->server, data);
-        for (; layer < 3; layer++) ui_render(o, data, plan, layer);
         render_walk(o->server, o->server->drag_icon_tree, NULL, 0, 0, data);
     } else {
         struct node *child;
-        wl_list_for_each(child, &o->server->scene->children, link) {
-            if (child == o->server->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY])
-                ui_render(o, data, NULL, ZWLR_LAYER_SHELL_V1_LAYER_TOP);
+        wl_list_for_each(child, &o->server->scene->children, link)
             render_walk(o->server, child, NULL, 0, 0, data);
-            for (int layer = 0; layer < 2; layer++)
-                if (child == o->server->layer_tree[layer]) ui_render(o, data, NULL, layer);
-        }
     }
-    if (!locked && !frozen && !plan) ghosts_draw(o->server, data);
-    if (!locked && !frozen) ui_render(o, data, plan, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY);
-    if (!locked && chrome && screenshot_on(o)) ui_render(o, data, plan, UI_LAYER_SCREENSHOT);
+    if (!locked && !plan) ghosts_draw(o->server, data);
     if (cursors) render_cursor(o, data, plan);
 }
 static size_t ring_slot(const struct ring *ring, const struct buffer *buffer) {
@@ -845,8 +724,6 @@ static bool render_scene_prepared(struct output *o, struct buffer *buffer,
     bool locked = lock_active(o->server);
     if (!pre_recorded) {
         bool moving = windows_animate(o->server, data.sample);
-        if (ui_animate(o->server, data.sample)) moving = true;
-        if (screenshot_animate(o->server, data.sample)) moving = true;
         if (track && cursor_motion_advance(o->server, animation_now())) moving = true;
         o->animating = o->animating || moving;
     }
@@ -980,8 +857,6 @@ bool render_presentation(struct output *o, struct screen_state *state,
         transform_coords(probe.transform, &probe.width, &probe.height);
         bool locked = lock_active(s);
         bool moving = windows_animate(s, probe.sample);
-        if (ui_animate(s, probe.sample)) moving = true;
-        if (screenshot_animate(s, probe.sample)) moving = true;
         if (cursor_motion_advance(s, animation_now())) moving = true;
         o->animating = moving;
         if (scene_record_ops(o, &probe, locked, &pre_changed, &pre_complete)) {
@@ -1088,70 +963,16 @@ void window_frame_done(struct tomoe *s, uint32_t id, const struct timespec *when
     walk_presentation_root(s, &plan, &root, root.node, 0, 0, unpaced_frame_done, &now);
 }
 
-static bool mesh_barycentric(double x, double y, const float *a, const float *b,
-        const float *c, double *wa, double *wb, double *wc) {
-    double denominator = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]);
-    if (denominator == 0) return false;
-    double first = ((b[1] - c[1]) * (x - c[0]) + (c[0] - b[0]) * (y - c[1])) / denominator;
-    double second = ((c[1] - a[1]) * (x - c[0]) + (a[0] - c[0]) * (y - c[1])) / denominator;
-    double third = 1 - first - second;
-    if (first < 0 || second < 0 || third < 0) return false;
-    *wa = first; *wb = second; *wc = third;
-    return true;
-}
-
-static bool window_mesh_inverse(const struct window_mesh *mesh, double x, double y,
-        double zoom, const struct box *screen, double *u, double *v) {
-    if (mesh->frame.width <= 0 || mesh->frame.height <= 0 || zoom <= 0) return false;
-    double mx = (x - screen->x) / zoom, my = (y - screen->y) / zoom;
-    if (mx < mesh->frame.x || my < mesh->frame.y ||
-            mx > mesh->frame.x + mesh->frame.width || my > mesh->frame.y + mesh->frame.height)
-        return false;
-    int stride = mesh->grid_x + 1;
-    for (int j = 0; j < mesh->grid_y; j++) {
-        for (int i = 0; i < mesh->grid_x; i++) {
-            const float *p00 = &mesh->positions[2 * ((size_t)j * stride + i)];
-            const float *p10 = p00 + 2;
-            const float *p01 = &mesh->positions[2 * ((size_t)(j + 1) * stride + i)];
-            const float *p11 = p01 + 2;
-            for (int triangle = 0; triangle < 2; triangle++) {
-                const float *a = triangle ? p10 : p00;
-                const float *b = triangle ? p11 : p10;
-                const float *c = p01;
-                double wa, wb, wc;
-                if (!mesh_barycentric(mx, my, a, b, c, &wa, &wb, &wc)) continue;
-                double along = triangle ? wa + wb : wb;
-                double down = triangle ? wb : wc;
-                *u = (i + along) / mesh->grid_x;
-                *v = (j + down) / mesh->grid_y;
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
 struct hit_data { double x, y, sx, sy, ratio; struct surface *surface; uint32_t id; };
 static bool hit_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct hit_data *hit = opaque;
     if (leaf->target && leaf->target->kind == TARGET_ICON) return false;
     if (leaf->target && leaf->target->visual.closing) return false;
-    const struct window_mesh *mesh = leaf->target && leaf->target->kind == TARGET_WINDOW ?
-        leaf->target->mesh : NULL;
-    double sx, sy;
-    if (mesh) {
-        double u, v;
-        if (!window_mesh_inverse(mesh, hit->x, hit->y, leaf->zoom, &leaf->screen, &u, &v))
-            return false;
-        sx = u * leaf->width;
-        sy = v * leaf->height;
-    } else {
-        if (hit->x < leaf->shown.x || hit->y < leaf->shown.y ||
-                hit->x >= (double)leaf->shown.x + leaf->shown.width ||
-                hit->y >= (double)leaf->shown.y + leaf->shown.height) return false;
-        sx = (hit->x - leaf->screen.x) * leaf->width / leaf->screen.width;
-        sy = (hit->y - leaf->screen.y) * leaf->height / leaf->screen.height;
-    }
+    if (hit->x < leaf->shown.x || hit->y < leaf->shown.y ||
+            hit->x >= (double)leaf->shown.x + leaf->shown.width ||
+            hit->y >= (double)leaf->shown.y + leaf->shown.height) return false;
+    double sx = (hit->x - leaf->screen.x) * leaf->width / leaf->screen.width;
+    double sy = (hit->y - leaf->screen.y) * leaf->height / leaf->screen.height;
     if (!surface_accepts_input(leaf->surface, sx, sy)) return false;
     hit->surface = leaf->surface; hit->sx = sx; hit->sy = sy;
     hit->ratio = (double)leaf->screen.width / leaf->width;
@@ -1160,11 +981,6 @@ static bool hit_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
 }
 uint32_t physical_hit_test(struct tomoe *s, double x, double y,
         struct surface **surface, double *sx, double *sy) {
-    struct ui_hit ui;
-    if (!lock_active(s) && ui_hit_at(s, x, y, &ui)) {
-        *surface = NULL; *sx = ui.x; *sy = ui.y;
-        return 0;
-    }
     struct hit_data hit = { .x = x, .y = y };
     walk_scene(s, lock_active(s) ? s->lock_tree : s->scene,
         NULL, 0, 0, true, hit_leaf, &hit);
@@ -1190,7 +1006,7 @@ static bool scanout_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     if (!box_equal(&leaf->screen, &data->output) || !box_equal(&leaf->shown, &leaf->screen))
         return true;
     const struct target *t = leaf->target;
-    if (t && (t->kind == TARGET_ICON || t->shader || t->mesh)) return true;
+    if (t && t->kind == TARGET_ICON) return true;
     if (leaf->surface->current.alpha != UINT32_MAX || leaf->surface->current.viewport.has_src ||
             (t && (t->alpha != 1 || t->offset_x || t->offset_y || t->drawn_width ||
                 t->visual.opacity != 1 || t->visual.scale != 1 || t->visual.rotation != 0 ||
@@ -1204,15 +1020,13 @@ struct surface *scanout_surface(struct output *o) {
     struct tomoe *s = o->server;
     struct scanout_data data = {0};
     physical_output_box(o, &data.output);
-    if (s->view_zoom != 1 || lock_active(s) || s->screenshot || ghosts_visible(s) ||
-            ui_on_output(o, 2)) return NULL;
+    if (s->view_zoom != 1 || lock_active(s) || ghosts_visible(s)) return NULL;
     walk_scene(s, s->scene, NULL, 0, 0, true, scanout_leaf, &data);
     struct surface *surface = data.surface;
     bool cursor_here = !s->cursor_hidden && s->pointer_x >= data.output.x &&
         s->pointer_y >= data.output.y && s->pointer_x < data.output.x + data.output.width &&
         s->pointer_y < data.output.y + data.output.height;
-    if (!surface || (!data.window && ui_on_output(o, 0)) ||
-            surface->current.transform != o->screen->transform) return NULL;
+    if (!surface || surface->current.transform != o->screen->transform) return NULL;
     struct dmabuf_attributes dmabuf;
     if (!surface->buffer || !buffer_get_dmabuf(surface->buffer, &dmabuf) ||
             surface->current.buffer_width != o->screen->width ||
@@ -1289,40 +1103,11 @@ static bool plane_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     return false;
 }
 
-static void plane_ui(struct plane_scan *scan, int layer) {
-    struct box boxes[16];
-    bool blurs[16] = {0};
-    size_t count = ui_claim(scan->o, layer, boxes, blurs, sizeof(boxes) / sizeof(*boxes));
-    if (count == SIZE_MAX) {
-        scan->overflow = true;
-        return;
-    }
-    int margin = scan->o->server->settings.blur_margin;
-    for (size_t i = 0; i < count; i++) {
-        struct box blur_box = {0};
-        bool has_blur = false;
-        if (blurs[i]) {
-            struct box area = { boxes[i].x - margin, boxes[i].y - margin,
-                boxes[i].width + 2 * margin, boxes[i].height + 2 * margin };
-            has_blur = box_intersection(&blur_box, &area, &scan->output);
-        }
-        plane_add(scan, boxes[i], boxes[i], boxes[i], blur_box, has_blur, NULL, NULL);
-    }
-}
-
 static void plane_collect(struct plane_scan *scan) {
     struct tomoe *s = scan->o->server;
     struct node *child;
-    wl_list_for_each(child, &s->scene->children, link) {
-        if (child == s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY])
-            plane_ui(scan, ZWLR_LAYER_SHELL_V1_LAYER_TOP);
+    wl_list_for_each(child, &s->scene->children, link)
         walk_scene(s, child, NULL, 0, 0, false, plane_leaf, scan);
-        if (child == s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND])
-            plane_ui(scan, ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND);
-        if (child == s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM])
-            plane_ui(scan, ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM);
-    }
-    plane_ui(scan, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY);
     walk_scene(s, s->drag_icon_tree, NULL, 0, 0, false, plane_leaf, scan);
 }
 
@@ -1355,7 +1140,7 @@ static bool plane_scene_eligible(const struct plane_scan *scan, const struct pla
     if (!surface || !toplevel_surface(surface)) return false;
     if (box_empty(&entry->plane) || box_empty(&entry->claim) || box_empty(&entry->screen))
         return false;
-    if (t->shader || t->mesh || t->visual.closing) return false;
+    if (t->visual.closing) return false;
     if (t->alpha != 1 || t->offset_x || t->offset_y || t->drawn_width || t->drawn_height)
         return false;
     if (t->visual.opacity != 1 || t->visual.scale != 1 || t->visual.rotation != 0 ||
@@ -1444,7 +1229,7 @@ size_t planes_assign(struct output *o) {
     size_t eligible_count = 0;
     bool primary_alpha = o->ring.format.len &&
         o->ring.format.formats[0].format == DRM_FORMAT_ARGB8888;
-    if (capacity && s->view_zoom == 1 && !lock_active(s) && !s->screenshot &&
+    if (capacity && s->view_zoom == 1 && !lock_active(s) &&
             o->screen->transform == WL_OUTPUT_TRANSFORM_NORMAL &&
             !ghosts_visible(s) && !capture_wants_output(o)) {
         physical_output_box(o, &scan.output);
@@ -1648,8 +1433,6 @@ const char *tomoe_hit_test(struct tomoe *s, double x, double y) {
     struct surface *surface;
     double sx, sy, wx = x, wy = y;
     uint32_t id = physical_hit_test(s, x, y, &surface, &sx, &sy);
-    struct ui_hit ui;
-    bool shell_hit = ui_hit_at(s, x, y, &ui);
     screen_to_world(s, &wx, &wy);
     free(s->hit_result); s->hit_result = NULL;
     size_t length = 0;
@@ -1661,13 +1444,6 @@ const char *tomoe_hit_test(struct tomoe *s, double x, double y) {
     fprintf(out,
             "(:id %u :screen-x %.17fd0 :screen-y %.17fd0 :world-x %.17fd0 :world-y %.17fd0"
             " :surface-x %.17fd0 :surface-y %.17fd0", id, x, y, wx, wy, sx, sy);
-    if (shell_hit) {
-        fputs(" :ui (:owner ", out); quote(out, ui.owner);
-        fputs(" :surface ", out); quote(out, ui.name);
-        fputs(" :output ", out); quote(out, ui.output);
-        fputs(" :element ", out); if (ui.key) quote(out, ui.key); else fputs("nil", out);
-        fputc(')', out);
-    }
     fputc(')', out);
     if (fclose(out) != 0) {
         fail(s, "hit test result allocation failed");

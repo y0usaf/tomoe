@@ -54,24 +54,6 @@
           portal ? true,
         }:
         let
-          freetype = pkgs.freetype.overrideAttrs (old: {
-            propagatedBuildInputs = pkgs.lib.subtractLists [
-              pkgs.bzip2
-              pkgs.brotli
-              pkgs.libpng
-            ] old.propagatedBuildInputs;
-            patches = (old.patches or [ ]) ++ [ ./support/patches/freetype-png.patch ];
-            configureFlags = old.configureFlags ++ [
-              "--with-bzip2=no"
-              "--with-brotli=no"
-              "--with-png=no"
-            ];
-            NIX_CFLAGS_COMPILE = toString (old.NIX_CFLAGS_COMPILE or "") +
-              " -DFT_CONFIG_OPTION_USE_PNG";
-            postFixup = (old.postFixup or "") + ''
-              rm -f $out/lib/*.la
-            '';
-          });
           libs = lean pkgs;
           dropIn =
             {
@@ -167,7 +149,6 @@
                 fileset = pkgs.lib.fileset.unions [
                   ./native
                   ./lib
-                  ./support
                   ./lisp
                   ./examples
                   ./share
@@ -190,7 +171,6 @@
             libs.libgbm
             pkgs.wayland-protocols
             pkgs.wlr-protocols
-            freetype
           ];
           strictDeps = true;
           dontStrip = true;
@@ -198,7 +178,6 @@
             runHook preBuild
             make -j"$NIX_BUILD_CORES" VERSION=${version} \
               PATH_PREFIX=$out/bin \
-              FONT_DIR=${pkgs.dejavu_fonts.minimal} \
               XKB_CONFIG_ROOT=${pkgs.xkeyboard_config}/etc/X11/xkb \
               OPT='${opt}' LTO='${pkgs.lib.optionalString lto "-flto=auto"}' \
               CPU='${pkgs.lib.optionalString (cpu != "") "-march=${cpu} -mtune=${cpu}"}' \
@@ -225,7 +204,6 @@
             ''}
             install -d $out/share/tomoe/examples
             install -m 644 examples/*.lisp $out/share/tomoe/examples/
-            install -Dm644 -t $out/share/tomoe/examples/shaders examples/shaders/*.glsl
             runHook postInstall
           '';
           meta = {

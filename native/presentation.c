@@ -1,13 +1,10 @@
 #include "internal.h"
-#include "ui.h"
 
 void presentation_finish(struct tomoe *s) {
     if (!s || !s->presentation) return;
-    ui_set_finish(s->presentation->ui);
     presentation_bindings_finish(s->presentation);
     keyboard_profile_finish(s->presentation->keyboard);
     if (s->presentation->settings) settings_finish(s->presentation->settings);
-    sound_bank_free(s->presentation->sounds);
     free(s->presentation->grab_owner);
     free(s->presentation->grab_otherwise);
     free(s->presentation->settings);
@@ -149,33 +146,6 @@ int tomoe_present_window_visual(struct tomoe *s, uint32_t id, double opacity, ui
     return 1;
 }
 
-int tomoe_present_window_shader(struct tomoe *s, uint32_t id, const char *path,
-        int grid_x, int grid_y, int margin, double settle, const char *entry) {
-    struct presentation *plan = s->presentation;
-    if (!plan) return 0;
-    struct presentation_target *entry_target = presentation_target_for(plan, id);
-    if (!entry_target) return 1;
-    if (!path || !*path) {
-        entry_target->target.shader = NULL;
-        return 1;
-    }
-    entry_target->target.shader = window_shader_for(s, path, grid_x, grid_y, margin,
-        settle, entry && *entry ? entry : "mainImage");
-    return 1;
-}
-
-int tomoe_present_window_mesh(struct tomoe *s, uint32_t id, int grid_x, int grid_y,
-        const double *positions, unsigned long count) {
-    struct presentation *plan = s->presentation;
-    if (!plan) return 0;
-    struct presentation_target *entry_target = presentation_target_for(plan, id);
-    if (!entry_target) return 1;
-    struct window_mesh *mesh = NULL;
-    if (count && !(mesh = window_mesh_for(s, id, grid_x, grid_y, positions, count))) return 0;
-    entry_target->target.mesh = mesh;
-    return 1;
-}
-
 int tomoe_present_window_style(struct tomoe *s, uint32_t id, int radius, int blur,
         int tearing, int64_t focused, int64_t unfocused) {
     struct presentation *plan = s->presentation;
@@ -215,7 +185,7 @@ static int compare_targets(const void *a, const void *b) {
 
 bool presentation_prepare(struct tomoe *s) {
     struct presentation *plan = s->presentation;
-    if (!plan || !ui_prepare(s) || !layers_prepare_presentation(s, plan)) return false;
+    if (!plan || !layers_prepare_presentation(s, plan)) return false;
     windows_prepare_presentation(s, plan);
     qsort(plan->targets, plan->target_count, sizeof(*plan->targets), compare_targets);
     return true;
@@ -228,7 +198,6 @@ void presentation_publish(struct tomoe *s) {
     if (s->failed) return;
     layers_publish_presentation(s);
     if (s->failed) return;
-    ui_publish(s);
     if (!keyboard_profile_publish(s, plan)) {
         fail(s, "keyboard publication failed");
         return;
@@ -236,7 +205,6 @@ void presentation_publish(struct tomoe *s) {
     motion_publish(s, &plan->motion);
     presentation_input_publish(s, plan);
     settings_publish(s, plan);
-    sound_publish(s, plan);
     uint32_t previous_focus = s->focused;
     if (s->focused != plan->focused) tomoe_focus(s, plan->focused);
     if (s->focused == previous_focus) update_keyboard_focus(s);

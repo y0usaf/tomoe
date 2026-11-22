@@ -1,5 +1,4 @@
 #include "internal.h"
-#include "ui.h"
 #include "ext-idle-notify-v1-protocol.h"
 #include "idle-inhibit-unstable-v1-protocol.h"
 
@@ -167,7 +166,6 @@ bool idle_listen(struct tomoe *s) {
 void idle_notify_activity(struct tomoe *s) {
     s->activity_serial++;
     s->input_at = animation_now();
-    ui_hold_resume(s);
     struct notification *n;
     wl_list_for_each(n, &s->idle_notifications, link) {
         if (s->idle_inhibited && n->obey_inhibitors) continue;

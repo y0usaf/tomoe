@@ -7,6 +7,7 @@ system=$(nix eval --raw --impure --expr builtins.currentSystem)
 tomoe_bin=${TOMOE_BIN:-$(nix build --no-link --print-out-paths "${root}#tomoe")/bin/tomoe}
 client_bin=${CLIENT_BIN:-$(nix build --no-link --print-out-paths --impure --expr "let fl = builtins.getFlake \"path:${root}\"; pkgs = import fl.inputs.nixpkgs { system = \"${system}\"; }; in pkgs.callPackage (fl.outPath + \"/bench/client.nix\") { }")/bin/bench-client}
 capture_bin=${CAPTURE_BIN:-$(nix build --no-link --print-out-paths --impure --expr "let fl = builtins.getFlake \"path:${root}\"; pkgs = import fl.inputs.nixpkgs { system = \"${system}\"; }; in pkgs.callPackage (fl.outPath + \"/bench/capture.nix\") { }")/bin/tomoe-e2e-capture}
+layer_blur_bin=${LAYER_BLUR_BIN:-$(nix build --no-link --print-out-paths --impure --expr "let fl = builtins.getFlake \"path:${root}\"; pkgs = import fl.inputs.nixpkgs { system = \"${system}\"; }; in pkgs.callPackage (fl.outPath + \"/bench/e2e-layer-blur.nix\") { }")/bin/tomoe-e2e-layer-blur}
 
 base=${XDG_RUNTIME_DIR:-/tmp}
 dir=$(mktemp -d "${base}/tomoe-e2e.XXXXXX")
@@ -22,8 +23,9 @@ env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u TOMOE_SOCKET \
 		tomoe_bin=$1
 		client_bin=$2
 		capture_bin=$3
-		cap_dir=$4
-		log=$5
+		layer_blur_bin=$4
+		cap_dir=$5
+		log=$6
 
 		"$tomoe_bin" --socket e2e --backend headless --bare --no-watch >"$log" 2>&1 &
 		tpid=$!
@@ -64,6 +66,10 @@ env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u TOMOE_SOCKET \
 		wait "$cpid" 2>/dev/null || true
 		[[ -s "$cap_dir/frame-000001.ppm" ]] || { echo "e2e: capture failed" >&2; cat "$cap_dir/capture.log" >&2; exit 1; }
 
+		blur_out=$(WAYLAND_DISPLAY="$wl_display" "$layer_blur_bin" --frames 3)
+		echo "$blur_out"
+		echo "$blur_out" | grep -Eq "frames=[3-9]" 
+
 		trap - EXIT
 		kill -TERM "$tpid"
 		wait "$tpid"
@@ -77,4 +83,4 @@ env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u TOMOE_SOCKET \
 			fi
 		done
 		echo "e2e: PASS"
-	' _ "$tomoe_bin" "$client_bin" "$capture_bin" "$dir/cap" "$dir/tomoe.log"
+	' _ "$tomoe_bin" "$client_bin" "$capture_bin" "$layer_blur_bin" "$dir/cap" "$dir/tomoe.log"

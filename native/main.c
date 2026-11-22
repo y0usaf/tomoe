@@ -8,6 +8,7 @@
 #include "json.h"
 #include "lisp.h"
 #include "policy.h"
+#include "supervise.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -29,14 +30,8 @@ static const char lisp_prelude[] = {
 static const char lisp_api[] = {
 #embed "../lisp/api.lisp"
 };
-static const char lisp_ui[] = {
-#embed "../lisp/ui.lisp"
-};
 static const char lisp_cursor[] = {
 #embed "../lisp/cursor.lisp"
-};
-static const char lisp_dialogs[] = {
-#embed "../lisp/dialogs.lisp"
 };
 static const char lisp_rules[] = {
 #embed "../lisp/rules.lisp"
@@ -63,9 +58,7 @@ static const char lisp_default_config[] = {
 static const struct lisp_builtin_source tomoe_builtin_sources[] = {
     { "prelude", lisp_prelude, sizeof(lisp_prelude) },
     { "api", lisp_api, sizeof(lisp_api) },
-    { "ui", lisp_ui, sizeof(lisp_ui) },
     { "cursor", lisp_cursor, sizeof(lisp_cursor) },
-    { "dialogs", lisp_dialogs, sizeof(lisp_dialogs) },
     { "rules", lisp_rules, sizeof(lisp_rules) },
     { "ipc", lisp_ipc, sizeof(lisp_ipc) },
     { "plan", lisp_plan, sizeof(lisp_plan) },
@@ -636,7 +629,6 @@ static int run_compositor(const struct cli_options *options) {
     struct control_server *control = NULL;
     struct ipc_server *ipc = NULL;
     struct desktop_bus *bus = NULL;
-    bool resources = false;
     bool session = false;
     int signal_fd = -1;
     struct loop_source *signal_watch = NULL;
@@ -645,8 +637,7 @@ static int run_compositor(const struct cli_options *options) {
         goto done;
     }
     policy_register_primitives(server);
-    resources_register_primitives(server);
-    ui_layout_register_primitives(server);
+    cursor_effects_register_primitives(server);
     loop_register_primitives(server);
     if (lisp_load_builtins(tomoe_builtin_sources, tomoe_builtin_source_count, error,
             sizeof(error))) {
@@ -689,9 +680,6 @@ static int run_compositor(const struct cli_options *options) {
         desktop_session_start();
         session = true;
     }
-    if (resources_start(server))
-        tomoe_log(LOG_ERROR, "tomoe: cannot start the native resources");
-    resources = true;
     lisp_value sources = lisp_nil();
     if (options->config)
         sources = lisp_cons(lisp_cstring(options->config), lisp_nil());
@@ -735,7 +723,6 @@ static int run_compositor(const struct cli_options *options) {
         stop_reason = loop_state.quit_reason[0] ? loop_state.quit_reason : "it was asked to quit";
 done:
     tomoe_log_close(stop_reason);
-    if (resources) resources_stop(server);
     tomoe_service_run_end();
     if (session) desktop_session_stop();
     desktop_bus_stop(bus);
@@ -749,10 +736,5 @@ done:
 }
 
 int main(int argc, char **argv) {
-    if (argc > 1 && !strcmp(argv[1], "--warm-shaders")) {
-        if (argc != 5 && argc != 6) return 1;
-        alarm((unsigned)(TOMOE_SHADER_COPY_MS / 1000));
-        return tomoe_warm_shaders(argv[2], argv[3], argv[4], argc == 6 ? argv[5] : NULL);
-    }
     return run_cli(argc - 1, argv + 1);
 }

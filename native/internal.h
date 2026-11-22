@@ -155,7 +155,6 @@ struct buffer *xcursor_load(const char *name, float scale, int *hotspot_x, int *
 char *xcursor_path(void);
 
 struct render;
-struct ui_surface;
 struct texture { uint32_t width, height; uint64_t serial; };
 enum blend_mode { BLEND_PREMULTIPLIED, BLEND_NONE, BLEND_CUTOUT };
 enum filter_mode { FILTER_BILINEAR, FILTER_NEAREST };
@@ -172,8 +171,6 @@ struct texture_options {
     struct timeline *wait_timeline;
     uint64_t wait_point;
     const struct surface *surface;
-    const struct ui_surface *ui;
-    uint64_t content_seq;
     struct texture *lut;
     double rotation;
     const float *tint;
@@ -189,17 +186,13 @@ struct read_options {
     uint32_t format, stride;
     struct box src_box;
 };
-enum { OP_RECT = 1, OP_TEXTURE, OP_BORDER, OP_SHADOW, OP_ROUNDED, OP_BLUR, OP_SHADER,
-    OP_MESH = 9, OP_TRAIL = 13, OP_CURSOR = 14, OP_GLASS = 15 };
+enum { OP_RECT = 1, OP_TEXTURE, OP_BORDER, OP_SHADOW, OP_ROUNDED, OP_BLUR,
+    OP_TRAIL = 13, OP_CURSOR = 14, OP_GLASS = 15 };
 struct pass;
 struct blur_grid { struct box grown; int passes; double offset; };
-struct screenshot;
 struct op {
     uint64_t hash, seq, backdrop, key;
     const struct surface *surface;
-    const struct ui_surface *ui;
-    const struct screenshot *marks;
-    uint64_t content_seq;
     struct box box, reach, footprint;
     struct fbox src;
     struct blur_grid grid;
@@ -335,24 +328,15 @@ struct pointer_axis {
     int32_t delta_discrete;
 };
 struct logical_keyboard;
-struct ui_set;
-struct ui_asset_pool;
-struct ui_pointer;
 
 struct timeline;
 enum { PROGRAM_SCENE, PROGRAM_SDF, PROGRAM_EXTERNAL, PROGRAM_TEXTURE_LUT, PROGRAM_EXTERNAL_LUT,
-    PROGRAM_DOWN, PROGRAM_UP, PROGRAM_TRAIL, PROGRAM_COUNT };
+    PROGRAM_DOWN, PROGRAM_UP, PROGRAM_TRAIL, PROGRAM_GLASS, PROGRAM_COUNT };
 struct program {
     GLuint id;
     GLint pos, local, texcoord;
-    GLint tex, alpha, opaque, size, radius, clip, width, kind, color, range, power, half_pixel, offset;
-    GLint resolution, time, frame, mouse, channel, lut, trail, trail_count, tint;
-    GLint box, min_ndc, max_ndc, drag, tex_prev, tex_next;
-    GLint geo_to_tex, geo_to_tex_prev, geo_to_tex_next;
-    GLint curr_geo_to_prev_geo, curr_geo_to_next_geo;
-    GLint progress, clamped_progress, random_seed, path, path_count;
-    GLint data, windows, window_count, beneath, selection, marks, marks_box;
-    GLint frost, frost_box, grain, vibrancy;
+    GLint tex, alpha, opaque, size, radius, clip, half_pixel, offset;
+    GLint resolution, channel, lut, tint, data, beneath, glass, grain, vibrancy;
 };
 enum { SCENE_RECT, SCENE_BORDER, SCENE_SHADOW, SCENE_TEXTURE };
 struct scene_quad {
@@ -375,59 +359,6 @@ void pass_scene(struct pass *pass, const struct scene_quad *quad);
 void pass_trail(struct pass *pass, const struct trail_cell *cells, size_t count, uint64_t pixels);
 void pass_flush(struct pass *pass);
 void pass_scene_attributes_dirty(struct pass *pass);
-struct program *render_shader_create(struct render *r, const char *source, bool *pending);
-bool render_shader_reap(struct render *r);
-struct program *render_shader_compile(struct render *r, const char *source);
-void render_shader_destroy(struct program *program);
-struct window_shader {
-    struct program *program;
-    char *path;
-    char entry[64];
-    long mtime;
-    int grid_x, grid_y, margin;
-    double settle;
-    struct window_shader *next;
-};
-enum { WINDOW_PATH = 32 };
-struct window_path_sample {
-    int x, y;
-    double t;
-};
-int window_path_samples(struct tomoe *server, uint32_t id,
-    struct window_path_sample *out, int max);
-struct window_shader *window_shader_for(struct tomoe *server, const char *path,
-    int grid_x, int grid_y, int margin, double settle, const char *entry);
-struct window_shader *window_mesh_shader(struct tomoe *server);
-void window_shaders_finish(struct tomoe *server);
-struct window_mesh {
-    uint32_t id;
-    int grid_x, grid_y;
-    struct box frame;
-    float *positions;
-    size_t capacity;
-    uint64_t digest;
-    struct window_mesh *next;
-};
-struct window_mesh *window_mesh_for(struct tomoe *server, uint32_t id, int grid_x, int grid_y,
-    const double *positions, size_t count);
-void window_meshes_finish(struct tomoe *server);
-struct mesh_options {
-    struct texture *texture;
-    struct program *shader;
-    const struct window_mesh *mesh;
-    struct box dst_box;
-    struct fbox src_box;
-    enum wl_output_transform transform;
-    const float *trail, *path;
-    const float *alpha;
-    struct timeline *wait_timeline;
-    uint64_t wait_point;
-    int trail_count, path_count, grid_x, grid_y, frame, drag;
-    enum wl_output_transform position_transform;
-    double box[4], time, progress, seed;
-    double origin[2], scale;
-};
-void pass_add_mesh(struct pass *pass, const struct mesh_options *options);
 #define RING_SLOTS 4
 #define RING_START_SLOTS 2
 #define RING_FRAME_SLOTS 3
@@ -443,7 +374,6 @@ struct render *render_create(int drm_fd);
 struct program *render_program(struct render *renderer, int kind);
 void pass_quad(struct pass *pass, struct program *p, const float pos[8], const float local[8],
     const float texcoords[8]);
-void pass_triangles(struct pass *pass, struct program *p, const float *pos, size_t vertices);
 bool render_texture_gl(struct texture *texture, GLenum *target, GLuint *tex, bool *alpha);
 GLuint render_buffer_fbo(struct render *renderer, struct buffer *buffer);
 uint32_t render_read_format(struct render *renderer);
@@ -709,9 +639,6 @@ struct target {
     int drawn_width, drawn_height;
     struct window_style style;
     struct visual visual;
-    struct window_shader *shader;
-    struct window_mesh *mesh;
-    double shader_time;
 };
 struct frame {
     struct tomoe *server;
@@ -735,24 +662,6 @@ bool effect_texture(struct frame *f, const struct texture_options *options,
 void effect_cutout(struct frame *f, struct fbox dst, struct fbox clip, double radius);
 void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
     double offset, int margin, double alpha);
-struct shader_inputs {
-    const float *data;
-    int data_count;
-    const float *windows;
-    int window_count;
-    const struct fbox *part;
-    const float *selection;
-    const struct texture *marks;
-    const float *marks_box;
-    bool opaque;
-    const struct region *frost_ring;
-    uint64_t frost_stamp;
-    const struct screenshot *marks_owner;
-    uint64_t marks_seq;
-};
-uint64_t effects_frost_stamp(struct tomoe *s);
-void effect_shader(struct frame *f, struct program *p, struct fbox area, double time, int frame,
-    const struct shader_inputs *inputs);
 enum { TRAIL_CELLS = 0, TRAIL_DOTS = 1 };
 struct trail_style {
     double cell, life;
@@ -913,20 +822,6 @@ struct settings {
     int cursor_trail_steps, cursor_trail_shape;
     uint32_t cursor_trail_color;
     double blur_offset, blur_noise, blur_vibrancy;
-    double shader_hold;
-    bool screenshot_freeze, screenshot_motion_enabled;
-    bool pause_readings_when_dark;
-    double sound_pause_after;
-    double screenshot_motion_stiffness, screenshot_motion_damping;
-    uint32_t screenshot_mark_ink;
-    int screenshot_mark_width, screenshot_mark_head, screenshot_mark_size;
-    char *screenshot_mark_font;
-    char *screenshot_mark_keys[6];
-    size_t screenshot_mark_key_count;
-    uint32_t screenshot_mark_palette[SCREENSHOT_PALETTE_MAX];
-    char *screenshot_mark_palette_keys[SCREENSHOT_PALETTE_MAX];
-    size_t screenshot_mark_palette_count;
-    size_t screenshot_mark_palette_key_count;
     struct animation_config window_move, window_open, window_close, window_resize, window_switch,
         window_view, window_alpha, window_tint, window_scale, window_rotation, window_translate;
     char *blur_namespaces[64];
@@ -973,22 +868,13 @@ struct presentation {
     struct wl_list bindings;
     struct keyboard_profile *keyboard;
     bool outputs_changed, replace_bindings;
-    struct ui_set *ui;
     struct settings *settings;
     char *grab_owner, *grab_otherwise;
     uint64_t grab_source;
     bool grab_staged;
-    struct sound_bank *sounds;
     struct motion_plan motion;
 };
 void settings_publish(struct tomoe *s, struct presentation *plan);
-enum sound_event { SOUND_KEY, SOUND_BUTTON, SOUND_OPEN, SOUND_CLOSE, SOUND_BELL, SOUND_EVENTS };
-void sound_play(struct tomoe *s, enum sound_event event);
-void sound_publish(struct tomoe *s, struct presentation *plan);
-void sound_bank_free(struct sound_bank *bank);
-void sound_finish(struct tomoe *s);
-void sound_settings(struct tomoe *s);
-bool system_bell_listen(struct tomoe *s);
 struct surface;
 struct subsurface;
 struct release;
@@ -1169,8 +1055,6 @@ struct tomoe {
     struct output_manager *output_manager;
     struct settings settings;
     struct effects *effects;
-    struct screenshot *screenshot;
-    struct sound *sound;
     struct session *session;
     struct kms *kms;
     enum screen_kind backend;
@@ -1225,7 +1109,6 @@ struct tomoe {
     char *cursor_result;
     char *motion_result;
     uint32_t hovered;
-    uint64_t ui_hovered;
     struct pointer_latch pointer_latches[32];
     char *grab_owner, *grab_otherwise;
     uint64_t grab_source;
@@ -1253,8 +1136,7 @@ struct tomoe {
     char *output_current;
     uint64_t outputs_revision;
     uint64_t activity_serial;
-    double input_at, shader_shift, shader_hold_at;
-    bool shader_holding, shader_lifting;
+    double input_at;
     struct layer_plan *layer_preview;
     char *layer_preview_text;
     struct presentation *presentation;
@@ -1272,7 +1154,6 @@ struct tomoe {
     bool grab_held;
     struct wl_event_source *grab_release;
     bool running, stopping, failed, configuring_outputs, scene_dirty, outputs_deferred;
-    struct ui_set *ui;
     struct ui_pointer *ui_pointers;
     struct ui_asset_pool *ui_assets;
     struct window_shader *shaders;
@@ -1641,7 +1522,6 @@ void presentation_bindings_finish(struct presentation *plan);
 void presentation_input_publish(struct tomoe *s, struct presentation *plan);
 void pointer_refresh(struct tomoe *s);
 bool pointer_trail_record(struct tomoe *s, uint32_t time_msec);
-void ui_input_finish(struct tomoe *s);
 void pointer_sync_cursors(struct tomoe *s);
 bool virtual_input_listen(struct tomoe *s);
 struct screen *virtual_pointer_output(struct tomoe *s, struct input_device *device);
@@ -1697,23 +1577,6 @@ void input_lock_begin(struct tomoe *s);
 bool lock_active(struct tomoe *s);
 bool render_output_buffer(struct output *o, struct buffer *buffer);
 bool render_displayed_buffer(struct output *o, struct buffer *buffer);
-struct screenshot;
-bool ui_text_raster(uint32_t *pixels, int stride, int width, int height, struct rect clip,
-    double x, double y, const char *font, const char *text, double size, uint32_t rgba);
-void screenshot_key_up(struct tomoe *s, uint32_t keycode);
-bool screenshot_key(struct tomoe *s, txkb_keysym_t sym, txkb_keysym_t typed,
-    uint32_t modifiers, bool pressed, uint32_t keycode);
-bool screenshot_button(struct tomoe *s, uint32_t button, bool pressed);
-void screenshot_motion(struct tomoe *s);
-bool screenshot_render_frozen(struct output *o, struct frame *f);
-bool screenshot_on(const struct output *o);
-bool screenshot_marks(const struct output *o, struct texture **texture, struct fbox *box,
-    const struct screenshot **owner, uint64_t *seq);
-bool screenshot_marks_since(const struct screenshot *shot, uint64_t seq, struct region *out);
-bool screenshot_selection(const struct output *o, struct fbox area, double now, float out[16]);
-bool screenshot_animate(struct tomoe *s, double now);
-void screenshot_output_gone(struct tomoe *s, struct output *o);
-void screenshot_finish(struct tomoe *s);
 struct surface *lock_keyboard_surface(struct tomoe *s);
 
 struct seat *seat_create(struct tomoe *s);
@@ -1816,7 +1679,6 @@ size_t screen_gamma_size(struct screen *screen);
 size_t screen_degamma_size(struct screen *screen);
 void screen_schedule_frame(struct screen *screen);
 void screen_schedule_animation(struct screen *screen);
-double shader_clock_now(const struct tomoe *s, double now);
 void screen_send_frame(struct screen *screen);
 void screen_frame_committed(struct screen *screen, const struct screen_state *state);
 void screens_frame_after_events(struct tomoe *s);

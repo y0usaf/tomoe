@@ -264,27 +264,16 @@ resolved to themselves and nothing retires."
            (copy-data (effect-arguments effect)) effect))
 
 (defun canonical-command (command &optional directory)
+  (declare (ignore directory))
   (unless (and (consp command) (eq (first command) :command))
     (error "Not a command: ~S" command))
   (let ((args (copy-data (command-arguments command))))
     (ecase (command-kind command)
       (:reply (destructuring-bind (value) args (ipc-reply value)))
       (:broadcast (destructuring-bind (name value) args (broadcast name value)))
-      (:launch (apply #'launch args))
-      (:spawn (destructuring-bind (launch cwd env focus) args
-                (let* ((result (spawn launch :cwd cwd :env env :focus focus))
-                       (spawn-arguments (command-arguments result)))
-                  (when (and cwd (not (char= (char cwd 0) #\/)))
-                    (unless directory (error "Relative spawn cwd requires a declaring source."))
-                    (setf (nth 1 spawn-arguments)
-                          (concatenate 'string directory cwd)))
-                  result)))
       (:close (destructuring-bind (id) args (close-window id)))
-      (:screenshot (destructuring-bind (screen) args (screenshot (and screen :screen))))
       (:screencast (destructuring-bind (token answer value) args (screencast-answer token answer value)))
-      (:media (destructuring-bind (action) args (media-control action)))
       (:clipboard (destructuring-bind (path type delete) args (clipboard-copy path type :delete delete)))
-      (:brightness (destructuring-bind (percent) args (adjust-brightness percent)))
       (:power (destructuring-bind (mode name) args (output-power mode name)))
       (:quit (unless (null args) (error "QUIT takes no arguments.")) (quit))
       (:reload (unless (null args) (error "RELOAD takes no arguments.")) (reload)))))
@@ -355,11 +344,10 @@ message when it failed, leaving MOUNTED's state and effects as they were."
                     (error "More than ~D commands." (%limit :commands)))
                   (when (and commands
                              (not (or (member (getf event :type)
-                                              '(:command :button :timer :watch :exec :request
-                                                :screenshot :screencast :ipc :ui))
+                                              '(:command :button :request :screencast :ipc))
                                       (and (mounted-rule-parent mounted)
                                            (eq (getf event :type) :mount)))))
-                    (error "One-shot commands require a command, button, timer, watch, exec, request, screenshot, screencast, IPC, or UI event."))
+                    (error "One-shot commands require a command, button, request, screencast, or IPC event."))
                   (let ((effects (if (equal effects (mounted-effects mounted))
                                      (mounted-effects mounted)
                                      (latest-effects (mapcar #'canonical-effect effects))))
@@ -913,58 +901,28 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                   (values resolved areas)))
           (unless (find focused layout :key (lambda (w) (getf w :id)))
             (setf focused nil))
-          (let* ((ordered-surfaces (nreverse surfaces))
-                 (viewport (shell-viewport output-facts (materialization-data m)))
-                 (sc (%r :surfaces-cache)))
-          (multiple-value-bind (surface-plans shell-workareas)
-              (if (and sc (null (%r :refused-surfaces))
-                       (equal (first sc) ordered-surfaces)
-                       (equal (second sc) output-facts)
-                       (equal (third sc) workareas)
-                       (equal (fourth sc) viewport))
-                  (values (fifth sc) (sixth sc))
-                  (multiple-value-bind (plans areas)
-                      (resolve-owned-surfaces mounts ordered-surfaces output-facts workareas viewport)
-                    (when (and (null (%r :refused-surfaces)) (or (eq *surface-failures* :outside) (null *surface-failures*)))
-                      (%r! :surfaces-cache (list ordered-surfaces output-facts workareas viewport plans areas)))
-                    (values plans areas)))
-            (list :windows (runtime-windows)
-                  :window-geometry (resolved-window-geometry layout view output-facts)
-                  :rules (resolved-rule-properties mounts) :data data
-                  :services (runtime-services)
-                  :system (runtime-system)
-                  :outputs output-facts :connectors connector-facts
-                  :output-config output-config :native-output-config native-output-config
-                  :output-failures output-failures
-                  :output-errors (loop for failure in output-failures collect
-                                   (list :name (getf failure :name) :message (getf failure :message)))
-                  :workareas shell-workareas
-                  :surface-plans surface-plans
-                  :surfaces (loop for plan in surface-plans
-                                  collect (list :owner (getf plan :owner)
-                                                :source-id (getf plan :source-id)
-                                                :name (getf plan :name)
-                                                :output (getf plan :output)
-                                                :x (getf plan :x)
-                                                :y (getf plan :y)
-                                                :width (getf plan :width)
-                                                :height (getf plan :height)
-                                                :layer (getf plan :layer)
-                                                :click-through (getf plan :click-through)))
-                  :view view :layout layout
-                  :stacking (remove-if-not
-                             (lambda (id) (getf (find id layout :key (lambda (window) (getf window :id))) :visible))
-                             stacking)
-                  :layers resolved-layers :focus focused :keyboard keyboard :settings settings
-                  :sounds (materialization-sounds m)
-                  :cursors (stable-sort (copy-list (materialization-cursors m)) #'<
-                                        :key (lambda (entry) (getf entry :order)))
-                  :virtual-outputs (sort (copy-list (materialization-virtual-outputs m)) #'string<
-                                         :key (lambda (o) (getf o :name)))
-                  :config-error (runtime-config-error)
-                  :keyboard-grab keyboard-grab
-                  :commands sorted-commands
-                  :bindings sorted-bindings)))))))))
+          (list :windows (runtime-windows)
+                :window-geometry (resolved-window-geometry layout view output-facts)
+                :rules (resolved-rule-properties mounts) :data data
+                :outputs output-facts :connectors connector-facts
+                :output-config output-config :native-output-config native-output-config
+                :output-failures output-failures
+                :output-errors (loop for failure in output-failures collect
+                                 (list :name (getf failure :name) :message (getf failure :message)))
+                :workareas workareas
+                :view view :layout layout
+                :stacking (remove-if-not
+                           (lambda (id) (getf (find id layout :key (lambda (window) (getf window :id))) :visible))
+                           stacking)
+                :layers resolved-layers :focus focused :keyboard keyboard :settings settings
+                :cursors (stable-sort (copy-list (materialization-cursors m)) #'<
+                                      :key (lambda (entry) (getf entry :order)))
+                :virtual-outputs (sort (copy-list (materialization-virtual-outputs m)) #'string<
+                                       :key (lambda (o) (getf o :name)))
+                :config-error (runtime-config-error)
+                :keyboard-grab keyboard-grab
+                :commands sorted-commands
+                :bindings sorted-bindings)))))))
 
 (defun sorted-entries (key list sorter)
   "LIST as SORTER orders it. A materialization sorts the same commands and bindings
@@ -982,59 +940,6 @@ KEY and reused."
 (defvar *surface-failures* :outside
   "Inside a transaction, (SPEC . MESSAGE) for each extension whose shell surfaces
 could not join the rest; the transaction holds each at its last committed answer.")
-
-(defun resolve-owned-surfaces (mounts declarations outputs workareas viewport)
-  "Resolve every extension's shell surfaces together. When they cannot be, find the
-extensions whose surfaces cannot join the rest, in mount order, and leave theirs
-out: each is reported in *SURFACE-FAILURES*, so the transaction holds it at its
-last committed answer, and remembered with the declarations it was refused for, so
-the next transaction leaves them out without trying again until they change."
-  (flet ((owner-of (declaration) (getf declaration :owner))
-         (resolve (subset)
-           (let ((result nil) (failure nil))
-             (%catch (lambda ()
-                       (setf result (multiple-value-list
-                                     (resolve-shell-surfaces subset outputs workareas
-                                                             :asset-loader nil :viewport viewport))))
-                     (lambda (text) (setf failure text)))
-             (values result failure))))
-    (let* ((owners (remove-duplicates (mapcar #'owner-of declarations) :test #'equal :from-end t))
-           (owned (loop for owner in owners
-                        collect (cons owner (remove-if-not (lambda (declaration)
-                                                             (equal (owner-of declaration) owner))
-                                                           declarations))))
-           (refused (loop for entry in (%r :refused-surfaces)
-                          when (equal (second entry) (cdr (assoc (first entry) owned :test #'equal)))
-                            collect entry))
-           (admitted (remove-if (lambda (owner) (assoc owner refused :test #'equal)) owners)))
-      (flet ((declared (owners)
-               (remove-if-not (lambda (declaration) (member (owner-of declaration) owners :test #'equal))
-                              declarations)))
-        (multiple-value-bind (result failure) (resolve (declared admitted))
-          (dolist (entry refused) (surface-failed mounts (first entry) (third entry)))
-          (when failure
-            (multiple-value-bind (empty none) (resolve nil)
-              (declare (ignore empty))
-              (when none (error "~A" failure)))
-            (let ((kept nil))
-              (dolist (owner admitted)
-                (multiple-value-bind (trial why) (resolve (declared (append kept (list owner))))
-                  (if why
-                      (progn
-                        (push (list owner (cdr (assoc owner owned :test #'equal)) why) refused)
-                        (surface-failed mounts owner why))
-                      (setf kept (append kept (list owner)) result trial))))
-              (unless kept (setf result (resolve nil)))))
-          (unless (equal refused (%r :refused-surfaces)) (%r! :refused-surfaces refused))
-          (values (first result) (second result)))))))
-
-(defun surface-failed (mounts owner why)
-  (let ((mounted (find owner mounts :test #'equal :key (lambda (m) (spec-name (mounted-spec m)))))
-        (message (format nil "~A It keeps its last answer, without surfaces that still do not fit." why)))
-    (if (and mounted (listp *surface-failures*))
-        (unless (assoc (mounted-spec mounted) *surface-failures* :test #'eq)
-          (push (cons (mounted-spec mounted) message) *surface-failures*))
-        (record-error (format nil "Extension ~A: ~A" owner message)))))
 
 (defun default-output-config (outputs connectors scale)
   "Fill omitted scales from SCALE, and configure every other connector at SCALE
@@ -1064,20 +969,6 @@ when it is not 1."
                          :test #'equal :key (lambda (o) (getf o :name))))
                  (getf context :output-config)))
 
-(defun wanted-resources (mounts)
-  "Every owned timer, watch, execution and process the committed plan asks for."
-  (let ((wanted nil))
-    (dolist (mounted mounts (nreverse wanted))
-      (let* ((spec (mounted-spec mounted))
-             (owner (spec-name spec))
-             (directory (spec-directory spec))
-             (source-id (spec-id spec)))
-        (dolist (effect (%effects-of-kind (mounted-effects mounted) '(:timer :watch :exec :process)))
-          (push (list :kind (effect-kind effect) :owner owner
-                      :arguments (copy-data (effect-arguments effect))
-                      :directory directory :source-id source-id :token source-id)
-                wanted))))))
-
 (defun mounted-reads ()
   "The context keys the mounted policy reacts to, cached until a commit."
   (or (runtime-reads-cache)
@@ -1102,8 +993,7 @@ when it is not 1."
 the transaction began, so a reducer that draws from the time returns the same
 output when its own output wakes it again, and the dependencies can settle."
   (let ((*command-input* (and (getf event :input) t)))
-    (unwind-protect (%with-held-clock (lambda () (%transact mounts event changed force)))
-      (%ui-assets-discard))))
+    (%with-held-clock (lambda () (%transact mounts event changed force)))))
 
 (defun %any-member-p (keys reads)
   (dolist (k keys)
@@ -1322,33 +1212,15 @@ native outputs and grab still as committed. Only dispatch counts can differ."
                (getf call :replied) t))))
     (:broadcast (%json-broadcast (first (command-arguments command))
                                  (second (command-arguments command))))
-    (:launch (%launch (list :argv (command-arguments command) :focus t :input *command-input*)))
-    (:spawn (destructuring-bind (launch cwd env focus) (command-arguments command)
-              (%spawn (list :argv launch :cwd cwd :env env :focus focus
-                            :input *command-input*))))
     (:close (%close (first (command-arguments command))))
     (:screencast (destructuring-bind (token answer value) (command-arguments command)
                    (%screencast-answer token answer value)))
-    (:screenshot (%screenshot (if (first (command-arguments command)) nil t)))
-    (:media (%media (first (command-arguments command))))
     (:clipboard (destructuring-bind (path type delete) (command-arguments command)
                   (%clipboard-copy path type delete)))
-    (:brightness (%backlight (first (command-arguments command))))
     (:power (destructuring-bind (mode name) (command-arguments command)
               (%output-power name (ecase mode (:off 0) (:on 1) (:toggle 2)))))
     (:quit (%quit))
     (:reload (%reload-policy))))
-
-(defun spawn-command (arguments)
-  (execute-command (canonical-command (spawn (getf arguments :argv)
-                                             :focus (getf arguments :focus))))
-  (list :argv (getf arguments :argv) :focus (getf arguments :focus)))
-
-(define-host-command "spawn"
-  :description "Run a program whose windows stay out of the way."
-  :arguments '((:argv :argv :required t :description "Program and arguments.")
-               (:focus :boolean :default t :description "Let its windows take focus."))
-  :call 'spawn-command)
 
 (defun commit-context (mounts context &optional commands)
   "The only extension-to-native write path. All reducers have returned and validated."
@@ -1356,65 +1228,52 @@ native outputs and grab still as committed. Only dispatch counts can differ."
   (%commit-context mounts context commands))
 
 (defun %commit-context (mounts context commands)
-  (let* ((wanted (wanted-resources mounts))
-         (refused (%resources-check wanted)))
-    (when refused (error "~A" refused))
-    ;; Timers declared :REFRESH resolve against the display rate the context
-    ;; reports, so the bar and HUD step once per refresh of the monitor in use.
-    (%r! :frame-ms (frame-period-ms (getf context :outputs)))
-    (sync-budgets (getf context :settings))
-    (let* ((old (runtime-effective))
-           (restack (not (equal (getf old :stacking) (getf context :stacking))))
-           (layout-changed (not (equal (getf old :layout) (getf context :layout))))
-           (focus-changed (not (eql (getf old :focus) (getf context :focus))))
-           (outputs (resolved-native-output-config context))
-           (outputs-changed (or (pending-native-outputs-p)
-                                (not (equal (resolved-native-output-config old) outputs))))
-           (bindings-changed (not (equal (getf old :bindings) (getf context :bindings))))
-           (keyboard-changed (not (equal (getf old :keyboard) (getf context :keyboard))))
-           (settings-changed (not (equal (getf old :settings) (getf context :settings))))
-           (sounds-changed (not (equal (getf old :sounds) (getf context :sounds))))
-           (grab-changed (not (equal (getf old :keyboard-grab) (getf context :keyboard-grab))))
-           (overrides (resolved-layer-overrides mounts))
-           (grab-details (multiple-value-list (resolved-grab mounts)))
-           (grab (first grab-details))
-           (motion (resolved-motion-plan mounts grab (second grab-details))))
-      (when (or (member :outputs (runtime-pending-context))
-                outputs-changed bindings-changed keyboard-changed settings-changed sounds-changed grab-changed
-                restack layout-changed focus-changed
-                (not (equal (getf old :outputs) (getf context :outputs)))
-                (not (equal (getf old :view) (getf context :view)))
-                (not (equal (getf old :layers) (getf context :layers)))
-                (not (equal (getf old :surface-plans) (getf context :surface-plans)))
-                (not (equal (resolved-layer-overrides (runtime-mounts)) overrides))
-                (not (equal grab (applied-grab)))
-                (motion-plan-changed-p motion))
-        (configure-native-presentation context overrides restack
-                                       outputs-changed bindings-changed grab motion keyboard-changed
-                                       settings-changed sounds-changed)
-        (%r! :motion-plan motion))
-      (when outputs-changed
-        (%r! :outputs (getf context :outputs))
-        (%r! :connectors (getf context :connectors))
-        (unless (pending-native-outputs-p)
-          (%r! :outputs-revision (%outputs-revision))))
-      (when (not (equal (getf old :virtual-outputs) (getf context :virtual-outputs)))
-        (configure-virtual-outputs (getf old :virtual-outputs) (getf context :virtual-outputs)))
-      (%r! :mounts mounts)
-      (%r! :effective context)
-      (%r! :output-recovery-failures nil)
-      (%r! :reads-cache nil)
-      (%set-reads (mounted-reads))
-      (stage-cursor-effects context)
-      (let ((message (%resources-commit wanted)))
-        (when message (error "~A" message)))
-      (%sources (when (runtime-watch)
-                  (loop for mounted in (root-mounts mounts)
-                        for source = (spec-source (mounted-spec mounted))
-                        when (and source (not (%embedded-source-p source))) collect source)))
-      (publish-json-context context mounts)
-      (remember-layout mounts context)
-      nil)))
+  (%r! :frame-ms (frame-period-ms (getf context :outputs)))
+  (sync-budgets (getf context :settings))
+  (let* ((old (runtime-effective))
+         (restack (not (equal (getf old :stacking) (getf context :stacking))))
+         (layout-changed (not (equal (getf old :layout) (getf context :layout))))
+         (focus-changed (not (eql (getf old :focus) (getf context :focus))))
+         (outputs (resolved-native-output-config context))
+         (outputs-changed (or (pending-native-outputs-p)
+                              (not (equal (resolved-native-output-config old) outputs))))
+         (bindings-changed (not (equal (getf old :bindings) (getf context :bindings))))
+         (keyboard-changed (not (equal (getf old :keyboard) (getf context :keyboard))))
+         (settings-changed (not (equal (getf old :settings) (getf context :settings))))
+         (grab-changed (not (equal (getf old :keyboard-grab) (getf context :keyboard-grab))))
+         (overrides (resolved-layer-overrides mounts))
+         (grab-details (multiple-value-list (resolved-grab mounts)))
+         (grab (first grab-details))
+         (motion (resolved-motion-plan mounts grab (second grab-details))))
+    (when (or (member :outputs (runtime-pending-context))
+              outputs-changed bindings-changed keyboard-changed settings-changed grab-changed
+              restack layout-changed focus-changed
+              (not (equal (getf old :outputs) (getf context :outputs)))
+              (not (equal (getf old :view) (getf context :view)))
+              (not (equal (getf old :layers) (getf context :layers)))
+              (not (equal (resolved-layer-overrides (runtime-mounts)) overrides))
+              (not (equal grab (applied-grab)))
+              (motion-plan-changed-p motion))
+      (configure-native-presentation context overrides restack
+                                     outputs-changed bindings-changed grab motion keyboard-changed
+                                     settings-changed)
+      (%r! :motion-plan motion))
+    (when outputs-changed
+      (%r! :outputs (getf context :outputs))
+      (%r! :connectors (getf context :connectors))
+      (unless (pending-native-outputs-p)
+        (%r! :outputs-revision (%outputs-revision))))
+    (when (not (equal (getf old :virtual-outputs) (getf context :virtual-outputs)))
+      (configure-virtual-outputs (getf old :virtual-outputs) (getf context :virtual-outputs)))
+    (%r! :mounts mounts)
+    (%r! :effective context)
+    (%r! :output-recovery-failures nil)
+    (%r! :reads-cache nil)
+    (%set-reads (mounted-reads))
+    (stage-cursor-effects context)
+    (publish-json-context context mounts)
+    (remember-layout mounts context)
+    nil))
 
 (defvar (%counter :package-serial) 0)
 
@@ -1617,8 +1476,7 @@ evaluates is held to +SOURCE-STEPS+ and every reducer it invokes to its own watc
               (old (find id (runtime-windows) :key (lambda (w) (getf w :id))))
               (new (list :id id :identifier (%window-identifier id)
                          :title (getf event :title) :app-id (getf event :app-id)
-                         :focus (and (getf old :focus t)
-                                     (not (%background-window-p (getf event :pid 0))))
+                         :focus (getf old :focus t)
                          :content-type (getf event :content-type :none)
                          :tag (getf event :tag "") :description (getf event :description "")
                          :parent (getf event :parent) :dialog (and (getf event :dialog) t)
@@ -1751,23 +1609,10 @@ evaluates is held to +SOURCE-STEPS+ and every reducer it invokes to its own watc
          (push :request changed)))
       (:button (push :button changed))
       (:pointer (push :pointer changed))
-      ((:screenshot :selector) (push :screenshot changed))
       (:screencast (push :screencast changed))
-      (:grab (push :grab changed))
-      (:timer (deliver-owned-event (list :type :timer :name (getf event :name))
-                                   (getf event :owner))
-       (return-from dispatch-event))
-      (:watch (deliver-owned-event event (getf event :owner))
-       (return-from dispatch-event))
-      (:exec (deliver-owned-event
-              (list :type :exec :name (getf event :name) :status (getf event :status)
-                    :code (getf event :code) :stdout (getf event :stdout)
-                    :stderr (getf event :stderr) :error (getf event :error))
-              (getf event :owner))
-       (return-from dispatch-event))
-      (:process (push :process changed)))
+      (:grab (push :grab changed)))
     (%r! :pending-context
-         (union (intersection changed '(:windows :window-geometry :layers :outputs :connectors :services :system))
+         (union (intersection changed '(:windows :window-geometry :layers :outputs :connectors))
                 (runtime-pending-context)))
     (when (and (or changed (runtime-pending-context))
                (event-matters-p changed force))
@@ -1813,14 +1658,8 @@ evaluates is held to +SOURCE-STEPS+ and every reducer it invokes to its own watc
                   :grab (describe-grab grab)
                   :motion-plan (copy-data (runtime-motion-plan))
                   :native-grab (describe-grab (applied-grab))
-                  :native-ui (%ui-stats)
-                  :native-sound (%sound-stats)
                   :native-errors (%native-errors)
                   :watch (runtime-watch)
-                  :timers (%describe :timers)
-                  :watches (%describe :watches)
-                  :executions (%describe :executions)
-                  :managed-processes (%describe :managed-processes)
                   :rule-instances (describe-rule-instances)
                   :patches (describe-patches)
                   :extensions

@@ -469,29 +469,6 @@ int tomoe_cursor_apply(struct tomoe *s, double a, double b, double c, double d,
 enum { GLASS_SIDE = 256 };
 static const float GLASS_FAR = 1e20f;
 
-static const char glass_source[] =
-    "uniform sampler2D tomoe_glass;\n"
-    "void mainImage(out vec4 color, in vec2 coord) {\n"
-    "    vec4 lens = texture(tomoe_glass, v_local / iResolution.xy);\n"
-    "    vec2 normal = lens.rg * 2.0 - 1.0;\n"
-    "    vec2 bend = normal * iData[0].x;\n"
-    "    vec2 at = gl_FragCoord.xy;\n"
-    "    vec3 seen = vec3(beneath(at + bend * 1.12).r, beneath(at + bend).g,\n"
-    "        beneath(at + bend * 0.88).b);\n"
-    "    vec3 behind = beneath(at - v_local + iResolution.xy * 0.5).rgb;\n"
-    "    float luma = dot(behind, vec3(0.2126, 0.7152, 0.0722));\n"
-    "    float dark = 1.0 - smoothstep(0.42, 0.50, luma);\n"
-    "    vec3 smoked = seen * vec3(0.54, 0.56, 0.66);\n"
-    "    vec3 frost = mix(seen, vec3(0.94, 0.95, 0.99), 0.85);\n"
-    "    vec3 body = mix(smoked, frost, dark);\n"
-    "    body += vec3(max(dot(normal, vec2(-0.55, -0.83)), 0.0) * 0.12);\n"
-    "    float ink = lens.b * 2.0 - 1.0;\n"
-    "    float edge = abs(ink);\n"
-    "    vec3 rim = ink < 0.0 ? vec3(0.0) : vec3(1.0);\n"
-    "    float gain = mix(0.45, 1.0, ink < 0.0 ? 1.0 - dark : dark);\n"
-    "    color = vec4(body * lens.a + rim * edge * gain, lens.a + edge * gain);\n"
-    "}\n";
-
 static const double GLASS_EDGE_INK = 0.7;
 
 static double glass_line(double distance, double low, double high) {
@@ -638,7 +615,7 @@ static bool glass_map(struct tomoe *s) {
 static bool glass_ready(struct tomoe *s) {
     struct cursor_glass *g = &s->cursor_glass;
     if (g->broken || !s->renderer || !s->effects) return false;
-    if (!g->program && !(g->program = render_shader_compile(s->renderer, glass_source))) {
+    if (!g->program && !(g->program = render_program(s->renderer, PROGRAM_GLASS))) {
         g->broken = true;
         tomoe_log(LOG_ERROR, "tomoe: the glass cursor shader did not build; the cursor stays plain");
         return false;
@@ -732,6 +709,5 @@ void cursor_glass_finish(struct tomoe *s) {
     struct cursor_glass *g = &s->cursor_glass;
     if (g->timer) wl_event_source_remove(g->timer);
     texture_destroy(g->map);
-    render_shader_destroy(g->program);
     *g = (struct cursor_glass){0};
 }

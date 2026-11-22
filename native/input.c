@@ -4,7 +4,6 @@
 #include <fcntl.h>
 #include <drm/drm_fourcc.h>
 #include <sys/mman.h>
-#include "ui.h"
 #include <inttypes.h>
 #include <unistd.h>
 
@@ -1243,31 +1242,12 @@ static uint32_t pointer_target(struct tomoe *s, struct surface **surface,
         double *sx, double *sy) {
     return physical_hit_test(s, s->pointer_x, s->pointer_y, surface, sx, sy);
 }
-static void ui_cancel_client_edges(struct tomoe *s);
 static void pointer_release_client_buttons(struct tomoe *s, uint32_t time) {
-    ui_cancel_client_edges(s);
     if (!s->seat->pointer_state.button_count) return;
     while (s->seat->pointer_state.button_count)
         seat_pointer_notify_button(s->seat, time,
             s->seat->pointer_state.buttons[0].button, WL_POINTER_BUTTON_STATE_RELEASED);
     seat_pointer_notify_frame(s->seat);
-}
-static void ui_hover(struct tomoe *s, const struct ui_hit *hit) {
-    uint64_t id = hit && hit->hover && hit->key ? hit->callback_id : 0;
-    if (id == s->ui_hovered) return;
-    s->ui_hovered = id;
-    if (!id || !hit || !hit->hover || !hit->key || s->stopping) return;
-    struct tomoe_event *event = policy_event_push(s, EV_UI);
-    if (!event) return;
-    event->source_id = hit->source_id;
-    event->binding_or_callback_id = hit->callback_id;
-    event->fx = hit->x;
-    event->fy = hit->y;
-    event->str[0] = policy_event_cstring(s, hit->owner);
-    event->str[1] = policy_event_cstring(s, hit->name);
-    event->str[2] = policy_event_cstring(s, hit->output);
-    event->str[3] = policy_event_cstring(s, hit->key);
-    event->time_us = policy_event_cstring(s, hit->hover);
 }
 
 static void hover_event(struct tomoe *s, uint32_t state, uint32_t id, bool moved) {
@@ -1289,7 +1269,6 @@ static void pointer_motion(struct tomoe *s, uint32_t time, bool moved) {
         s->hovered = hovered;
     }
     if (surface) {
-        ui_hover(s, NULL);
         if (surface == s->seat->pointer_state.focused_surface &&
                 sx == s->seat->pointer_state.sx && sy == s->seat->pointer_state.sy) return;
         struct surface *old_surface = s->seat->pointer_state.focused_surface;
@@ -1303,10 +1282,7 @@ static void pointer_motion(struct tomoe *s, uint32_t time, bool moved) {
         constraint_focus(s, surface, sx, sy);
     } else {
         constraint_focus(s, NULL, 0, 0);
-        struct ui_hit hit;
-        bool over_ui = ui_hit_at(s, s->pointer_x, s->pointer_y, &hit);
-        ui_hover(s, over_ui ? &hit : NULL);
-        if (!s->seat->drag && (s->seat->pointer_state.focused_surface || over_ui))
+        if (!s->seat->drag && s->seat->pointer_state.focused_surface)
             pointer_release_client_buttons(s, time);
         seat_pointer_notify_clear_focus(s->seat);
         cursor_default(s);
@@ -1319,11 +1295,9 @@ void pointer_refresh(struct tomoe *s) {
     if (x != s->pointer_x || y != s->pointer_y) {
         s->grab_x = s->pointer_x; s->grab_y = s->pointer_y;
     }
-    bool moved = x != s->pointer_x || y != s->pointer_y;
     pointer_sync_cursors(s);
-    moved = pointer_trail_record(s, 0) || moved;
+    pointer_trail_record(s, 0);
     cursor_motion_advance(s, animation_now());
-    if (moved) ui_pointer_moved(s);
     if (s->grab_mode != 0) return;
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
@@ -1347,9 +1321,7 @@ static void pointer_update(struct tomoe *s, uint32_t time) {
     input_stream_pointer(s, time);
     pointer_trail_record(s, time);
     cursor_motion_advance(s, animation_now());
-    ui_pointer_moved(s);
     drag_icons_refresh(s);
-    if (s->screenshot && !lock_active(s)) { screenshot_motion(s); return; }
     if (s->grab_mode != 0) {
         if (motion_drag_motion(s)) return;
         grab_motion(s);
@@ -1420,105 +1392,6 @@ static void input_pointer_absolute_body(struct pointer_absolute *event) {
     if (isfinite(y)) s->pointer_y = extent.y + y * extent.height;
     clamp_pointer(s, mapped, &s->pointer_x, &s->pointer_y);
     pointer_update(s, event->time_msec);
-}
-struct ui_pointer {
-    struct ui_pointer *next;
-    struct tomoe *server;
-    struct input_device *pointer;
-    struct wl_listener destroy;
-    struct { uint32_t button; bool consumed; } buttons[32];
-    size_t count;
-};
-#define UI_POINTERS 64
-static struct ui_pointer ui_pointer_pool[UI_POINTERS];
-static void ui_cancel_client_edges(struct tomoe *s) {
-    for (struct ui_pointer *pointer = s->ui_pointers; pointer; pointer = pointer->next)
-        for (size_t i = 0; i < pointer->count; i++) pointer->buttons[i].consumed = true;
-}
-static void ui_pointer_destroy(struct wl_listener *listener, void *data) {
-    struct ui_pointer *pointer = wl_container_of(listener, pointer, destroy);
-    struct tomoe *s = pointer->server;
-    struct ui_pointer **link = &s->ui_pointers;
-    while (*link && *link != pointer) link = &(*link)->next;
-    if (*link) *link = pointer->next;
-    detach(&pointer->destroy);
-    if (!s->stopping && s->seat) {
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        uint32_t time = (uint32_t)(now.tv_sec * 1000 + now.tv_nsec / 1000000);
-        bool released = false;
-        for (size_t i = 0; i < pointer->count; i++) {
-            if (pointer->buttons[i].consumed) continue;
-            seat_pointer_notify_button(s->seat, time,
-                pointer->buttons[i].button, WL_POINTER_BUTTON_STATE_RELEASED);
-            released = true;
-        }
-        if (released) seat_pointer_notify_frame(s->seat);
-    }
-    *pointer = (struct ui_pointer){0};
-}
-void ui_input_finish(struct tomoe *s) {
-    while (s->ui_pointers) ui_pointer_destroy(&s->ui_pointers->destroy, NULL);
-}
-static bool ui_pointer_button(struct tomoe *s, struct pointer_button *input) {
-    struct ui_pointer *pointer;
-    for (pointer = s->ui_pointers; pointer; pointer = pointer->next)
-        if (pointer->pointer == input->device) break;
-    if (pointer) {
-        for (size_t i = 0; i < pointer->count; i++) {
-            if (pointer->buttons[i].button != input->button) continue;
-            if (input->state == WL_POINTER_BUTTON_STATE_RELEASED) {
-                bool consumed = pointer->buttons[i].consumed;
-                pointer->buttons[i] = pointer->buttons[--pointer->count];
-                if (!pointer->count) ui_pointer_destroy(&pointer->destroy, NULL);
-                return consumed;
-            }
-            return true;
-        }
-    }
-    if (input->state != WL_POINTER_BUTTON_STATE_PRESSED) return false;
-    struct ui_hit hit;
-    bool consumed = s->grab_mode == 0 && ui_hit_at(s, s->pointer_x, s->pointer_y, &hit);
-    if (!pointer) {
-        for (size_t i = 0; i < UI_POINTERS && !pointer; i++)
-            if (!ui_pointer_pool[i].server) pointer = &ui_pointer_pool[i];
-        if (!pointer) {
-            tomoe_log(LOG_ERROR, "tomoe: %d pointer devices already hold buttons; dropping a press "
-                "of button %u", UI_POINTERS, input->button);
-            return true;
-        }
-        pointer->server = s; pointer->pointer = input->device;
-        pointer->next = s->ui_pointers; s->ui_pointers = pointer;
-        listen(&pointer->destroy, &input->device->events.destroy, ui_pointer_destroy);
-    }
-    if (pointer->count == sizeof(pointer->buttons) / sizeof(pointer->buttons[0])) {
-        tomoe_log(LOG_ERROR, "tomoe: a pointer already holds %zu buttons; dropping a press of "
-            "button %u", pointer->count, input->button);
-        return true;
-    }
-    pointer->buttons[pointer->count].button = input->button;
-    pointer->buttons[pointer->count++].consumed = consumed;
-    if (!consumed) return false;
-    pointer_release_client_buttons(s, input->time_msec);
-    seat_pointer_notify_clear_focus(s->seat);
-    cursor_default(s);
-    if (input->button != 272 || !hit.command || !hit.callback_id) return true;
-    uint32_t modifiers = input_modifier_mask(s);
-    modifiers &= MOD_SHIFT | MOD_CTRL | MOD_ALT | MOD_LOGO;
-    struct tomoe_event *event = policy_event_push(s, EV_UI);
-    if (!event) return true;
-    event->source_id = hit.source_id;
-    event->binding_or_callback_id = hit.callback_id;
-    event->button = input->button;
-    event->modifiers = modifiers;
-    event->fx = hit.x;
-    event->fy = hit.y;
-    event->str[0] = policy_event_cstring(s, hit.owner);
-    event->str[1] = policy_event_cstring(s, hit.name);
-    event->str[2] = policy_event_cstring(s, hit.output);
-    event->str[3] = policy_event_cstring(s, hit.key);
-    event->time_us = policy_event_cstring(s, hit.command);
-    return true;
 }
 static void pointer_fields(struct tomoe *s, struct tomoe_event *event) {
     double x = s->pointer_x, y = s->pointer_y;
@@ -1600,11 +1473,6 @@ static void input_pointer_button_body(struct pointer_button *input) {
     idle_notify_activity(s);
     input_stream_button(s, input->time_msec, input->button,
         input->state == WL_POINTER_BUTTON_STATE_PRESSED);
-    if (input->state == WL_POINTER_BUTTON_STATE_PRESSED) sound_play(s, SOUND_BUTTON);
-    if (s->screenshot && !lock_active(s)) {
-        screenshot_button(s, input->button, input->state == WL_POINTER_BUTTON_STATE_PRESSED);
-        return;
-    }
     if (s->grab_mode == 0) pointer_motion(s, input->time_msec, false);
     if (input->state == WL_POINTER_BUTTON_STATE_PRESSED) {
         double px = s->pointer_x, py = s->pointer_y;
@@ -1618,7 +1486,6 @@ static void input_pointer_button_body(struct pointer_button *input) {
         seat_pointer_notify_button(s->seat, input->time_msec, input->button, input->state);
         return;
     }
-    if (ui_pointer_button(s, input)) return;
     if (pointer_binding_button(s, input)) return;
     uint32_t id = s->grab_id;
     if (s->grab_mode == 0) {
@@ -1841,7 +1708,6 @@ static void input_key_body(struct input_device *device, uint32_t time_msec, uint
             input->state == WL_KEYBOARD_KEY_STATE_PRESSED);
     }
     if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
-        sound_play(s, SOUND_KEY);
         keyboard_activity(s, input->keycode);
     }
     bool tracked = input->keycode < TOMOE_KEYCODE_COUNT;
@@ -1866,7 +1732,6 @@ static void input_key_body(struct input_device *device, uint32_t time_msec, uint
             k->latches[input->keycode].consumed) {
         struct binding_latch *latch = &k->latches[input->keycode];
         if (input->state == WL_KEYBOARD_KEY_STATE_RELEASED) {
-            if (s->screenshot) screenshot_key_up(s, input->keycode);
             struct binding *binding = latch->binding;
             if (binding && binding->active)
                 binding_event(k, binding, binding->release, POLICY_KEY_RELEASED, input->keycode);
@@ -1899,19 +1764,6 @@ static void input_key_body(struct input_device *device, uint32_t time_msec, uint
     uint32_t mods = logical ? keymap_slot_modifiers(&logical->xkb) : 0;
     mods &= MOD_SHIFT | MOD_CTRL |
         MOD_ALT | MOD_LOGO;
-    if (s->screenshot && tracked && !lock_active(s)) {
-        if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
-            txkb_keysym_t typed = logical && logical->xkb.xkb_state ?
-                txkb_state_key_get_one_sym(logical->xkb.xkb_state, input->keycode + 8) :
-                TXKB_KEY_NoSymbol;
-            k->latches[input->keycode].consumed = true;
-            if (count) screenshot_key(s, syms[0], typed, mods, true, input->keycode);
-        } else {
-            screenshot_key_up(s, input->keycode);
-        }
-        logical_key_event_done(s, input->keycode, input->state, first_global, last_global);
-        return;
-    }
     if (s->grab_owner && tracked && !lock_active(s) && !shortcuts_inhibited(s)) {
         if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
             struct binding_latch *latch = &k->latches[input->keycode];

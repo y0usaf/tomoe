@@ -32,18 +32,8 @@ enum tomoe_event_type {
     EV_ACTIVITY,
     EV_INPUT,
     EV_REQUEST,
-    EV_SCREENSHOT,
-    EV_UI,
-    EV_TIMER,
-    EV_WATCH,
-    EV_EXEC,
-    EV_PROCESS,
-    EV_SERVICES,
-    EV_SYSTEM,
     EV_SCREENCAST,
-    EV_SOURCE,
     EV_TEXT,
-    EV_SELECTOR,
     EV_TYPE_COUNT
 };
 
@@ -118,8 +108,6 @@ typedef lisp_value (*policy_converter)(struct tomoe *server, const struct tomoe_
 void policy_set_converter(enum tomoe_event_type type, policy_converter fn);
 
 void policy_register_primitives(struct tomoe *server);
-void resources_register_primitives(struct tomoe *server);
-void ui_layout_register_primitives(struct tomoe *server);
 void loop_register_primitives(struct tomoe *server);
 
 int policy_call(const char *hook, int argc, const lisp_value *argv, lisp_value *result,
@@ -140,14 +128,7 @@ void loop_timer_arm(struct loop_source *source, uint64_t delay_ms);
 uint64_t loop_now_ms(void);
 double loop_refresh_ms(struct tomoe *server);
 
-int resources_start(struct tomoe *server);
-void resources_outputs_changed(void);
-bool tomoe_system_readings_wanted(struct tomoe *server);
-void resources_stop(struct tomoe *server);
-int tomoe_service_run_begin(const char *runtime, int *cleared, char *error, size_t error_size);
-void tomoe_service_run_end(void);
 lisp_value tomoe_memory_report(struct tomoe *server);
-lisp_value resources_describe(struct tomoe *server, const char *kind);
 
 void loop_request_quit(struct tomoe *server);
 void ipc_broadcast(const char *name, lisp_value payload);

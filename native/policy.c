@@ -44,20 +44,20 @@ static bool text_copy(struct tomoe *s, uint32_t handle, char *buffer, size_t siz
 }
 
 static const char *const policy_keys[] = {
-    "windows", "window-geometry", "rules", "data", "services", "outputs",
+    "windows", "window-geometry", "rules", "data", "outputs",
     "connectors", "output-config", "output-errors", "config-error", "workareas",
     "view", "layout", "stacking", "focus", "bindings", "commands", "keyboard",
-    "settings", "layers", "surfaces", "command", "button", "pointer", "grab",
-    "request", "screenshot", "screencast", "ipc", "ui", "activity", "system",
+    "settings", "layers", "command", "button", "pointer", "grab",
+    "request", "screencast", "ipc", "activity",
     "cursors"
 };
 
 enum policy_key_index {
-    PK_WINDOWS, PK_WINDOW_GEOMETRY, PK_RULES, PK_DATA, PK_SERVICES, PK_OUTPUTS,
+    PK_WINDOWS, PK_WINDOW_GEOMETRY, PK_RULES, PK_DATA, PK_OUTPUTS,
     PK_CONNECTORS, PK_OUTPUT_CONFIG, PK_OUTPUT_ERRORS, PK_CONFIG_ERROR, PK_WORKAREAS,
     PK_VIEW, PK_LAYOUT, PK_STACKING, PK_FOCUS, PK_BINDINGS, PK_COMMANDS, PK_KEYBOARD,
-    PK_SETTINGS, PK_LAYERS, PK_SURFACES, PK_COMMAND, PK_BUTTON, PK_POINTER, PK_GRAB,
-    PK_REQUEST, PK_SCREENSHOT, PK_SCREENCAST, PK_IPC, PK_UI, PK_ACTIVITY, PK_SYSTEM,
+    PK_SETTINGS, PK_LAYERS, PK_COMMAND, PK_BUTTON, PK_POINTER, PK_GRAB,
+    PK_REQUEST, PK_SCREENCAST, PK_IPC, PK_ACTIVITY,
     PK_CURSORS, POLICY_KEY_COUNT
 };
 
@@ -76,24 +76,14 @@ static const struct event_policy {
     [EV_UNMAP] = { POLICY_ALWAYS, POLICY_ALWAYS, EVF_FACT },
     [EV_OUTPUTS] = { POLICY_ALWAYS, POLICY_ALWAYS, EVF_FACT },
     [EV_KEY] = { POLICY_ALWAYS, POLICY_ALWAYS, 0 },
-    [EV_UI] = { POLICY_ALWAYS, POLICY_ALWAYS, 0 },
     [EV_BUTTON] = { PK_BUTTON, PK_BUTTON, EVF_OPTIONAL },
     [EV_POINTER] = { PK_POINTER, PK_POINTER, EVF_OPTIONAL },
     [EV_GRAB] = { PK_GRAB, PK_GRAB, EVF_COALESCE },
     [EV_ACTIVITY] = { POLICY_ALWAYS, PK_ACTIVITY, EVF_OPTIONAL },
     [EV_INPUT] = { POLICY_ALWAYS, POLICY_TRANSPORT, EVF_COALESCE | EVF_OPTIONAL },
     [EV_REQUEST] = { PK_REQUEST, PK_REQUEST, EVF_OPTIONAL },
-    [EV_SCREENSHOT] = { PK_SCREENSHOT, PK_SCREENSHOT, EVF_OPTIONAL },
     [EV_SCREENCAST] = { PK_SCREENCAST, PK_SCREENCAST, EVF_OPTIONAL },
-    [EV_TIMER] = { POLICY_ALWAYS, POLICY_ALWAYS, 0 },
-    [EV_WATCH] = { POLICY_ALWAYS, POLICY_ALWAYS, 0 },
-    [EV_EXEC] = { POLICY_ALWAYS, POLICY_ALWAYS, 0 },
-    [EV_PROCESS] = { POLICY_ALWAYS, POLICY_ALWAYS, 0 },
-    [EV_SERVICES] = { POLICY_ALWAYS, POLICY_ALWAYS, 0 },
-    [EV_SYSTEM] = { PK_SYSTEM, PK_SYSTEM, 0 },
-    [EV_SOURCE] = { POLICY_ALWAYS, POLICY_ALWAYS, 0 },
-    [EV_TEXT] = { POLICY_ALWAYS, POLICY_TRANSPORT, EVF_OPTIONAL },
-    [EV_SELECTOR] = { PK_SCREENSHOT, PK_SCREENSHOT, 0 }
+    [EV_TEXT] = { POLICY_ALWAYS, POLICY_TRANSPORT, EVF_OPTIONAL }
 };
 
 static bool key_read(struct tomoe *s, int key) {
@@ -417,56 +407,6 @@ static lisp_value convert_request(struct tomoe *s, const struct tomoe_event *e) 
     return lisp_nreverse(list);
 }
 
-static lisp_value convert_screenshot(struct tomoe *s, const struct tomoe_event *e) {
-    lisp_value list = lisp_nil();
-    list = put(list, "TYPE", lisp_keyword("screenshot"));
-    list = put(list, "PATH", text_of(s, e->str[0], ""));
-    return lisp_nreverse(list);
-}
-
-static const char *const selector_tools[] = { "select", "arrow", "text", "free" };
-static const char *const selector_marks[] = { "arrow", "free", "text" };
-static const char *const selector_phases[] = { "aim", "selecting", "reselect", "ready", "editing",
-    "drawing", "typing", "typing" };
-
-static lisp_value convert_selector(struct tomoe *s, const struct tomoe_event *e) {
-    lisp_value list = lisp_nil();
-    list = put(list, "TYPE", lisp_keyword("selector"));
-    list = put(list, "OPEN", boolean(e->id != 0));
-    if (e->id) {
-        list = put(list, "OUTPUT", text_of(s, e->str[0], ""));
-        list = put(list, "ANCHOR", lisp_cons(lisp_int(e->x), lisp_cons(lisp_int(e->y), lisp_nil())));
-        list = put(list, "CORNER", lisp_cons(lisp_int(e->dx), lisp_cons(lisp_int(e->dy), lisp_nil())));
-        list = put(list, "SELECTED", boolean(e->state & 1));
-        list = put(list, "DRAGGING", boolean(e->state & 2));
-        list = put(list, "FROZEN", boolean(e->state & 4));
-        list = put(list, "TYPING", boolean(e->state & 8));
-        list = put(list, "TOOL", lisp_keyword(selector_tools[(e->state >> 4) & 3]));
-        list = put(list, "COLOUR", lisp_int((e->state >> 8) & 63));
-        unsigned editing = (e->state >> 16) & 3;
-        list = put(list, "EDITING", editing ? lisp_keyword(selector_marks[editing - 1]) : lisp_nil());
-        list = put(list, "PHASE", lisp_keyword(selector_phases[(e->state >> 20) & 7]));
-        list = put(list, "SIZE", lisp_double(e->fx));
-    }
-    return lisp_nreverse(list);
-}
-
-static lisp_value convert_ui(struct tomoe *s, const struct tomoe_event *e) {
-    lisp_value list = lisp_nil();
-    list = put(list, "TYPE", lisp_keyword("ui"));
-    list = put(list, "OWNER", text_of(s, e->str[0], ""));
-    list = put(list, "SOURCE-ID", lisp_uint(e->source_id));
-    list = put(list, "CALLBACK-ID", lisp_uint(e->binding_or_callback_id));
-    list = put(list, "SURFACE", text_of(s, e->str[1], ""));
-    list = put(list, "OUTPUT", text_of(s, e->str[2], ""));
-    list = put(list, "ELEMENT", text_of(s, e->str[3], ""));
-    list = put(list, "COMMAND", text_of(s, (uint32_t)e->time_us, ""));
-    list = put(list, "X", lisp_double(e->fx));
-    list = put(list, "Y", lisp_double(e->fy));
-    list = put(list, "BUTTON", lisp_uint(e->button));
-    list = put(list, "MODIFIERS", lisp_uint(e->modifiers));
-    return lisp_nreverse(list);
-}
 
 static policy_converter converters[EV_TYPE_COUNT] = {
     [EV_MAP] = convert_window,
@@ -480,10 +420,7 @@ static policy_converter converters[EV_TYPE_COUNT] = {
     [EV_POINTER] = convert_pointer,
     [EV_GRAB] = convert_grab,
     [EV_ACTIVITY] = convert_activity,
-    [EV_REQUEST] = convert_request,
-    [EV_SCREENSHOT] = convert_screenshot,
-    [EV_SELECTOR] = convert_selector,
-    [EV_UI] = convert_ui
+    [EV_REQUEST] = convert_request
 };
 
 void policy_set_converter(enum tomoe_event_type type, policy_converter fn) {
@@ -709,18 +646,11 @@ static lisp_value prim_clipboard_copy(int argc, lisp_value *argv) {
         truth(argv[2])));
 }
 
-static lisp_value prim_screenshot(int argc, lisp_value *argv) {
-    tomoe_screenshot(server(), truth(argv[0]));
-    return lisp_nil();
-}
 
 static lisp_value prim_keysym(int argc, lisp_value *argv) {
     return lisp_uint(tomoe_keysym(string(argv[0])));
 }
 
-static lisp_value prim_warm_shaders(int argc, lisp_value *argv) {
-    return status(tomoe_warm_shaders(string(argv[0]), string(argv[1]), "", NULL));
-}
 
 static lisp_value prim_outputs_begin(int argc, lisp_value *argv) {
     return status(tomoe_outputs_begin(server()));
@@ -839,30 +769,6 @@ static lisp_value prim_present_window_visual(int argc, lisp_value *argv) {
         number(argv[5]), number(argv[6])));
 }
 
-static lisp_value prim_present_window_shader(int argc, lisp_value *argv) {
-    return status(tomoe_present_window_shader(server(),
-        (uint32_t)unsigned_integer(argv[0]), string(argv[1]), number(argv[2]),
-        number(argv[3]), number(argv[4]), real(argv[5]), string(argv[6])));
-}
-
-static lisp_value prim_present_window_mesh(int argc, lisp_value *argv) {
-    lisp_value tail = argv[3];
-    size_t count = 0;
-    for (lisp_value item = tail; lisp_consp(item); item = lisp_cdr(item)) count++;
-    double inline_values[256];
-    double *values = count <= sizeof(inline_values) / sizeof(inline_values[0]) ? inline_values :
-        malloc(count * sizeof(double));
-    if (!values) return lisp_nil();
-    size_t index = 0;
-    for (lisp_value item = tail; lisp_consp(item) && index < count; item = lisp_cdr(item))
-        values[index++] = real(lisp_car(item));
-    int result = tomoe_present_window_mesh(server(),
-        (uint32_t)unsigned_integer(argv[0]), number(argv[1]), number(argv[2]),
-        values, (unsigned long)count);
-    if (values != inline_values) free(values);
-    return status(result);
-}
-
 static lisp_value prim_present_keyboard_grab(int argc, lisp_value *argv) {
     return status(tomoe_present_keyboard_grab(server(), string(argv[0]),
         unsigned_integer(argv[1]), string(argv[2])));
@@ -887,18 +793,6 @@ static lisp_value prim_motion_drag(int argc, lisp_value *argv) {
         number(argv[1]), number(argv[2]), number(argv[3]), number(argv[4])));
 }
 
-static lisp_value prim_present_sounds(int argc, lisp_value *argv) {
-    return status(tomoe_present_sounds(server()));
-}
-
-static lisp_value prim_present_sound(int argc, lisp_value *argv) {
-    return message(tomoe_present_sound(server(), number(argv[0]), string(argv[1]),
-        real(argv[2])));
-}
-
-static lisp_value prim_sound_stats(int argc, lisp_value *argv) {
-    return data(tomoe_sound_stats(server()));
-}
 
 static lisp_value prim_native_errors(int argc, lisp_value *argv) {
     return data(tomoe_native_errors());
@@ -1211,9 +1105,7 @@ static const struct primitive {
     { "%close", prim_close, 1, 1 },
     { "%window-identifier", prim_window_identifier, 1, 1 },
     { "%clipboard-copy", prim_clipboard_copy, 3, 3 },
-    { "%screenshot", prim_screenshot, 1, 1 },
     { "%keysym", prim_keysym, 1, 1 },
-    { "%warm-shaders", prim_warm_shaders, 2, 2 },
     { "%outputs-begin", prim_outputs_begin, 0, 0 },
     { "%outputs-pending", prim_outputs_pending, 0, 0 },
     { "%output-power", prim_output_power, 2, 2 },
@@ -1238,16 +1130,11 @@ static const struct primitive {
     { "%present-setting-text", prim_present_setting_text, 2, 2 },
     { "%present-window-style", prim_present_window_style, 6, 6 },
     { "%present-window-visual", prim_present_window_visual, 7, 7 },
-    { "%present-window-shader", prim_present_window_shader, 7, 7 },
-    { "%present-window-mesh", prim_present_window_mesh, 4, 4 },
     { "%present-keyboard-grab", prim_present_keyboard_grab, 3, 3 },
     { "%motion", prim_motion, 5, 5 },
     { "%motion-region", prim_motion_region, 5, 5 },
     { "%motion-edge", prim_motion_edge, 2, 2 },
     { "%motion-drag", prim_motion_drag, 5, 5 },
-    { "%present-sounds", prim_present_sounds, 0, 0 },
-    { "%present-sound", prim_present_sound, 3, 3 },
-    { "%sound-stats", prim_sound_stats, 0, 0 },
     { "%native-errors", prim_native_errors, 0, 0 },
     { "%present-apply", prim_present_apply, 0, 0 },
     { "%present-stack", prim_present_stack, 1, 1 },

@@ -3,6 +3,7 @@ let
   client = pkgs.callPackage ./client.nix { };
   capture = pkgs.callPackage ./capture.nix { };
   subsurface = pkgs.callPackage ./e2e-subsurface.nix { };
+  layerBlur = pkgs.callPackage ./e2e-layer-blur.nix { };
   pwPortal = pkgs.callPackage ./e2e-pw-portal.nix { };
   pyDbus = pkgs.python3.withPackages (ps: [ ps.dbus-python ]);
 in
@@ -28,6 +29,7 @@ pkgs.testers.runNixOSTest {
       client
       capture
       subsurface
+      layerBlur
       pwPortal
       pyDbus
       pkgs.dbus
@@ -122,6 +124,11 @@ pkgs.testers.runNixOSTest {
         f"{sh_env} WAYLAND_DISPLAY={wl_display} ${subsurface}/bin/tomoe-e2e-subsurface"
     )
     print(f"E2E_SUBSURFACE rc={sub_rc} out={sub_out.strip()}")
+
+    blur_rc, blur_out = machine.execute(
+        f"{sh_env} WAYLAND_DISPLAY={wl_display} ${layerBlur}/bin/tomoe-e2e-layer-blur --frames 3"
+    )
+    print(f"E2E_LAYER_BLUR rc={blur_rc} out={blur_out.strip()}")
 
     bus_addr = "unix:path=/run/e2e/rt/bus"
     machine.succeed(
@@ -232,6 +239,7 @@ pkgs.testers.runNixOSTest {
     ]
     assert not leftover, f"leftover sockets in /run/e2e/rt: {leftover}"
     assert sub_rc == 0, f"e2e-subsurface failed (rc={sub_rc}): {sub_out}"
+    assert blur_rc == 0, f"e2e-layer-blur failed (rc={blur_rc}): {blur_out}"
     assert pw_rc == 0, f"e2e-pw-portal failed (rc={pw_rc}): {pw_out}"
     assert pw_shm_rc == 0, f"e2e-pw-portal --shm-only failed (rc={pw_shm_rc}): {pw_shm_out}"
   '';

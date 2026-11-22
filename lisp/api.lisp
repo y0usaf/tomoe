@@ -1,5 +1,5 @@
 (defparameter +context-keys+
-  '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :config-error :workareas :view :layout :stacking :focus :bindings :commands :keyboard :settings :layers :surfaces :command :button :pointer :grab :request :screenshot :screencast :ipc :ui :activity :system :cursors))
+  '(:windows :window-geometry :rules :data :outputs :connectors :output-config :output-errors :config-error :workareas :view :layout :stacking :focus :bindings :commands :keyboard :settings :layers :command :button :pointer :grab :request :screencast :ipc :activity :cursors))
 (defvar *stop-requested* nil)
 (defvar *output-error-name* nil)
 
@@ -89,12 +89,12 @@ the materialization M. Reducers run in PHASE order, then mount order."
 
 (defun make-materialization (&key layout stacking layers focused data surfaces keyboard-grab
                                   outputs bindings commands (binding-order 0) keyboard settings
-                                  view mod-bit sounds virtual-outputs cursors)
+                                  view mod-bit virtual-outputs cursors)
   (list :layout layout :stacking stacking :layers layers :focused focused :data data
         :surfaces surfaces :keyboard-grab keyboard-grab :outputs outputs
         :bindings bindings :commands commands :binding-order binding-order
         :keyboard keyboard :settings settings :view view :mod-bit mod-bit
-        :sounds sounds :virtual-outputs virtual-outputs :cursors cursors))
+        :virtual-outputs virtual-outputs :cursors cursors))
 (defun materialization-layout (m) (getf m :layout))
 (defun materialization-stacking (m) (getf m :stacking))
 (defun materialization-layers (m) (getf m :layers))
@@ -110,7 +110,6 @@ the materialization M. Reducers run in PHASE order, then mount order."
 (defun materialization-settings (m) (getf m :settings))
 (defun materialization-view (m) (getf m :view))
 (defun materialization-mod-bit (m) (getf m :mod-bit))
-(defun materialization-sounds (m) (getf m :sounds))
 (defun materialization-virtual-outputs (m) (getf m :virtual-outputs))
 (defun materialization-cursors (m) (getf m :cursors))
 
@@ -196,36 +195,6 @@ NIL. Omission or unmount exposes the preceding owner. Values are bounded data."
   (let ((entry (assoc name (context snapshot :data))))
     (copy-data (if entry (cdr entry) default))))
 
-(defun service-state (snapshot name &optional default)
-  "Read copied session service facts. Declare :SERVICES as a dependency.
-Producer lifetimes belong to the session; removing a consumer releases only its
-own effects. :NOTIFICATIONS supplies :AVAILABLE and a :NOTIFICATIONS list."
-  (check-type name keyword)
-  (copy-data (getf (context snapshot :services) name default)))
-
-(defun shader-path (path)
-  "Absolute window shader path, or one relative to the declaring source."
-  (check-type path string)
-  (when (or (zerop (length path)) (> (length path) 4096) (find %nul path))
-    (error "Invalid window shader path."))
-  (cond ((char= (char path 0) #\/) path)
-        ((and (stringp *source-directory*) (plusp (length *source-directory*))
-              (char= (char *source-directory* 0) #\/))
-         (concatenate 'string *source-directory* path))
-        (t (error "Relative window shader paths require a declaring source."))))
-
-(defun shader-entry (entry)
-  "Validate a GLSL function name, since the native renderer splices it in."
-  (check-type entry string)
-  (unless (and (<= 1 (length entry) 63)
-               (%alpha-p (char entry 0))
-               (every (lambda (character)
-                        (or (%alpha-p character) (digit-char-p character)
-                            (char= character #\_)))
-                      entry))
-    (error "Invalid window shader entry ~S." entry))
-  entry)
-
 (defun rule-reserved-property-p (key)
   (or (member key '(:app-id :app_id :title :match :apply))
       (and (stringp key) (member key '("app_id" "title" "match" "apply") :test #'string=))))
@@ -308,132 +277,6 @@ A timer that ticks on it changes its output at the same instant the clock does."
          (elapsed (floor (* 1000 fraction) units))
          (left (- step (mod (get-universal-time) step))))
     (max 1 (- (* left 1000) elapsed))))
-
-(defun once (name milliseconds)
-  "Own a one-shot timer. Deliver (:TYPE :TIMER :NAME NAME) to this reducer.
-MILLISECONDS may be :REFRESH (the next display refresh), :SECOND or :MINUTE
-(the next wall-clock boundary of that length).
-An unchanged effect fires once per mount/source reload; omit it to cancel."
-  (check-type name keyword)
-  (check-type milliseconds (or (integer 0 2147483647) (member :refresh :second :minute)))
-  (%effect :timer (list name milliseconds nil)))
-
-(defun interval (name milliseconds)
-  "Own a repeating timer. Zero starts immediately, then repeats every millisecond.
-MILLISECONDS may instead name a clock: :REFRESH repeats once per display refresh
-and follows the monitor's rate, while :SECOND and :MINUTE repeat on the
-wall-clock boundary, so a clock display updates when the time actually changes.
-An unchanged effect retains its schedule. Omit it to cancel."
-  (check-type name keyword)
-  (check-type milliseconds (or (integer 0 2147483647) (member :refresh :second :minute)))
-  (%effect :timer (list name milliseconds t)))
-
-(%define-effect :timer
-  (lambda (args effect)
-    (destructuring-bind (name milliseconds repeat) args
-      (check-type repeat boolean)
-      (funcall (if repeat #'interval #'once) name milliseconds))))
-
-(defun watch-file (name path &key (content-limit 65536))
-  "Own file-change notifications delivered privately as :WATCH events.
-PATH is relative to the declaring source. CONTENT-LIMIT bounds UTF-8 bytes.
-An unchanged declaration retains its watch. Omit it to cancel."
-  (check-type name keyword)
-  (check-type path string)
-  (unless (and (<= 1 (length path) 65536) (not (find %nul path)))
-    (error "Invalid file watch path."))
-  (check-type content-limit (integer 1 65536))
-  (%effect :watch (list name (copy-seq path) content-limit)))
-
-(%define-effect :watch
-  (lambda (args effect)
-    (destructuring-bind (name path limit) args
-      (watch-file name path :content-limit limit))))
-
-(defun exec-async (name command &key (timeout 30000) (output-limit 65536))
-  "Own one shell command and receive a private :EXEC completion event.
-An unchanged declaration runs once per source generation. Omitting it cancels.
-TIMEOUT is milliseconds; OUTPUT-LIMIT bounds combined stdout/stderr bytes."
-  (check-type name keyword)
-  (check-type command string)
-  (when (or (> (length command) 65536) (find %nul command))
-    (error "Invalid async command string."))
-  (check-type timeout (integer 1 2147483647))
-  (check-type output-limit (integer 1 65536))
-  (%effect :exec (list name (copy-seq command) timeout output-limit)))
-
-(%define-effect :exec
-  (lambda (args effect)
-    (destructuring-bind (name command timeout limit) args
-      (exec-async name command :timeout timeout :output-limit limit))))
-
-(defun process-options (command cwd env)
-  "Validate and canonicalize a shell string or argv, directory and environment."
-  (let ((size 0) (keys nil))
-    (flet ((string-option (value)
-             (check-type value string)
-             (when (or (find %nul value) (> (incf size (length value)) 65536))
-               (error "Process options exceed 65536 characters or contain NUL."))
-             (copy-seq value)))
-      (let ((launch (if (stringp command) (string-option command)
-                        (progn
-                          (unless (and (listp command) (<= 1 (length command) 128))
-                            (error "Process argv must contain 1 through 128 strings."))
-                          (when (zerop (length (first command))) (error "Empty process executable."))
-                          (mapcar #'string-option command))))
-            (directory (when cwd (string-option cwd)))
-            (environment nil))
-        (when (and directory (zerop (length directory))) (error "Empty process directory."))
-        (unless (and (listp env) (<= (length env) 64)) (error "More than 64 environment overrides."))
-        (dolist (entry env)
-          (unless (consp entry) (error "Environment entries must be (name . value) pairs."))
-          (let ((name (string-option (car entry))) (value (string-option (cdr entry))))
-            (when (or (zerop (length name)) (find #\= name) (member name keys :test #'equal))
-              (error "Invalid or duplicate environment name: ~S" name))
-            (push name keys)
-            (push (cons name value) environment)))
-        (values launch directory (sort environment #'string< :key #'car))))))
-
-(defun %process-command (name arguments)
-  (check-type name keyword)
-  (if (oddp (length arguments))
-      (values (first arguments) (rest arguments))
-      (values (list (string-downcase name)) arguments)))
-
-(defun run-once (name &rest arguments)
-  "Declare a one-shot session launch: (run-once name [command] &key cwd env run).
-COMMAND is a shell string or argv list and defaults to NAME as the program.
-RUN is :ONCE-PER-SESSION or :ONCE-PER-CONFIG-VERSION. A started child survives unmount."
-  (multiple-value-bind (command options) (%process-command name arguments)
-    (destructuring-bind (&key cwd env (run :once-per-session)) options
-      (check-type run (member :once-per-session :once-per-config-version))
-      (multiple-value-bind (launch directory environment) (process-options command cwd env)
-        (%effect :process (list :once name launch directory environment run nil nil))))))
-
-(defun service (name &rest arguments)
-  "Own a supervised process: (service name [command] &key cwd env restart reload).
-COMMAND defaults to NAME as the program. Equal declarations can survive successful reload.
-RESTART is :NEVER, :ON-FAILURE or :ON-EXIT; RELOAD can also be :ALWAYS-RESTART.
-The process dies with the compositor even when it is killed, and every process it
-forks carries TOMOE_SERVICE_TOKEN, so the next start can clear what a dead session
-left. TOMOE_SERVICE_RUNTIME_DIR is the process's own directory, a place to put
-sockets, and it is removed when the process ends."
-  (multiple-value-bind (command options) (%process-command name arguments)
-    (destructuring-bind (&key cwd env (restart :on-exit) (reload :keep-if-unchanged)) options
-      (check-type restart (member :never :on-failure :on-exit))
-      (check-type reload (member :keep-if-unchanged :always-restart))
-      (multiple-value-bind (launch directory environment) (process-options command cwd env)
-        (%effect :process (list :service name launch directory environment nil restart reload))))))
-
-(%define-effect :process
-  (lambda (args effect)
-    (destructuring-bind (kind name command cwd env run restart reload) args
-      (ecase kind
-        (:once (unless (and (null restart) (null reload)) (error "Invalid once process policies."))
-               (run-once name command :cwd cwd :env env :run run))
-        (:service (unless (null run) (error "Invalid service run policy."))
-                  (service name command :cwd cwd :env env :restart restart :reload reload)))))
-  (lambda (args) (list :process (second args))))
 
 (defun place (id x y width height &optional (visible t))
   (check-type id (integer 1 4294967295))
@@ -594,28 +437,8 @@ CONFIGURE-OUTPUT sets its scale, position, transform or mode. Removal unplugs it
       (%materialized-raise m (materialization-focused m)))))
 
 (defun window-properties (id &rest properties &key radius tearing blur border alpha tint scale
-                          rotation translate shader shader-grid shader-margin shader-settle
-                          shader-entry mesh mesh-grid)
-  "Own rendering and compositing overrides for one window. Omitted keys fall back
-to the settings; :TEARING and :BLUR take T or NIL, and a supplied NIL denies.
-BORDER is (:FOCUSED color :UNFOCUSED color). ALPHA multiplies the whole window,
-TINT mixes a color (its alpha is the strength) over its contents, SCALE and
-ROTATION (degrees) transform it about its centre, and TRANSLATE is (:X n :Y n)
-offset from where the layout puts it. Each of those animates towards its new
-value with the matching :ANIMATIONS setting. SHADER is a GLSL file drawn over the
-window's own texture on a :SHADER-GRID mesh; :SHADER-MARGIN is the extra canvas
-around the window in pixels, :SHADER-SETTLE how long it keeps animating after the
-window moves, and :SHADER-ENTRY names the shader function to call (default
-mainImage). MESH deforms the window's draw grid instead of drawing it as a
-rectangle, and takes over the grid a SHADER would otherwise use: :MESH-GRID is
-(COLUMNS . ROWS), and MESH is COLUMNS+1 times ROWS+1 X Y pixel pairs relative to
-the window's placed corner with row 0 on its top edge, so column 0 and row 0 hold
-the corners that show the window's own top-left corner. Pointer input follows the
-same mesh, so a click lands on the pixel a warp moved. Later owners replace each
-key."
-  (declare (ignore radius tearing blur border alpha tint scale rotation translate
-                   shader shader-grid shader-margin shader-settle shader-entry
-                   mesh mesh-grid))
+                          rotation translate)
+  (declare (ignore radius tearing blur border alpha tint scale rotation translate))
   (check-type id (integer 1 4294967295))
   (%effect :window-properties
            (list id (%settings-plist properties
@@ -624,13 +447,7 @@ key."
                                        (:alpha (:real 0 1)) (:tint :color)
                                        (:scale (:real 1/100 16)) (:rotation (:real -360 360))
                                        (:translate (:group (:x (:integer -16384 16384) 0)
-                                                           (:y (:integer -16384 16384) 0)))
-                                       (:shader :path) (:shader-grid (:pair 1 32))
-                                       (:shader-margin (:integer 0 4096))
-                                       (:shader-settle (:real 0 10))
-                                       (:shader-entry :identifier)
-                                       (:mesh-grid (:pair 1 32))
-                                       (:mesh (:floats 0 8192)))))))
+                                                           (:y (:integer -16384 16384) 0))))))))
 
 (%define-effect :window-properties
   (lambda (args effect)
@@ -734,7 +551,6 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
     (:nested-size (:group (:width (:integer 1 16384) 1280) (:height (:integer 1 16384) 800)))
     (:touchpad :device nil)
     (:mouse :device nil)
-    (:shader-hold (:real 0 60) 3)
     (:devices :devices nil)
     (:border (:group (:width (:integer 0 1024) 2) (:focused :color "#7aa2f7")
                      (:unfocused :color "#3b4261") (:radius (:integer 0 4096) 0)))
@@ -748,31 +564,13 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
                           (:shape (:member :cells :dots) :cells)
                           (:color :color "#b8e0ff")))
     (:animations :animations t)
-    (:screenshot-freeze :boolean t)
-    (:screenshot-motion (:group (:enabled :boolean nil) (:stiffness (:real 1 10000) 170)
-                                (:damping (:real 0.05 4) 0.45)))
-    (:screenshot-mark (:group (:ink :color "#ffffffff")
-                              (:width (:integer 1 64) 3) (:head (:integer 4 256) 18)
-                              (:size (:integer 6 256) 22) (:font :strings ("sans"))
-                              (:keys :strings ("a" "t" "f" "u" "r" "m"))
-                              (:palette (:colors) nil) (:palette-keys :strings nil)))
     (:watchdog-ms (:integer 0 60000) 1000)
-    (:pause-readings-when-dark :boolean t)
-    (:sound-pause-after (:real 0 3600) 5)
     (:budgets (:group
                (:lisp-heap-mb (:integer 4 1024) 256)
                (:windows (:integer 16 65536) 512)
                (:surfaces (:integer 16 65536) 512)
                (:events (:integer 256 65536) 4096)
                (:extensions (:integer 1 65536) 64)
-               (:timers (:integer 16 65536) 4096)
-               (:watches (:integer 16 65536) 512)
-               (:executions (:integer 4 65536) 64)
-               (:processes (:integer 4 65536) 128)
-               (:ui-surfaces (:integer 16 65536) 512)
-               (:ui-cache-mb (:integer 1 4096) 64)
-               (:shaders (:integer 4 65536) 256)
-               (:meshes (:integer 4 65536) 512)
                (:captures-in-flight (:integer 1 64) 4)
                (:json-clients (:integer 1 1024) 128)
                (:json-frame-kb (:integer 16 16384) 1024)
@@ -1527,61 +1325,9 @@ runs for other non-modifier keys with :KEYSYM. The latest owner wins."
             (list :owner (spec-name (mounted-spec mounted))
                   :source-id (spec-id (mounted-spec mounted))
                   :call call :otherwise (and call (%call-wire call)))))))
-(defparameter +sound-events+ '(:key :button :open :close :bell))
-(defun sound (event files &key (gain 0))
-  "Own the sound for EVENT: :KEY plays on every key press, :BUTTON on every
-pointer button press, :OPEN when a window first maps, :CLOSE when it closes,
-and :BELL when a Wayland client requests the system bell.
-FILES is a WAV path, or a list of up to 16 played in turn: 16-bit PCM or 32-bit
-float, mono or stereo, at 48000 Hz. Relative paths resolve beside the declaring
-source. GAIN is in decibels, from -60 to 12. Later owners replace an event's
-sound; omission restores the preceding owner."
-  (unless (member event +sound-events+) (error "Unknown sound event ~S." event))
-  (let ((files (if (listp files) files (list files))))
-    (unless (and (<= 1 (length files) 16)
-                 (every (lambda (file) (and (stringp file) (<= 1 (length file) 4096)
-                                            (not (find %nul file))))
-                        files))
-      (error "A sound needs 1 through 16 file paths."))
-    (unless (and (%finite-real-p gain) (<= -60 gain 12)) (error "Sound gain must lie within -60 and 12 dB."))
-    (%effect :sound (list event (mapcar #'copy-seq files) (%double-float gain)))))
-
-(%define-effect :sound
-  (lambda (args effect)
-    (destructuring-bind (event files gain) args
-      (sound event files :gain gain)))
-  nil
-  (lambda (m args mounted)
-    (destructuring-bind (event files gain) args
-      (let ((directory (spec-directory (mounted-spec mounted))))
-        (setf (getf (getf m :sounds) event)
-              (list :files (loop for file in files collect
-                             (cond ((char= (char file 0) #\/) file)
-                                   ((and (stringp directory) (plusp (length directory))
-                                         (char= (char directory 0) #\/))
-                                    (concatenate 'string directory file))
-                                   (t (error "Relative sound paths require a declaring source."))))
-                    :gain gain))))))
-(defun launch (&rest argv)
-  "Launch literal argv once after acceptance; the session owns the child."
-  (multiple-value-bind (command cwd env) (process-options argv nil nil)
-    (declare (ignore cwd env))
-    (%command :launch command)))
-(defun spawn (command &key cwd env (focus t))
-  "Launch a shell string or literal argv once after the current transaction.
-CWD is relative to the declaring source. ENV overlays the child environment.
-The session owns the child. With FOCUS NIL the launch stays in the background:
-windows of the launched process tree open unfocused and unraised, and the
-launch carries no activation token."
-  (check-type focus boolean)
-  (multiple-value-bind (launch directory environment) (process-options command cwd env)
-    (%command :spawn (list launch directory environment focus))))
 (defun close-window (id)
   (check-type id (integer 1 4294967295))
   (%command :close (list id)))
-(defun screenshot (&optional mode)
-  (check-type mode (member nil :screen))
-  (%command :screenshot (list (eq mode :screen))))
 (defun clipboard-copy (path type &key delete)
   "Own the clipboard with the bytes of the absolute PATH offered as the MIME TYPE.
 :DELETE removes PATH once it has been read."
@@ -1590,14 +1336,6 @@ launch carries no activation token."
   (%command :clipboard (list path type (and delete t))))
 (defun %absolute-path-p (path)
   (and (plusp (length path)) (char= (char path 0) #\/)))
-(defun media-control (action)
-  "Ask the selected MPRIS player to :PLAY-PAUSE, go to the :NEXT or :PREVIOUS track."
-  (check-type action (member :play-pause :next :previous))
-  (%command :media (list action)))
-(defun adjust-brightness (percent)
-  "Step the backlight by PERCENT of its range, up when positive, down when negative."
-  (check-type percent (integer -100 100))
-  (%command :brightness (list percent)))
 (defun screencast-answer (token answer &optional value)
   "Answer a :SCREENCAST request TOKEN with :OUTPUT and an output name, :WINDOW and
 a window id, or :DENY."

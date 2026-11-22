@@ -39,7 +39,7 @@ void pointer_gesture_begin(struct tomoe *s, struct input_device *device, uint32_
         uint32_t time, uint32_t fingers) {
     pointer_gesture_cancel(s);
     struct seat_pointer_state *state = &s->seat->pointer_state;
-    if (!state->focused_surface || !state->focused_client || s->grab_mode || s->screenshot ||
+    if (!state->focused_surface || !state->focused_client || s->grab_mode ||
             state->grab != &state->default_grab) return;
     if (kind < GESTURE_SWIPE || kind > GESTURE_HOLD) return;
     idle_notify_activity(s);

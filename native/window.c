@@ -34,11 +34,6 @@ struct window {
     struct screen *foreign_outputs[16];
     size_t foreign_output_count;
     bool hired, closing;
-    double shader_moved;
-    struct {
-        struct window_path_sample samples[WINDOW_PATH];
-        int count, head;
-    } path;
 };
 struct popup {
     struct xdg_popup *xdg;
@@ -510,15 +505,6 @@ void windows_refresh(struct tomoe *s) {
     }
 }
 
-int window_path_samples(struct tomoe *s, uint32_t id,
-        struct window_path_sample *out, int max) {
-    struct window *w = find_window_registered(s, id);
-    if (!w) return 0;
-    int count = w->path.count < max ? w->path.count : max;
-    for (int i = 0; i < count; i++)
-        out[i] = w->path.samples[(w->path.head - count + i + WINDOW_PATH) % WINDOW_PATH];
-    return count;
-}
 
 void windows_prepare_presentation(struct tomoe *s, struct presentation *plan) {
     struct window *w;
@@ -532,12 +518,6 @@ void windows_prepare_presentation(struct tomoe *s, struct presentation *plan) {
             (plan->output_count ? plan->outputs[0].scale_120 / 120.0 : 1.0);
         entry->target.output = output ? output->output->screen : NULL;
         entry->visible = entry->visible && w->mapped && entry->staged;
-        if (entry->target.shader) {
-            const struct window_shader *shader = entry->target.shader;
-            double elapsed = animation_now() - w->shader_moved;
-            entry->target.shader_time = elapsed < 0 ? 0 : elapsed > shader->settle ?
-                shader->settle : elapsed;
-        }
     }
 }
 
@@ -551,20 +531,6 @@ static void window_animate_move(struct window *w, int old_x, int old_y) {
     w->move_from_x = from_x;
     w->move_from_y = from_y;
     if (from_x == 0 && from_y == 0) w->move.active = false;
-}
-static void window_path_record(struct window *w, int x, int y, double now) {
-    struct window_path_sample *last = w->path.count ?
-        &w->path.samples[(w->path.head + WINDOW_PATH - 1) % WINDOW_PATH] : NULL;
-    if (last && last->x == x && last->y == y) return;
-    if (last && now - last->t < 0.008) {
-        last->x = x;
-        last->y = y;
-        last->t = now;
-        return;
-    }
-    w->path.samples[w->path.head] = (struct window_path_sample){ x, y, now };
-    w->path.head = (w->path.head + 1) % WINDOW_PATH;
-    if (w->path.count < WINDOW_PATH) w->path.count++;
 }
 static void channel_to(struct animation *a, const struct animation_config *config, double to) {
     animation_retarget(a, config, to);
@@ -752,16 +718,6 @@ bool windows_animate(struct tomoe *s, double now) {
             animation_advance(&w->fade, now, &s->animation) : 1;
         active |= w->move.active || w->fade.active || w->opacity.active || w->grow.active ||
             w->turn.active || w->tint.active || w->shift.active || w->resize.active;
-        if (w->target.shader) {
-            int x = w->target.x + (int)w->target.offset_x;
-            int y = w->target.y + (int)w->target.offset_y;
-            struct window_path_sample *last = w->path.count ?
-                &w->path.samples[(w->path.head + WINDOW_PATH - 1) % WINDOW_PATH] : NULL;
-            if (!last || last->x != x || last->y != y) w->shader_moved = now;
-            window_path_record(w, x, y, now);
-            if (w->target.shader->settle > 0 &&
-                    now - w->shader_moved < w->target.shader->settle) active = true;
-        }
         if (w->closing && !w->fade.active) {
             w->closing = false;
             node_set_enabled(w->tree, w->mapped && w->desired_visible);
@@ -933,7 +889,6 @@ static void window_mapped(struct window *w) {
         w->desired_height = w->height;
         w->desired_visible = true;
         w->admitted = true;
-        sound_play(w->server, SOUND_OPEN);
     }
     w->fullscreen_state = w->xdg->current.fullscreen;
     w->maximize_state = w->xdg->current.maximized;
@@ -1085,7 +1040,6 @@ static void window_destroy(struct wl_listener *listener, void *data) {
     wl_list_remove(&w->link);
     if (w->tree) w->tree->data = NULL;
     if (admitted) {
-        sound_play(s, SOUND_CLOSE);
         unmap_event(s, w->target.id);
     }
     schedule_scene(s);
