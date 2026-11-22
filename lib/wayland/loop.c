@@ -44,7 +44,8 @@ struct wl_event_loop {
     struct wl_list destroy_list;
     struct wl_list free_list;
     struct slab *slabs;
-    uint64_t last_wake_ns;
+    bool clock;
+    uint64_t sleep_ns, wake_ns, sleep_cpu_ns, wake_cpu_ns;
 };
 
 static bool slab_add(struct wl_event_loop *loop) {
@@ -312,6 +313,12 @@ int wl_event_source_remove(struct wl_event_source *source) {
     return 0;
 }
 
+static uint64_t clock_ns(clockid_t id) {
+    struct timespec t;
+    if (clock_gettime(id, &t) != 0) return 0;
+    return (uint64_t)t.tv_sec * 1000000000ULL + (uint64_t)t.tv_nsec;
+}
+
 static void dispatch_idle(struct wl_event_loop *loop) {
     struct wl_list pending;
     wl_list_init(&pending);
@@ -328,10 +335,15 @@ int wl_event_loop_dispatch(struct wl_event_loop *loop, int timeout) {
     struct epoll_event ep[32];
     dispatch_idle(loop);
     if (!wl_list_empty(&loop->idle_list)) timeout = 0;
+    if (loop->clock) {
+        loop->sleep_ns = clock_ns(CLOCK_MONOTONIC);
+        loop->sleep_cpu_ns = clock_ns(CLOCK_THREAD_CPUTIME_ID);
+    }
     int count = epoll_wait(loop->epoll_fd, ep, 32, timeout);
-    struct timespec wake;
-    if (clock_gettime(CLOCK_MONOTONIC, &wake) == 0)
-        loop->last_wake_ns = (uint64_t)wake.tv_sec * 1000000000ULL + (uint64_t)wake.tv_nsec;
+    if (loop->clock) {
+        loop->wake_ns = clock_ns(CLOCK_MONOTONIC);
+        loop->wake_cpu_ns = clock_ns(CLOCK_THREAD_CPUTIME_ID);
+    }
     if (count < 0) return -1;
     for (int i = 0; i < count; i++) {
         if (ep[i].data.ptr == &loop->timers) {
@@ -357,6 +369,14 @@ int wl_event_loop_get_fd(struct wl_event_loop *loop) {
     return loop->epoll_fd;
 }
 
-uint64_t wl_event_loop_last_wake_ns(const struct wl_event_loop *loop) {
-    return loop ? loop->last_wake_ns : 0;
+void wl_event_loop_set_clock(struct wl_event_loop *loop, bool enabled) {
+    loop->clock = enabled;
+}
+
+void wl_event_loop_clock(const struct wl_event_loop *loop, uint64_t *sleep_ns, uint64_t *wake_ns,
+        uint64_t *sleep_cpu_ns, uint64_t *wake_cpu_ns) {
+    *sleep_ns = loop->sleep_ns;
+    *wake_ns = loop->wake_ns;
+    *sleep_cpu_ns = loop->sleep_cpu_ns;
+    *wake_cpu_ns = loop->wake_cpu_ns;
 }

@@ -3,6 +3,9 @@
 
 #define TIMING_SAMPLES 8192
 #define TIMING_STALLS 256
+#define TIMING_WORST 8
+
+_Static_assert(STAGE_COUNT == 16, "stage channels");
 
 struct channel {
     uint32_t samples[TIMING_SAMPLES];
@@ -25,7 +28,11 @@ static const char *const channel_names[TIMING_CHANNELS] = {
     "latch-input", "latch-commit", "present-input", "present-commit", "present-interval",
     "frame-tail",
     "frame-wait-render",
-    "cursor-newest", "cursor-oldest", "loop-tick",
+    "cursor-newest", "cursor-oldest", "loop-tick", "loop-tick-cpu", "loop-tick-frame",
+    "loop-tick-idle", "stage-dispatch", "stage-step-post", "stage-gestures", "stage-policy",
+    "stage-bus", "stage-log", "stage-control", "stage-ipc", "stage-lisp-end", "stage-retire",
+    "stage-outputs", "stage-scene", "stage-frame", "stage-flush", "stage-idle-frames",
+    "stage-idle-dispatch",
 };
 
 static struct channel channels[TIMING_CHANNELS];
@@ -33,6 +40,18 @@ static struct stall stalls[TIMING_STALLS];
 static size_t stall_recorded;
 static size_t stall_cursor;
 static uint64_t stall_threshold = 4170000;
+
+struct turn {
+    uint64_t total, cpu;
+    bool frame;
+    uint64_t stages[STAGE_COUNT];
+};
+
+static struct turn current_turn, worst_turns[TIMING_WORST];
+static size_t worst_count;
+static bool turn_active;
+static uint64_t turn_start, turn_start_cpu, turn_mark;
+static size_t turn_frames;
 bool timing_enabled;
 
 void timing_init(void) {
@@ -58,6 +77,51 @@ void tomoe_timing_reset(void) {
     memset(stalls, 0, sizeof(stalls));
     stall_recorded = 0;
     stall_cursor = 0;
+    worst_count = 0;
+    turn_active = false;
+}
+
+void timing_turn_mark(enum timing_stage stage) {
+    if (!timing_enabled || !turn_active) return;
+    uint64_t now = timing_now();
+    current_turn.stages[stage] += now - turn_mark;
+    turn_mark = now;
+}
+
+static void keep_worst(const struct turn *t) {
+    size_t slot = worst_count;
+    if (worst_count < TIMING_WORST) {
+        worst_count++;
+    } else {
+        slot = 0;
+        for (size_t i = 1; i < TIMING_WORST; i++)
+            if (worst_turns[i].total < worst_turns[slot].total) slot = i;
+        if (worst_turns[slot].total >= t->total) return;
+    }
+    worst_turns[slot] = *t;
+}
+
+void timing_turn_boundary(uint64_t sleep_ns, uint64_t wake_ns, uint64_t sleep_cpu_ns,
+        uint64_t wake_cpu_ns) {
+    if (!timing_enabled) return;
+    if (turn_active && sleep_ns >= turn_mark && sleep_ns >= turn_start) {
+        current_turn.stages[STAGE_IDLE_DISPATCH] += sleep_ns - turn_mark;
+        current_turn.total = sleep_ns - turn_start;
+        current_turn.cpu = sleep_cpu_ns >= turn_start_cpu ? sleep_cpu_ns - turn_start_cpu : 0;
+        current_turn.frame = channels[TIMING_FRAME_TOTAL].recorded != turn_frames;
+        timing_add(TIMING_LOOP_TICK, current_turn.total);
+        timing_add(TIMING_LOOP_TICK_CPU, current_turn.cpu);
+        timing_add(current_turn.frame ? TIMING_LOOP_TICK_FRAME : TIMING_LOOP_TICK_IDLE,
+            current_turn.total);
+        for (int i = 0; i < STAGE_COUNT; i++)
+            timing_add((enum timing_channel)(TIMING_STAGE_FIRST + i), current_turn.stages[i]);
+        keep_worst(&current_turn);
+    }
+    memset(&current_turn, 0, sizeof(current_turn));
+    turn_active = true;
+    turn_start = turn_mark = wake_ns;
+    turn_start_cpu = wake_cpu_ns;
+    turn_frames = channels[TIMING_FRAME_TOTAL].recorded;
 }
 
 int tomoe_timing_channel(const char *name) {
@@ -236,9 +300,9 @@ static void write_channel(FILE *out, enum timing_channel channel, uint32_t *sort
     qsort(sorted, count, sizeof(*sorted), compare);
     uint64_t total = 0;
     for (size_t i = 0; i < count; i++) total += sorted[i];
-    fprintf(out, " :mean %" PRIu64 " :p50 %u :p90 %u :p99 %u :max %u)\n",
+    fprintf(out, " :mean %" PRIu64 " :p50 %u :p90 %u :p99 %u :max %u :p999 %u)\n",
         total / count, sorted[(count - 1) * 50 / 100], sorted[(count - 1) * 90 / 100],
-        sorted[(count - 1) * 99 / 100], sorted[count - 1]);
+        sorted[(count - 1) * 99 / 100], sorted[count - 1], sorted[(count - 1) * 999 / 1000]);
 }
 
 static const char *timing_report(void) {
@@ -253,6 +317,17 @@ static const char *timing_report(void) {
         timing_enabled ? "t" : "nil", TIMING_SAMPLES, stall_threshold);
     for (enum timing_channel channel = 0; channel < TIMING_CHANNELS; channel++)
         write_channel(out, channel, sorted);
+    fputs(") :worst-turns (", out);
+    for (size_t i = 0; i < worst_count; i++) {
+        struct turn *t = &worst_turns[i];
+        fprintf(out, "%s(:total %" PRIu64 " :cpu %" PRIu64 " :frame %s", i ? " " : "", t->total,
+            t->cpu, t->frame ? "t" : "nil");
+        for (int k = 0; k < STAGE_COUNT; k++)
+            if (t->stages[k])
+                fprintf(out, " :%s %" PRIu64, channel_names[TIMING_STAGE_FIRST + k] + 6,
+                    t->stages[k]);
+        fputc(')', out);
+    }
     fputs(") :stalls (", out);
     size_t count = stall_recorded < TIMING_STALLS ? stall_recorded : TIMING_STALLS;
     size_t first = stall_recorded < TIMING_STALLS ? 0 : stall_cursor;

@@ -706,15 +706,22 @@ static int run_compositor(const struct cli_options *options) {
             break;
         }
         tomoe_test_gestures(server);
+        timing_turn_mark(STAGE_GESTURES);
         if (policy_events_pending(server)) {
             lisp_set_limits(2000000, 25000000ULL);
             policy_drain(server);
         }
+        timing_turn_mark(STAGE_POLICY);
         desktop_bus_service(bus);
+        timing_turn_mark(STAGE_BUS);
         tomoe_log_tend();
+        timing_turn_mark(STAGE_LOG);
         control_serve(control);
+        timing_turn_mark(STAGE_CONTROL);
         ipc_serve(ipc);
+        timing_turn_mark(STAGE_IPC);
         lisp_end_turn();
+        timing_turn_mark(STAGE_LISP_END);
     }
     uint64_t deadline = loop_now_ms() + 100;
     while (ipc_pending(ipc) && loop_now_ms() < deadline) ipc_drain(ipc, 1);

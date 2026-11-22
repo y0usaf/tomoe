@@ -141,20 +141,31 @@ failed:
 int tomoe_step(struct tomoe *s, int timeout_ms) {
     if (s->failed) return -1;
     if (!s->running) return 1;
-    uint64_t pre_start = timing_enabled ? timing_now() : 0;
+    struct wl_event_loop *loop = wl_display_get_event_loop(s->display);
+    wl_event_loop_set_clock(loop, timing_enabled);
     if (s->renderer) render_retire_fences(s->renderer);
+    timing_turn_mark(STAGE_RETIRE);
     if (s->outputs_deferred && !render_frames_held(s->renderer)) {
         s->outputs_deferred = false;
         const char *error = tomoe_outputs_apply(s);
         if (error) tomoe_log(LOG_ERROR, "tomoe: %s", error);
     }
+    timing_turn_mark(STAGE_OUTPUTS);
     refresh_scene(s);
+    timing_turn_mark(STAGE_SCENE);
     screens_frame_after_events(s);
+    timing_turn_mark(STAGE_FRAME);
     wl_display_flush_clients(s->display);
+    timing_turn_mark(STAGE_FLUSH);
     screens_idle_frames(s);
-    struct wl_event_loop *loop = wl_display_get_event_loop(s->display);
-    uint64_t pre_ns = timing_enabled ? timing_now() - pre_start : 0;
+    timing_turn_mark(STAGE_IDLE_FRAMES);
     int status = wl_event_loop_dispatch(loop, timeout_ms);
+    if (timing_enabled) {
+        uint64_t sleep_ns, wake_ns, sleep_cpu, wake_cpu;
+        wl_event_loop_clock(loop, &sleep_ns, &wake_ns, &sleep_cpu, &wake_cpu);
+        timing_turn_boundary(sleep_ns, wake_ns, sleep_cpu, wake_cpu);
+        timing_turn_mark(STAGE_DISPATCH);
+    }
     if (status < 0 && errno != EINTR) return -1;
     keyboard_sync_leds(s);
     refresh_scene(s);
@@ -163,12 +174,7 @@ int tomoe_step(struct tomoe *s, int timeout_ms) {
     lock_refresh(s);
     screens_idle_frames(s);
     wl_display_flush_clients(s->display);
-    if (timing_enabled) {
-        uint64_t wake_ns = wl_event_loop_last_wake_ns(loop);
-        uint64_t now = timing_now();
-        uint64_t post_ns = (wake_ns && now >= wake_ns) ? (now - wake_ns) : 0;
-        timing_add(TIMING_LOOP_TICK, pre_ns + post_ns);
-    }
+    timing_turn_mark(STAGE_STEP_POST);
     return s->failed ? -1 : (s->running ? 0 : 1);
 }
 void tomoe_destroy(struct tomoe *s) {

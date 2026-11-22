@@ -23,6 +23,8 @@ struct shm_buffer {
     struct wl_listener resource_destroy, release;
 };
 
+#define SHM_TRIM_BYTES ((size_t)4 << 20)
+
 static void shm_release_pages(void *data, size_t bytes) {
     if (!data || !bytes) return;
     long page = sysconf(_SC_PAGESIZE);
@@ -102,7 +104,7 @@ static bool shm_buffer_begin(struct buffer *base, uint32_t flags, void **data,
 static void shm_buffer_end(struct buffer *base) {
     struct shm_buffer *b = wl_container_of(base, b, base);
     if (b->shm) wl_shm_buffer_end_access(b->shm);
-    if (b->trim) shm_release_pages(b->cache, b->cache_bytes);
+    if (b->trim && b->cache_bytes >= SHM_TRIM_BYTES) shm_release_pages(b->cache, b->cache_bytes);
     b->trim = false;
     b->cache_bytes = 0;
 }

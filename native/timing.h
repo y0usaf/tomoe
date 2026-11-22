@@ -43,7 +43,31 @@ enum timing_channel {
     TIMING_CURSOR_NEWEST,
     TIMING_CURSOR_OLDEST,
     TIMING_LOOP_TICK,
-    TIMING_CHANNELS
+    TIMING_LOOP_TICK_CPU,
+    TIMING_LOOP_TICK_FRAME,
+    TIMING_LOOP_TICK_IDLE,
+    TIMING_STAGE_FIRST,
+    TIMING_CHANNELS = TIMING_STAGE_FIRST + 16
+};
+
+enum timing_stage {
+    STAGE_DISPATCH,
+    STAGE_STEP_POST,
+    STAGE_GESTURES,
+    STAGE_POLICY,
+    STAGE_BUS,
+    STAGE_LOG,
+    STAGE_CONTROL,
+    STAGE_IPC,
+    STAGE_LISP_END,
+    STAGE_RETIRE,
+    STAGE_OUTPUTS,
+    STAGE_SCENE,
+    STAGE_FRAME,
+    STAGE_FLUSH,
+    STAGE_IDLE_FRAMES,
+    STAGE_IDLE_DISPATCH,
+    STAGE_COUNT
 };
 
 struct tomoe;
@@ -72,5 +96,8 @@ uint64_t tomoe_timing_now(void);
 int tomoe_timing_channel(const char *name);
 void tomoe_timing_reset(void);
 void tomoe_timing_sample(int channel, uint64_t ns);
+void timing_turn_mark(enum timing_stage stage);
+void timing_turn_boundary(uint64_t sleep_ns, uint64_t wake_ns, uint64_t sleep_cpu_ns,
+    uint64_t wake_cpu_ns);
 
 #endif
