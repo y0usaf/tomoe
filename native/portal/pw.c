@@ -350,6 +350,8 @@ static int32_t produce(struct pwv *v) {
         if (id >= v->n_buffers || v->where[id] != BUFFER_PORT) {
             v->io->status = SPA_STATUS_NEED_DATA;
             v->io->buffer_id = SPA_ID_INVALID;
+        } else {
+            return SPA_STATUS_HAVE_DATA;
         }
     }
     if (v->io->status != SPA_STATUS_HAVE_DATA && v->n_queued) {

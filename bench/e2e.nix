@@ -207,14 +207,21 @@ pkgs.testers.runNixOSTest {
         f"${client}/bin/bench-client ${pwPortal}/bin/tomoe-e2e-pw-portal"
     )
     print(f"E2E_PW_PORTAL rc={pw_rc} out={pw_out.strip()}")
-    pw_shm_rc, pw_shm_out = machine.execute(
-        f"{sh_env} WAYLAND_DISPLAY={wl_display} DBUS_SESSION_BUS_ADDRESS={bus_addr} "
-        f"PIPEWIRE_RUNTIME_DIR=/run/e2e/rt ${pyDbus}/bin/python3 /run/e2e/pw_driver.py "
-        f"${client}/bin/bench-client ${pwPortal}/bin/tomoe-e2e-pw-portal --shm-only"
-    )
-    print(f"E2E_PW_PORTAL_SHM rc={pw_shm_rc} out={pw_shm_out.strip()}")
-    if pw_rc != 0:
-        _, plog = machine.execute("journalctl -u e2e-portal --no-pager -n 40")
+    pw_shm_rc = 0
+    pw_shm_out = ""
+    for i in range(5):
+        rc_i, out_i = machine.execute(
+            f"{sh_env} WAYLAND_DISPLAY={wl_display} DBUS_SESSION_BUS_ADDRESS={bus_addr} "
+            f"PIPEWIRE_RUNTIME_DIR=/run/e2e/rt ${pyDbus}/bin/python3 /run/e2e/pw_driver.py "
+            f"${client}/bin/bench-client ${pwPortal}/bin/tomoe-e2e-pw-portal --shm-only"
+        )
+        print(f"E2E_PW_PORTAL_SHM[{i}] rc={rc_i} out={out_i.strip()}")
+        if rc_i != 0:
+            pw_shm_rc = rc_i
+            pw_shm_out = out_i
+            break
+    if pw_rc != 0 or pw_shm_rc != 0:
+        _, plog = machine.execute("journalctl -u e2e-portal -u e2e-pipewire --no-pager -n 60")
         print(f"E2E_PORTAL_LOG:\n{plog}")
 
     machine.execute("systemctl stop e2e-portal e2e-wireplumber e2e-pipewire e2e-dbus")
