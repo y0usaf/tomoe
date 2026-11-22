@@ -406,8 +406,16 @@ static void apply_buffer(struct surface *surface) {
     struct region damage;
     region_init(&damage);
     buffer_damage(surface, &damage);
+    uint64_t upload_start = timing_enabled ? timing_now() : 0;
     bool reused = !gpu && surface->texture &&
         texture_update(surface->texture, next, &damage);
+    uint64_t upload_bytes = 0;
+    if (reused) {
+        int count = 0;
+        const struct rect *rects = region_rectangles(&damage, &count);
+        for (int i = 0; i < count; i++)
+            upload_bytes += (uint64_t)(rects[i].x2 - rects[i].x1) * (uint64_t)(rects[i].y2 - rects[i].y1) * 4;
+    }
     static uint64_t commits;
     struct rect *e = region_extents(&damage);
     memmove(&surface->commits[1], &surface->commits[0],
@@ -421,7 +429,9 @@ static void apply_buffer(struct surface *surface) {
         if (!texture) tomoe_log(LOG_ERROR, "tomoe: client buffer upload failed");
         texture_destroy(surface->texture);
         surface->texture = texture;
+        if (!gpu) upload_bytes = (uint64_t)next->width * (uint64_t)next->height * 4;
     }
+    if (timing_enabled) timing_upload(timing_now() - upload_start, upload_bytes);
     buffer_unlock(surface->buffer);
     bool keep = gpu || !surface->role || surface->role->keep_buffer;
     surface->buffer = keep ? buffer_lock(next) : NULL;
@@ -652,7 +662,15 @@ static bool syncobj_check(struct surface *surface) {
     return true;
 }
 
+static void surface_commit_apply(struct wl_resource *resource);
+
 static void surface_commit(struct wl_client *client, struct wl_resource *resource) {
+    uint64_t start = timing_enabled ? timing_now() : 0;
+    surface_commit_apply(resource);
+    if (timing_enabled) timing_commit_request(timing_now() - start);
+}
+
+static void surface_commit_apply(struct wl_resource *resource) {
     struct surface *surface = surface_from_resource(resource);
     timing_commit(surface->server);
     surface->pending_rejected = false;

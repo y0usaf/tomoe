@@ -46,6 +46,11 @@ enum timing_channel {
     TIMING_LOOP_TICK_CPU,
     TIMING_LOOP_TICK_FRAME,
     TIMING_LOOP_TICK_IDLE,
+    TIMING_LOOP_TICK_COMMIT,
+    TIMING_LOOP_TICK_NONCOMMIT,
+    TIMING_COMMIT_REQUEST,
+    TIMING_UPLOAD,
+    TIMING_UPLOAD_BYTES,
     TIMING_STAGE_FIRST,
     TIMING_CHANNELS = TIMING_STAGE_FIRST + 16
 };
@@ -97,7 +102,9 @@ int tomoe_timing_channel(const char *name);
 void tomoe_timing_reset(void);
 void tomoe_timing_sample(int channel, uint64_t ns);
 void timing_turn_mark(enum timing_stage stage);
-void timing_turn_boundary(uint64_t sleep_ns, uint64_t wake_ns, uint64_t sleep_cpu_ns,
+void timing_turn_boundary(void *data, uint64_t sleep_ns, uint64_t wake_ns, uint64_t sleep_cpu_ns,
     uint64_t wake_cpu_ns);
+void timing_commit_request(uint64_t ns);
+void timing_upload(uint64_t ns, uint64_t bytes);
 
 #endif

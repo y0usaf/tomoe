@@ -153,8 +153,9 @@ struct wl_event_source *wl_event_loop_add_idle(struct wl_event_loop *loop,
 int wl_event_source_remove(struct wl_event_source *source);
 int wl_event_loop_dispatch(struct wl_event_loop *loop, int timeout);
 void wl_event_loop_set_clock(struct wl_event_loop *loop, bool enabled);
-void wl_event_loop_clock(const struct wl_event_loop *loop, uint64_t *sleep_ns, uint64_t *wake_ns,
-    uint64_t *sleep_cpu_ns, uint64_t *wake_cpu_ns);
+typedef void (*wl_event_loop_wake_func_t)(void *data, uint64_t sleep_ns, uint64_t wake_ns,
+    uint64_t sleep_cpu_ns, uint64_t wake_cpu_ns);
+void wl_event_loop_set_wake(struct wl_event_loop *loop, wl_event_loop_wake_func_t fn, void *data);
 int wl_event_loop_get_fd(struct wl_event_loop *loop);
 
 struct wl_listener;

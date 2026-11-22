@@ -46,6 +46,8 @@ struct wl_event_loop {
     struct slab *slabs;
     bool clock;
     uint64_t sleep_ns, wake_ns, sleep_cpu_ns, wake_cpu_ns;
+    wl_event_loop_wake_func_t wake;
+    void *wake_data;
 };
 
 static bool slab_add(struct wl_event_loop *loop) {
@@ -344,6 +346,9 @@ int wl_event_loop_dispatch(struct wl_event_loop *loop, int timeout) {
     if (loop->clock) {
         loop->wake_ns = clock_ns(CLOCK_MONOTONIC);
         loop->wake_cpu_ns = clock_ns(CLOCK_THREAD_CPUTIME_ID);
+        if (loop->wake)
+            loop->wake(loop->wake_data, loop->sleep_ns, loop->wake_ns, loop->sleep_cpu_ns,
+                loop->wake_cpu_ns);
     }
     if (count < 0) return -1;
     for (int i = 0; i < count; i++) {
@@ -374,10 +379,7 @@ void wl_event_loop_set_clock(struct wl_event_loop *loop, bool enabled) {
     loop->clock = enabled;
 }
 
-void wl_event_loop_clock(const struct wl_event_loop *loop, uint64_t *sleep_ns, uint64_t *wake_ns,
-        uint64_t *sleep_cpu_ns, uint64_t *wake_cpu_ns) {
-    *sleep_ns = loop->sleep_ns;
-    *wake_ns = loop->wake_ns;
-    *sleep_cpu_ns = loop->sleep_cpu_ns;
-    *wake_cpu_ns = loop->wake_cpu_ns;
+void wl_event_loop_set_wake(struct wl_event_loop *loop, wl_event_loop_wake_func_t fn, void *data) {
+    loop->wake = fn;
+    loop->wake_data = data;
 }

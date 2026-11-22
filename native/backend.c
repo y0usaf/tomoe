@@ -143,6 +143,7 @@ int tomoe_step(struct tomoe *s, int timeout_ms) {
     if (!s->running) return 1;
     struct wl_event_loop *loop = wl_display_get_event_loop(s->display);
     wl_event_loop_set_clock(loop, timing_enabled);
+    wl_event_loop_set_wake(loop, timing_turn_boundary, s);
     if (s->renderer) render_retire_fences(s->renderer);
     timing_turn_mark(STAGE_RETIRE);
     if (s->outputs_deferred && !render_frames_held(s->renderer)) {
@@ -160,12 +161,7 @@ int tomoe_step(struct tomoe *s, int timeout_ms) {
     screens_idle_frames(s);
     timing_turn_mark(STAGE_IDLE_FRAMES);
     int status = wl_event_loop_dispatch(loop, timeout_ms);
-    if (timing_enabled) {
-        uint64_t sleep_ns, wake_ns, sleep_cpu, wake_cpu;
-        wl_event_loop_clock(loop, &sleep_ns, &wake_ns, &sleep_cpu, &wake_cpu);
-        timing_turn_boundary(sleep_ns, wake_ns, sleep_cpu, wake_cpu);
-        timing_turn_mark(STAGE_DISPATCH);
-    }
+    timing_turn_mark(STAGE_DISPATCH);
     if (status < 0 && errno != EINTR) return -1;
     keyboard_sync_leds(s);
     refresh_scene(s);

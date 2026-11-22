@@ -29,7 +29,8 @@ static const char *const channel_names[TIMING_CHANNELS] = {
     "frame-tail",
     "frame-wait-render",
     "cursor-newest", "cursor-oldest", "loop-tick", "loop-tick-cpu", "loop-tick-frame",
-    "loop-tick-idle", "stage-dispatch", "stage-step-post", "stage-gestures", "stage-policy",
+    "loop-tick-idle", "loop-tick-commit", "loop-tick-noncommit", "commit-request", "upload",
+    "upload-bytes", "stage-dispatch", "stage-step-post", "stage-gestures", "stage-policy",
     "stage-bus", "stage-log", "stage-control", "stage-ipc", "stage-lisp-end", "stage-retire",
     "stage-outputs", "stage-scene", "stage-frame", "stage-flush", "stage-idle-frames",
     "stage-idle-dispatch",
@@ -44,6 +45,7 @@ static uint64_t stall_threshold = 4170000;
 struct turn {
     uint64_t total, cpu;
     bool frame;
+    uint64_t commits, uploads, upload_bytes;
     uint64_t stages[STAGE_COUNT];
 };
 
@@ -101,8 +103,23 @@ static void keep_worst(const struct turn *t) {
     worst_turns[slot] = *t;
 }
 
-void timing_turn_boundary(uint64_t sleep_ns, uint64_t wake_ns, uint64_t sleep_cpu_ns,
+void timing_commit_request(uint64_t ns) {
+    if (!timing_enabled) return;
+    timing_add(TIMING_COMMIT_REQUEST, ns);
+    current_turn.commits++;
+}
+
+void timing_upload(uint64_t ns, uint64_t bytes) {
+    if (!timing_enabled) return;
+    timing_add(TIMING_UPLOAD, ns);
+    timing_add(TIMING_UPLOAD_BYTES, bytes);
+    current_turn.uploads++;
+    current_turn.upload_bytes += bytes;
+}
+
+void timing_turn_boundary(void *data, uint64_t sleep_ns, uint64_t wake_ns, uint64_t sleep_cpu_ns,
         uint64_t wake_cpu_ns) {
+    (void)data;
     if (!timing_enabled) return;
     if (turn_active && sleep_ns >= turn_mark && sleep_ns >= turn_start) {
         current_turn.stages[STAGE_IDLE_DISPATCH] += sleep_ns - turn_mark;
@@ -113,6 +130,8 @@ void timing_turn_boundary(uint64_t sleep_ns, uint64_t wake_ns, uint64_t sleep_cp
         timing_add(TIMING_LOOP_TICK_CPU, current_turn.cpu);
         timing_add(current_turn.frame ? TIMING_LOOP_TICK_FRAME : TIMING_LOOP_TICK_IDLE,
             current_turn.total);
+        timing_add(current_turn.commits || current_turn.uploads ? TIMING_LOOP_TICK_COMMIT :
+            TIMING_LOOP_TICK_NONCOMMIT, current_turn.total);
         for (int i = 0; i < STAGE_COUNT; i++)
             timing_add((enum timing_channel)(TIMING_STAGE_FIRST + i), current_turn.stages[i]);
         keep_worst(&current_turn);
@@ -320,8 +339,9 @@ static const char *timing_report(void) {
     fputs(") :worst-turns (", out);
     for (size_t i = 0; i < worst_count; i++) {
         struct turn *t = &worst_turns[i];
-        fprintf(out, "%s(:total %" PRIu64 " :cpu %" PRIu64 " :frame %s", i ? " " : "", t->total,
-            t->cpu, t->frame ? "t" : "nil");
+        fprintf(out, "%s(:total %" PRIu64 " :cpu %" PRIu64 " :frame %s :commits %" PRIu64
+            " :uploads %" PRIu64 " :upload-bytes %" PRIu64, i ? " " : "", t->total, t->cpu,
+            t->frame ? "t" : "nil", t->commits, t->uploads, t->upload_bytes);
         for (int k = 0; k < STAGE_COUNT; k++)
             if (t->stages[k])
                 fprintf(out, " :%s %" PRIu64, channel_names[TIMING_STAGE_FIRST + k] + 6,
