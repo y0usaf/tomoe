@@ -29,7 +29,8 @@ static const char *const channel_names[TIMING_CHANNELS] = {
     "frame-tail",
     "frame-wait-render",
     "cursor-newest", "cursor-oldest", "loop-tick", "loop-tick-cpu", "loop-tick-frame",
-    "loop-tick-idle", "loop-tick-commit", "loop-tick-noncommit", "commit-request", "upload",
+    "loop-tick-idle", "loop-tick-commit", "loop-tick-noncommit", "loop-tick-noncommit-frame",
+    "loop-tick-noncommit-idle", "commit-request", "upload",
     "upload-bytes", "stage-dispatch", "stage-step-post", "stage-gestures", "stage-policy",
     "stage-bus", "stage-log", "stage-control", "stage-ipc", "stage-lisp-end", "stage-retire",
     "stage-outputs", "stage-scene", "stage-frame", "stage-flush", "stage-idle-frames",
@@ -49,8 +50,8 @@ struct turn {
     uint64_t stages[STAGE_COUNT];
 };
 
-static struct turn current_turn, worst_turns[TIMING_WORST];
-static size_t worst_count;
+static struct turn current_turn, worst_turns[TIMING_WORST], worst_noncommit[TIMING_WORST];
+static size_t worst_count, worst_noncommit_count;
 static bool turn_active;
 static uint64_t turn_start, turn_start_cpu, turn_mark;
 static size_t turn_frames;
@@ -80,6 +81,7 @@ void tomoe_timing_reset(void) {
     stall_recorded = 0;
     stall_cursor = 0;
     worst_count = 0;
+    worst_noncommit_count = 0;
     turn_active = false;
 }
 
@@ -90,17 +92,17 @@ void timing_turn_mark(enum timing_stage stage) {
     turn_mark = now;
 }
 
-static void keep_worst(const struct turn *t) {
-    size_t slot = worst_count;
-    if (worst_count < TIMING_WORST) {
-        worst_count++;
+static void keep_worst(struct turn *list, size_t *count, const struct turn *t) {
+    size_t slot = *count;
+    if (*count < TIMING_WORST) {
+        (*count)++;
     } else {
         slot = 0;
         for (size_t i = 1; i < TIMING_WORST; i++)
-            if (worst_turns[i].total < worst_turns[slot].total) slot = i;
-        if (worst_turns[slot].total >= t->total) return;
+            if (list[i].total < list[slot].total) slot = i;
+        if (list[slot].total >= t->total) return;
     }
-    worst_turns[slot] = *t;
+    list[slot] = *t;
 }
 
 void timing_commit_request(uint64_t ns) {
@@ -130,11 +132,16 @@ void timing_turn_boundary(void *data, uint64_t sleep_ns, uint64_t wake_ns, uint6
         timing_add(TIMING_LOOP_TICK_CPU, current_turn.cpu);
         timing_add(current_turn.frame ? TIMING_LOOP_TICK_FRAME : TIMING_LOOP_TICK_IDLE,
             current_turn.total);
-        timing_add(current_turn.commits || current_turn.uploads ? TIMING_LOOP_TICK_COMMIT :
-            TIMING_LOOP_TICK_NONCOMMIT, current_turn.total);
+        bool commit = current_turn.commits || current_turn.uploads;
+        timing_add(commit ? TIMING_LOOP_TICK_COMMIT : TIMING_LOOP_TICK_NONCOMMIT, current_turn.total);
+        if (!commit) {
+            timing_add(current_turn.frame ? TIMING_LOOP_TICK_NONCOMMIT_FRAME :
+                TIMING_LOOP_TICK_NONCOMMIT_IDLE, current_turn.total);
+            keep_worst(worst_noncommit, &worst_noncommit_count, &current_turn);
+        }
         for (int i = 0; i < STAGE_COUNT; i++)
             timing_add((enum timing_channel)(TIMING_STAGE_FIRST + i), current_turn.stages[i]);
-        keep_worst(&current_turn);
+        keep_worst(worst_turns, &worst_count, &current_turn);
     }
     memset(&current_turn, 0, sizeof(current_turn));
     turn_active = true;
@@ -324,6 +331,20 @@ static void write_channel(FILE *out, enum timing_channel channel, uint32_t *sort
         sorted[(count - 1) * 99 / 100], sorted[count - 1], sorted[(count - 1) * 999 / 1000]);
 }
 
+static void write_turns(FILE *out, const struct turn *list, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        const struct turn *t = &list[i];
+        fprintf(out, "%s(:total %" PRIu64 " :cpu %" PRIu64 " :frame %s :commits %" PRIu64
+            " :uploads %" PRIu64 " :upload-bytes %" PRIu64, i ? " " : "", t->total, t->cpu,
+            t->frame ? "t" : "nil", t->commits, t->uploads, t->upload_bytes);
+        for (int k = 0; k < STAGE_COUNT; k++)
+            if (t->stages[k])
+                fprintf(out, " :%s %" PRIu64, channel_names[TIMING_STAGE_FIRST + k] + 6,
+                    t->stages[k]);
+        fputc(')', out);
+    }
+}
+
 static const char *timing_report(void) {
     static char *result;
     static uint32_t sorted[TIMING_SAMPLES];
@@ -337,17 +358,9 @@ static const char *timing_report(void) {
     for (enum timing_channel channel = 0; channel < TIMING_CHANNELS; channel++)
         write_channel(out, channel, sorted);
     fputs(") :worst-turns (", out);
-    for (size_t i = 0; i < worst_count; i++) {
-        struct turn *t = &worst_turns[i];
-        fprintf(out, "%s(:total %" PRIu64 " :cpu %" PRIu64 " :frame %s :commits %" PRIu64
-            " :uploads %" PRIu64 " :upload-bytes %" PRIu64, i ? " " : "", t->total, t->cpu,
-            t->frame ? "t" : "nil", t->commits, t->uploads, t->upload_bytes);
-        for (int k = 0; k < STAGE_COUNT; k++)
-            if (t->stages[k])
-                fprintf(out, " :%s %" PRIu64, channel_names[TIMING_STAGE_FIRST + k] + 6,
-                    t->stages[k]);
-        fputc(')', out);
-    }
+    write_turns(out, worst_turns, worst_count);
+    fputs(") :worst-noncommit-turns (", out);
+    write_turns(out, worst_noncommit, worst_noncommit_count);
     fputs(") :stalls (", out);
     size_t count = stall_recorded < TIMING_STALLS ? stall_recorded : TIMING_STALLS;
     size_t first = stall_recorded < TIMING_STALLS ? 0 : stall_cursor;
