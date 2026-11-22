@@ -206,8 +206,8 @@ void tomoe_destroy(struct tomoe *s) {
     if (s->render_timeline) timeline_unref(s->render_timeline);
     if (s->renderer) render_destroy(s->renderer);
     if (s->grab_release) wl_event_source_remove(s->grab_release);
-    if (s->display) wl_display_destroy(s->display);
     buffers_finish();
+    if (s->display) wl_display_destroy(s->display);
     tomoe_clear_bindings(s);
     free(s->grab_owner);
     free(s->grab_otherwise);
