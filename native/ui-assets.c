@@ -105,14 +105,6 @@ static struct ui_asset *find_asset(struct tomoe *s, uint64_t id) {
     return NULL;
 }
 
-static void shader_repaint(struct ui_asset_pool *pool) {
-    struct tomoe *s = pool->server;
-    struct output *o;
-    if (!s) return;
-    wl_list_for_each(o, &s->outputs, link)
-        if (o->screen && output_is_active(o)) screen_schedule_frame(o->screen);
-}
-
 static int shader_timer(void *data);
 
 static void shader_watch(struct ui_asset_pool *pool) {
@@ -158,7 +150,7 @@ static int shader_timer(void *data) {
     bool ready = false;
     for (struct ui_asset *asset = pool->assets; asset; asset = asset->next)
         if (asset->shader_waiting && shader_retry(asset)) ready = true;
-    if (ready) shader_repaint(pool);
+    if (ready && pool->server) ui_backdrops_ready(pool->server);
     bool busy = pool->waiting > 0 || (renderer && render_shader_reap(renderer));
     if (busy && pool->timer) wl_event_source_timer_update(pool->timer, SHADER_POLL_MS);
     return 0;

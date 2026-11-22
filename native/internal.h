@@ -190,7 +190,7 @@ struct read_options {
     struct box src_box;
 };
 enum { OP_RECT = 1, OP_TEXTURE, OP_BORDER, OP_SHADOW, OP_ROUNDED, OP_BLUR, OP_SHADER,
-    OP_MESH = 9, OP_TRAIL = 13, OP_CURSOR = 14, OP_GLASS = 15 };
+    OP_TRAIL = 13, OP_CURSOR = 14, OP_GLASS = 15 };
 struct pass;
 struct blur_grid { struct box grown; int passes; double offset; };
 struct screenshot;
@@ -379,55 +379,6 @@ struct program *render_shader_create(struct render *r, const char *source, bool 
 bool render_shader_reap(struct render *r);
 struct program *render_shader_compile(struct render *r, const char *source);
 void render_shader_destroy(struct program *program);
-struct window_shader {
-    struct program *program;
-    char *path;
-    char entry[64];
-    long mtime;
-    int grid_x, grid_y, margin;
-    double settle;
-    struct window_shader *next;
-};
-enum { WINDOW_PATH = 32 };
-struct window_path_sample {
-    int x, y;
-    double t;
-};
-int window_path_samples(struct tomoe *server, uint32_t id,
-    struct window_path_sample *out, int max);
-struct window_shader *window_shader_for(struct tomoe *server, const char *path,
-    int grid_x, int grid_y, int margin, double settle, const char *entry);
-struct window_shader *window_mesh_shader(struct tomoe *server);
-void window_shaders_finish(struct tomoe *server);
-struct window_mesh {
-    uint32_t id;
-    int grid_x, grid_y;
-    struct box frame;
-    float *positions;
-    size_t capacity;
-    uint64_t digest;
-    struct window_mesh *next;
-};
-struct window_mesh *window_mesh_for(struct tomoe *server, uint32_t id, int grid_x, int grid_y,
-    const double *positions, size_t count);
-void window_meshes_finish(struct tomoe *server);
-struct mesh_options {
-    struct texture *texture;
-    struct program *shader;
-    const struct window_mesh *mesh;
-    struct box dst_box;
-    struct fbox src_box;
-    enum wl_output_transform transform;
-    const float *trail, *path;
-    const float *alpha;
-    struct timeline *wait_timeline;
-    uint64_t wait_point;
-    int trail_count, path_count, grid_x, grid_y, frame, drag;
-    enum wl_output_transform position_transform;
-    double box[4], time, progress, seed;
-    double origin[2], scale;
-};
-void pass_add_mesh(struct pass *pass, const struct mesh_options *options);
 #define RING_SLOTS 4
 #define RING_START_SLOTS 2
 #define RING_FRAME_SLOTS 3
@@ -709,9 +660,6 @@ struct target {
     int drawn_width, drawn_height;
     struct window_style style;
     struct visual visual;
-    struct window_shader *shader;
-    struct window_mesh *mesh;
-    double shader_time;
 };
 struct frame {
     struct tomoe *server;

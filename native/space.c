@@ -375,7 +375,8 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
         surface_release_after(surface, data->buffer);
     if (window && !t->fullscreen && s->settings.blur_enabled && t->style.blur == 1 &&
             data->zoom == 1 && popup_root(surface))
-        effect_blur(data, (struct fbox){ local.x, local.y, local.width, local.height }, 0,
+        effect_blur(data, (struct fbox){ local.x + data->x, local.y + data->y,
+            local.width, local.height }, 0,
             s->settings.blur_passes, s->settings.blur_offset, s->settings.blur_margin, 1);
     struct fbox src;
     surface_source_box(surface, &src);
@@ -737,6 +738,8 @@ static bool render_scene_prepared(struct output *o, struct buffer *buffer,
     bool locked = lock_active(o->server);
     if (!pre_recorded) {
         bool moving = windows_animate(o->server, data.sample);
+        if (ui_animate(o->server, data.sample)) moving = true;
+        if (screenshot_animate(o->server, data.sample)) moving = true;
         if (track && cursor_motion_advance(o->server, animation_now())) moving = true;
         o->animating = o->animating || moving;
     }
@@ -870,6 +873,8 @@ bool render_presentation(struct output *o, struct screen_state *state,
         transform_coords(probe.transform, &probe.width, &probe.height);
         bool locked = lock_active(s);
         bool moving = windows_animate(s, probe.sample);
+        if (ui_animate(s, probe.sample)) moving = true;
+        if (screenshot_animate(s, probe.sample)) moving = true;
         if (cursor_motion_advance(s, animation_now())) moving = true;
         o->animating = moving;
         if (scene_record_ops(o, &probe, locked, &pre_changed, &pre_complete)) {
@@ -994,6 +999,11 @@ static bool hit_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
 }
 uint32_t physical_hit_test(struct tomoe *s, double x, double y,
         struct surface **surface, double *sx, double *sy) {
+    struct ui_hit ui;
+    if (!lock_active(s) && ui_hit_at(s, x, y, &ui)) {
+        *surface = NULL; *sx = ui.x; *sy = ui.y;
+        return 0;
+    }
     struct hit_data hit = { .x = x, .y = y };
     walk_scene(s, lock_active(s) ? s->lock_tree : s->scene,
         NULL, 0, 0, true, hit_leaf, &hit);
@@ -1373,7 +1383,6 @@ size_t planes_assign(struct output *o) {
             chosen[i].dst.y, (unsigned)chosen[i].dst.width, (unsigned)chosen[i].dst.height);
     }
     planes->count = chosen_count;
-    planes->tested = !planes->retest && planes->tested && previous_count != 0;
     if (chosen_count && moved && chosen_count != previous_count)
         tomoe_log(LOG_DEBUG, "tomoe: output %s %zu overlay planes", o->screen->name,
             chosen_count);
@@ -1404,6 +1413,7 @@ size_t planes_assign(struct output *o) {
     }
     planes->changed = moved;
     planes->retest = planes->shape != previous_shape;
+    planes->tested = !planes->retest && planes->tested && previous_count != 0;
     if (planes->shape && planes->shape == planes->refused) {
         planes->count = 0;
         planes->tested = false;
