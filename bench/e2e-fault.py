@@ -595,6 +595,52 @@ def check_xwm_hang(path, client_bin, tomoe_bin):
             honest.wait()
 
 
+def parent_pid(pid):
+    with open(f"/proc/{pid}/stat") as f:
+        return int(f.read().rsplit(")", 1)[1].split()[1])
+
+
+def check_xwm_stall(path):
+    env = dict(os.environ, WAYLAND_DISPLAY=os.path.basename(path))
+    pids = []
+    for _ in range(100):
+        pids = xwm_pids()
+        if pids:
+            break
+        time.sleep(0.05)
+    if len(pids) != 1:
+        raise SystemExit(f"xwm-stall: FAIL expected one tomoe-xwm, found {pids}")
+    sidecar = pids[0]
+    compositor = parent_pid(sidecar)
+    owner = None
+    try:
+        os.kill(sidecar, signal.SIGSTOP)
+        owner = subprocess.Popen(["wl-copy", "--foreground"], env=env, stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        owner.stdin.write(b"stall-probe")
+        owner.stdin.close()
+        time.sleep(0.5)
+        os.kill(compositor, signal.SIGSTOP)
+        os.kill(sidecar, signal.SIGCONT)
+        time.sleep(3.5)
+        os.kill(compositor, signal.SIGCONT)
+        time.sleep(2.0)
+        after = xwm_pids()
+        if after != [sidecar]:
+            raise SystemExit(f"xwm-stall: FAIL a sidecar whose pong was already queued was restarted "
+                f"({sidecar} -> {after})")
+        return f"xwm_stall=kept {sidecar}"
+    finally:
+        for pid in (compositor, sidecar):
+            try:
+                os.kill(pid, signal.SIGCONT)
+            except OSError:
+                pass
+        if owner:
+            owner.kill()
+            owner.wait()
+
+
 def main():
     args = sys.argv[1:]
     checks = args[0].split(",")
@@ -609,6 +655,8 @@ def main():
             results.append(check_flood(path))
         elif check == "xwm":
             results.append(check_xwm_kill(display, client_bin))
+        elif check == "xwm-stall":
+            results.append(check_xwm_stall(path))
         elif check == "xwm-hang":
             results.append(check_xwm_hang(path, client_bin, args[3]))
         elif check == "x11-ownership":
