@@ -338,6 +338,58 @@ def clipboard_custom(env):
         owner.wait()
 
 
+def clipboard_timeout_recovery(env):
+    first = os.urandom(2048).hex().encode()
+    second = os.urandom(2048).hex().encode()
+    owner_a = subprocess.Popen(["xclip", "-selection", "clipboard", "-i", "-quiet"], env=env,
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    owner_a.stdin.write(first)
+    owner_a.stdin.close()
+    owner_b = None
+    try:
+        deadline = time.monotonic() + X11_TIMEOUT
+        while time.monotonic() < deadline:
+            if run_timeout(["wl-paste", "--no-newline"], env).stdout == first:
+                break
+            time.sleep(0.2)
+        else:
+            raise SystemExit("x11: FAIL timeout-recovery owner A never pasted")
+        os.kill(owner_a.pid, signal.SIGSTOP)
+        started = time.monotonic()
+        try:
+            run_timeout(["wl-paste", "--no-newline"], env, timeout=20)
+        except subprocess.TimeoutExpired:
+            raise SystemExit("x11: FAIL paste from a stalled X owner did not time out within 20s")
+        stalled = time.monotonic() - started
+        owner_b = subprocess.Popen(["xclip", "-selection", "clipboard", "-i", "-quiet"], env=env,
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        owner_b.stdin.write(second)
+        owner_b.stdin.close()
+        time.sleep(0.3)
+        os.kill(owner_a.pid, signal.SIGCONT)
+        good = 0
+        deadline = time.monotonic() + X11_TIMEOUT
+        while time.monotonic() < deadline and good < 5:
+            got = run_timeout(["wl-paste", "--no-newline"], env).stdout
+            if got == second:
+                good += 1
+            elif got == first:
+                raise SystemExit("x11: FAIL a stale reply from the stalled owner reached a later paste")
+            time.sleep(0.1)
+        if good < 5:
+            raise SystemExit("x11: FAIL pastes did not recover after a conversion timeout")
+        return f"timeout-recovery(stall {stalled:.1f}s)"
+    finally:
+        for owner in (owner_a, owner_b):
+            if owner:
+                try:
+                    os.kill(owner.pid, signal.SIGCONT)
+                except OSError:
+                    pass
+                owner.kill()
+                owner.wait()
+
+
 def check_x11(path, tomoe_bin):
     sock = os.path.basename(path)
     env = dict(os.environ, WAYLAND_DISPLAY=sock, DISPLAY=x_display())
@@ -359,10 +411,11 @@ def check_x11(path, tomoe_bin):
         clipboard_wayland_to_x(env, 4096)
         clipboard_wayland_to_x(env, 2 << 20)
         clipboard_custom(env)
+        recovery = clipboard_timeout_recovery(env)
     finally:
         logo.kill()
         logo.wait()
-    return "x11=mapped,clip-x2w(4K,24M),clip-w2x(4K,2M),custom-mime-both"
+    return f"x11=mapped,clip-x2w(4K,24M),clip-w2x(4K,2M),custom-mime-both,{recovery}"
 
 
 def main():
