@@ -319,22 +319,23 @@ static uint64_t clock_ns(clockid_t id) {
     return (uint64_t)t.tv_sec * 1000000000ULL + (uint64_t)t.tv_nsec;
 }
 
-static void dispatch_idle(struct wl_event_loop *loop) {
+static bool dispatch_idle(struct wl_event_loop *loop) {
     struct wl_list pending;
     wl_list_init(&pending);
     wl_list_insert_list(&pending, &loop->idle_list);
     wl_list_init(&loop->idle_list);
+    bool ran = !wl_list_empty(&pending);
     while (!wl_list_empty(&pending)) {
         struct wl_event_source *source = wl_container_of(pending.next, source, link);
         source->func.idle(source->data);
         wl_event_source_remove(source);
     }
+    return ran;
 }
 
 int wl_event_loop_dispatch(struct wl_event_loop *loop, int timeout) {
     struct epoll_event ep[32];
-    dispatch_idle(loop);
-    if (!wl_list_empty(&loop->idle_list)) timeout = 0;
+    if (dispatch_idle(loop) || !wl_list_empty(&loop->idle_list)) timeout = 0;
     if (loop->clock) {
         loop->sleep_ns = clock_ns(CLOCK_MONOTONIC);
         loop->sleep_cpu_ns = clock_ns(CLOCK_THREAD_CPUTIME_ID);
