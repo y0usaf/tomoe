@@ -130,8 +130,10 @@ try:
             oid = 2 if oid >= 65000 else oid + 1
         flood.sendall(buf)
         time.sleep(0.005)
-except (BrokenPipeError, ConnectionResetError, OSError):
+except (BrokenPipeError, ConnectionResetError):
     disc = True
+except socket.timeout:
+    pass
 if not disc:
     flood.settimeout(0.5)
     try:

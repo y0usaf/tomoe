@@ -302,13 +302,16 @@ static bool x_ensure(struct xwm *x, size_t need) {
 
 static ssize_t x_recv(struct xwm *x, int wait, uint64_t deadline) {
     for (;;) {
+        if (wait && x->out_len > 0) {
+            x_flush(x);
+            if (x->failed) return -1;
+        }
         if (!x_ensure(x, 4096)) return -1;
-        ssize_t n = recv(x->fd, x->in + x->in_len, x->in_cap - x->in_len,
-            wait ? 0 : MSG_DONTWAIT);
+        ssize_t n = recv(x->fd, x->in + x->in_len, x->in_cap - x->in_len, MSG_DONTWAIT);
         if (n >= 0) return n;
         if (errno == EINTR) continue;
-        if (errno == EAGAIN && !wait) return -2;
-        if (errno == EAGAIN) {
+        if ((errno == EAGAIN || errno == EWOULDBLOCK) && !wait) return -2;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
             int timeout = XWM_WAIT_MS;
             if (deadline) {
                 uint64_t now = xwm_now();
@@ -316,7 +319,8 @@ static ssize_t x_recv(struct xwm *x, int wait, uint64_t deadline) {
                 uint64_t remaining = deadline - now;
                 timeout = remaining > (uint64_t)XWM_WAIT_MS ? XWM_WAIT_MS : (int)remaining;
             }
-            struct pollfd pollfd = { .fd = x->fd, .events = POLLIN };
+            short events = POLLIN | (x->out_len > 0 ? POLLOUT : 0);
+            struct pollfd pollfd = { .fd = x->fd, .events = events };
             int ready = poll(&pollfd, 1, timeout);
             if (ready == 0) {
                 if (deadline && xwm_now() < deadline) continue;
@@ -325,6 +329,10 @@ static ssize_t x_recv(struct xwm *x, int wait, uint64_t deadline) {
             }
             if (ready < 0 && errno == EINTR) continue;
             if (ready < 0) return -1;
+            if (pollfd.revents & POLLOUT) {
+                x_flush(x);
+                if (x->failed) return -1;
+            }
             continue;
         }
         return -1;
@@ -1632,6 +1640,7 @@ static void handle_selection_request(struct xwm *x, const unsigned char *pkt) {
         selection_notify(x, requestor, selection, target, X11_NONE, time);
         return;
     }
+    xlist_init(&transfer->link);
     transfer->x = x;
     transfer->primary = primary;
     transfer->fd = pipes[0];

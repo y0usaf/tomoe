@@ -567,10 +567,10 @@ cleanup:
     if (sc.pidfd >= 0) close(sc.pidfd);
     if (sc.wmfd >= 0) close(sc.wmfd);
     if (sc.display_read >= 0) close(sc.display_read);
+    if (sc.lock && sc.listen_fd[0] >= 0) unlink(path);
     for (int i = 0; i < 2; i++)
         if (sc.listen_fd[i] >= 0) close(sc.listen_fd[i]);
     if (sc.lock) unlink(lock);
-    unlink(path);
     if (sc.sig_fd >= 0) close(sc.sig_fd);
     if (sc.retry_fd >= 0) close(sc.retry_fd);
     if (sc.kill_fd >= 0) close(sc.kill_fd);

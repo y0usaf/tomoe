@@ -98,6 +98,7 @@ struct xwm_bridge {
 
 static int bridge_spawn(struct xwm_bridge *b);
 static void bridge_disconnect(struct xwm_bridge *b, bool schedule_retry);
+static bool bridge_drain_input(struct xwm_bridge *b);
 
 static int take_in_fd(struct xwm_bridge *b) {
     if (!b->in_fd_count) return -1;
@@ -675,6 +676,12 @@ static void bind_shell(struct wl_client *client, void *data, uint32_t version, u
     struct xwm_bridge *b = data;
     uid_t uid; gid_t gid; pid_t pid = 0;
     wl_client_get_credentials(client, &pid, &uid, &gid);
+    if ((b->xwayland_pid <= 0 || pid != b->xwayland_pid) && b->fd >= 0) {
+        if (!bridge_drain_input(b)) {
+            bridge_disconnect(b, true);
+            return;
+        }
+    }
     if (b->xwayland_pid <= 0 || pid != b->xwayland_pid) return;
     b->client = client;
     struct wl_resource *resource = wl_resource_create(client, &xwayland_shell_v1_interface, 1, id);
@@ -924,6 +931,7 @@ static bool bridge_drain_input(struct xwm_bridge *b) {
             if (b->in_len - offset < frame) break;
             int fd = (hdr.flags & XWM_FLAG_HAS_FD) ? take_in_fd(b) : -1;
             handle_message(b, &hdr, b->in_buf + offset + sizeof(hdr), fd);
+            if (b->fd < 0) return true;
             offset += frame;
         }
         if (offset > 0) {
