@@ -79,13 +79,17 @@ struct xwm_bridge {
     int display_num;
     bool started_once;
     bool stopping;
+    bool broken;
     pid_t sidecar_pid;
+    pid_t killing_pid;
     pid_t xwayland_pid;
     int pidfd;
     int fd;
     struct wl_event_source *fd_source;
     struct wl_event_source *exit_source;
     struct wl_event_source *retry_source;
+    struct wl_event_source *disconnect_idle;
+    struct wl_event_source *kill_source;
     struct timespec started_at;
     int failures;
     uint8_t *in_buf;
@@ -173,8 +177,21 @@ static bool bridge_flush(struct xwm_bridge *b) {
     return true;
 }
 
+static void bridge_disconnect_idle(void *data) {
+    struct xwm_bridge *b = data;
+    b->disconnect_idle = NULL;
+    if (!b->stopping) bridge_disconnect(b, true);
+}
+
+static void bridge_schedule_disconnect(struct xwm_bridge *b) {
+    b->broken = true;
+    if (!b->disconnect_idle && !b->stopping)
+        b->disconnect_idle = wl_event_loop_add_idle(
+            wl_display_get_event_loop(b->server->display), bridge_disconnect_idle, b);
+}
+
 static bool bridge_send(struct xwm_bridge *b, uint16_t type, const void *payload, uint32_t len, int fd) {
-    if (!b || b->fd < 0 || len > XWM_MAX_PAYLOAD) {
+    if (!b || b->fd < 0 || b->broken || len > XWM_MAX_PAYLOAD) {
         if (fd >= 0) close(fd);
         return false;
     }
@@ -208,7 +225,7 @@ static bool bridge_send(struct xwm_bridge *b, uint16_t type, const void *payload
     wl_list_insert(b->out_queue.prev, &it->link);
     b->out_bytes += total;
     if (!bridge_flush(b)) {
-        bridge_disconnect(b, true);
+        bridge_schedule_disconnect(b);
         return false;
     }
     return true;
@@ -931,7 +948,7 @@ static bool bridge_drain_input(struct xwm_bridge *b) {
             if (b->in_len - offset < frame) break;
             int fd = (hdr.flags & XWM_FLAG_HAS_FD) ? take_in_fd(b) : -1;
             handle_message(b, &hdr, b->in_buf + offset + sizeof(hdr), fd);
-            if (b->fd < 0) return true;
+            if (b->fd < 0 || b->broken) return true;
             offset += frame;
         }
         if (offset > 0) {
@@ -985,7 +1002,19 @@ static void bridge_schedule_retry(struct xwm_bridge *b) {
     if (b->retry_source) wl_event_source_timer_update(b->retry_source, delay);
 }
 
+static int bridge_kill_escalate(void *data) {
+    struct xwm_bridge *b = data;
+    if (b->sidecar_pid > 0 && b->sidecar_pid == b->killing_pid)
+        kill(b->sidecar_pid, SIGKILL);
+    return 0;
+}
+
 static void bridge_disconnect(struct xwm_bridge *b, bool schedule_retry) {
+    b->broken = false;
+    if (b->disconnect_idle) {
+        wl_event_source_remove(b->disconnect_idle);
+        b->disconnect_idle = NULL;
+    }
     if (b->fd_source) {
         wl_event_source_remove(b->fd_source);
         b->fd_source = NULL;
@@ -1001,11 +1030,25 @@ static void bridge_disconnect(struct xwm_bridge *b, bool schedule_retry) {
     if (b->sidecar_pid > 0) {
         if (waitpid(b->sidecar_pid, NULL, WNOHANG) == b->sidecar_pid) {
             b->sidecar_pid = 0;
-        } else {
+            b->killing_pid = 0;
+            if (b->kill_source) wl_event_source_timer_update(b->kill_source, 0);
+        } else if (b->exit_source && !b->stopping) {
             kill(b->sidecar_pid, SIGTERM);
-            if (b->exit_source && !b->stopping) return;
+            b->killing_pid = b->sidecar_pid;
+            if (!b->kill_source)
+                b->kill_source = wl_event_loop_add_timer(
+                    wl_display_get_event_loop(b->server->display), bridge_kill_escalate, b);
+            if (b->kill_source) wl_event_source_timer_update(b->kill_source, 2000);
+            return;
+        } else if (!b->stopping) {
+            kill(b->sidecar_pid, SIGKILL);
+            while (waitpid(b->sidecar_pid, NULL, 0) < 0 && errno == EINTR) {}
+            b->sidecar_pid = 0;
+            b->killing_pid = 0;
         }
     }
+    if (b->kill_source) wl_event_source_timer_update(b->kill_source, 0);
+    b->killing_pid = 0;
     if (b->exit_source) {
         wl_event_source_remove(b->exit_source);
         b->exit_source = NULL;
@@ -1138,6 +1181,10 @@ void xwayland_finish(struct tomoe *s) {
     if (b->retry_source) {
         wl_event_source_remove(b->retry_source);
         b->retry_source = NULL;
+    }
+    if (b->kill_source) {
+        wl_event_source_remove(b->kill_source);
+        b->kill_source = NULL;
     }
     pid_t pid = b->sidecar_pid;
     b->sidecar_pid = 0;
