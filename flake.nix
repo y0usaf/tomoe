@@ -264,11 +264,20 @@
       }) pkgsFor;
       checks = nixpkgs.lib.mapAttrs (_: pkgs: {
         tomoe = package pkgs { };
+        e2e = import ./bench/e2e.nix {
+          inherit pkgs;
+          tomoe = package pkgs { };
+        };
       }) pkgsFor;
       legacyPackages = nixpkgs.lib.mapAttrs (_: pkgs: {
         bench = import ./bench {
           inherit pkgs;
           tomoe = package pkgs { };
+        };
+        bench-niri = import ./bench {
+          inherit pkgs;
+          tomoe = package pkgs { };
+          compositors = "tomoe,niri";
         };
         speedlab = import ./bench/speedlab { inherit pkgs; };
       }) pkgsFor;

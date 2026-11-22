@@ -4,7 +4,6 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <fcntl.h>
-#include <poll.h>
 #include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -508,43 +507,45 @@ static void ring_consume(struct tomoe *s, size_t consumed) {
         s->observation_barrier - consumed : 0;
 }
 
-static bool native_waiting(struct tomoe *s) {
-    if (!s->display) return false;
-    struct pollfd loop = { .fd = wl_event_loop_get_fd(wl_display_get_event_loop(s->display)),
-        .events = POLLIN };
-    return poll(&loop, 1, 0) > 0;
-}
-
 void policy_drain(struct tomoe *s) {
     if (!s || !s->event_ring || !s->event_count || s->grab_held) return;
     size_t consumed = 0;
     uint16_t last = EV_NONE;
+    lisp_value batch = lisp_nil();
+    size_t batch_count = 0;
+    timing_event_taken(s);
     for (; consumed < s->event_count; consumed++) {
         const struct tomoe_event *event = ring_at(s, consumed);
-        bool called = false;
-        timing_event_taken(s);
         if (event->type == EV_INPUT || event->type == EV_ACTIVITY)
             policy_event_broadcast(s, event);
         if (policy_event_delivers(s, event->type) && converters[event->type]) {
             lisp_value value = converters[event->type](s, event);
             if (!lisp_nilp(value)) {
-                lisp_value events = lisp_cons(value, lisp_nil());
-                char error[256];
-                lisp_value result;
-                if (policy_call(POLICY_HOOK_DISPATCH, 1, &events, &result, error, sizeof(error)))
-                    tomoe_log(LOG_ERROR, "tomoe: dispatch failed: %s", error);
-                lisp_end_turn();
-                called = true;
+                batch = lisp_cons(value, batch);
+                batch_count++;
             }
         }
-        timing_event_done(s);
         last = event->type;
-        if (event->type == EV_GRAB || (called && consumed + 1 < s->event_count &&
-                native_waiting(s))) {
+        if (event->type == EV_GRAB || batch_count >= 16) {
             consumed++;
             break;
         }
     }
+    if (batch_count) {
+        lisp_value events = lisp_nreverse(batch);
+        char error[256];
+        lisp_value result;
+        uint64_t scale = (uint64_t)batch_count;
+        uint64_t steps = s->policy_steps && scale > UINT64_MAX / s->policy_steps ?
+            UINT64_MAX : s->policy_steps * scale;
+        uint64_t deadline = s->policy_deadline_ns && scale > UINT64_MAX / s->policy_deadline_ns ?
+            UINT64_MAX : s->policy_deadline_ns * scale;
+        lisp_set_limits(steps, deadline);
+        if (lisp_call(POLICY_HOOK_DISPATCH, 1, &events, &result, error, sizeof(error)))
+            tomoe_log(LOG_ERROR, "tomoe: dispatch failed: %s", error);
+        lisp_end_turn();
+    }
+    timing_event_done(s);
     ring_consume(s, consumed);
     if (last == EV_GRAB) policy_event_grab_hold(s);
     if (!s->event_count) s->event_arena_used = 0;

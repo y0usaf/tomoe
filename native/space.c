@@ -79,6 +79,17 @@ void schedule_scene(struct tomoe *s) {
     schedule_repaint(s);
 }
 
+void schedule_surface_commit(struct tomoe *s, struct surface *surface, bool structural) {
+    if (s->stopping) return;
+    s->activity_serial++;
+    if (structural || s->scene_dirty || !surface->seen || !surface->scene_owned) {
+        schedule_repaint(s);
+        return;
+    }
+    if (!surface_schedule_outputs(surface) && !wl_list_empty(&s->capture_sessions))
+        schedule_repaint(s);
+}
+
 struct leaf {
     struct surface *surface;
     const struct target *target;

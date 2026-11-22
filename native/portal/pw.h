@@ -13,6 +13,7 @@ enum { PWV_MAX_BUFFERS = 8 };
 enum { PWV_MAX_TARGETS = 16 };
 enum { PWV_MAX_METAS = 8 };
 enum { PWV_MAX_DATAS = 4 };
+enum { PWV_MAX_MODIFIERS = 64 };
 
 enum { PWV_BOUND = 1, PWV_FAILED = 2 };
 enum { PWV_ALLOC_MEMORY = 0, PWV_ALLOC_DMABUF = 1 };
@@ -21,6 +22,9 @@ struct pwv_video {
     uint32_t format;
     uint64_t modifier;
     bool modifier_set;
+    bool modifier_fixated;
+    uint64_t modifiers[PWV_MAX_MODIFIERS];
+    size_t modifier_count;
     int width;
     int height;
     int planes;

@@ -212,8 +212,16 @@ static uint32_t fb_for(struct kms *kms, struct buffer *buffer) {
     if (!buffer_get_dmabuf(buffer, &dmabuf)) return 0;
     uint32_t handles[4] = {0}, pitches[4] = {0}, offsets[4] = {0};
     uint64_t modifiers[4] = {0};
+    if (dmabuf.n_planes <= 0 || dmabuf.n_planes > 4) return 0;
     for (int i = 0; i < dmabuf.n_planes; i++) {
-        if (!drm_prime_fd_to_handle(kms->fd, dmabuf.fd[i], &handles[i])) return 0;
+        if (!drm_prime_fd_to_handle(kms->fd, dmabuf.fd[i], &handles[i])) {
+            for (int k = 0; k < i; k++) {
+                bool shared = false;
+                for (int j = 0; j < k; j++) shared |= handles[j] == handles[k];
+                if (!shared && handles[k]) drm_prime_close_handle(kms->fd, handles[k]);
+            }
+            return 0;
+        }
         pitches[i] = dmabuf.stride[i];
         offsets[i] = dmabuf.offset[i];
         modifiers[i] = dmabuf.modifier;
@@ -344,6 +352,7 @@ static bool read_resources(struct kms *kms) {
         plane_props_read(kms->fd, plane);
         plane->type = (uint32_t)plane->props.value[PROP_TYPE];
         read_formats(kms, plane);
+        struct crtc *overlay_target = NULL;
         for (size_t c = 0; c < kms->crtc_count; c++) {
             struct crtc *crtc = &kms->crtcs[c];
             if (!(plane->possible_crtcs & (1u << c))) continue;
@@ -356,23 +365,34 @@ static bool read_resources(struct kms *kms) {
                 break;
             }
             if (plane->type == DRM_PLANE_TYPE_OVERLAY &&
-                    crtc->overlay_count < SCREEN_OVERLAYS)
-                crtc->overlay[crtc->overlay_count++] = plane;
+                    crtc->overlay_count < SCREEN_OVERLAYS &&
+                    (!overlay_target || crtc->overlay_count < overlay_target->overlay_count))
+                overlay_target = crtc;
         }
+        if (overlay_target)
+            overlay_target->overlay[overlay_target->overlay_count++] = plane;
     }
     drm_plane_res_free(planes);
     drm_res_free(res);
     return ok;
 }
 
-static struct crtc *pick_crtc(struct connector *c) {
+static struct crtc *pick_crtc_excluding(struct connector *c, uint64_t claimed) {
     if (c->crtc) return c->crtc;
-    if (c->kernel_crtc && !c->kernel_crtc->owner && c->kernel_crtc->primary) return c->kernel_crtc;
+    if (c->kernel_crtc && !c->kernel_crtc->owner && c->kernel_crtc->primary) {
+        size_t idx = (size_t)(c->kernel_crtc - c->kms->crtcs);
+        if (idx >= 64 || !(claimed & (1ULL << idx))) return c->kernel_crtc;
+    }
     for (size_t i = 0; i < c->kms->crtc_count; i++) {
         struct crtc *crtc = &c->kms->crtcs[i];
-        if (!crtc->owner && crtc->primary && (c->possible_crtcs & (1u << i))) return crtc;
+        if ((i < 64 && (claimed & (1ULL << i))) || crtc->owner || !crtc->primary) continue;
+        if (c->possible_crtcs & (1u << i)) return crtc;
     }
     return NULL;
+}
+
+static struct crtc *pick_crtc(struct connector *c) {
+    return pick_crtc_excluding(c, 0);
 }
 
 static bool mode_for(struct connector *c, const struct screen_state *state, drm_mode_info *out) {
@@ -685,6 +705,7 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
     size_t text_size = 0;
     trace = log_verbosity >= LOG_INFO ? open_memstream(&text, &text_size) : NULL;
     bool ok = plans != NULL, modeset = false, flip = false, tearing = false;
+    uint64_t claimed = 0;
     for (size_t i = 0; i < count; i++) {
         plans[i].fence = -1;
         for (size_t k = 0; k < SCREEN_OVERLAYS; k++) plans[i].overlay_fence[k] = -1;
@@ -708,9 +729,11 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
                 plane_set(req, c->crtc->overlay[k], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
             continue;
         }
-        p->crtc = pick_crtc(c);
+        p->crtc = pick_crtc_excluding(c, claimed);
         ok = p->crtc && mode_for(c, state, &p->mode);
         if (!ok) break;
+        size_t crtc_idx = (size_t)(p->crtc - kms->crtcs);
+        if (crtc_idx < 64) claimed |= 1ULL << crtc_idx;
         struct buffer *buffer = (state->committed & SCREEN_BUFFER) ? state->buffer : c->queued ?
             c->queued : c->current;
         p->fb = buffer ? fb_for(kms, buffer) : 0;
@@ -752,6 +775,7 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
         }
         if (p->modeset) {
             ok = drm_blob_create(kms->fd, &p->mode, sizeof(p->mode), &p->mode_blob);
+            if (!ok) break;
             add(req, c->id, &c->props, PROP_CRTC_ID, p->crtc->id);
             add(req, p->crtc->id, &p->crtc->props, PROP_MODE_ID, p->mode_blob);
             add(req, p->crtc->id, &p->crtc->props, PROP_ACTIVE, 1);
@@ -1908,6 +1932,8 @@ void kms_destroy(struct tomoe *s) {
     for (size_t i = 0; i < kms->crtc_count; i++) {
         if (kms->crtcs[i].mode_blob) drm_blob_destroy(kms->fd, kms->crtcs[i].mode_blob);
         if (kms->crtcs[i].gamma_blob) drm_blob_destroy(kms->fd, kms->crtcs[i].gamma_blob);
+        if (kms->crtcs[i].degamma_blob) drm_blob_destroy(kms->fd, kms->crtcs[i].degamma_blob);
+        if (kms->crtcs[i].ctm_blob) drm_blob_destroy(kms->fd, kms->crtcs[i].ctm_blob);
     }
     free(kms->crtcs);
     free(kms->planes);

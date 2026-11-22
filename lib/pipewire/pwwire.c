@@ -544,6 +544,18 @@ void pww_pod_choice_int(struct pww_build *b, uint32_t choice, const int32_t *val
     pww_pod_end(b, &f, SPA_TYPE_CHOICE);
 }
 
+void pww_pod_choice_long(struct pww_build *b, uint32_t choice, const int64_t *values,
+        uint32_t count) {
+    struct pww_frame f;
+    pww_pod_begin(b, &f);
+    pww_build_u32(b, choice);
+    pww_build_u32(b, 0);
+    pww_build_u32(b, 8);
+    pww_build_u32(b, SPA_TYPE_LONG);
+    for (uint32_t i = 0; i < count; i++) pww_build_u64(b, (uint64_t)values[i]);
+    pww_pod_end(b, &f, SPA_TYPE_CHOICE);
+}
+
 void pww_pod_choice_fraction(struct pww_build *b, uint32_t choice, const uint32_t *values,
         uint32_t count) {
     struct pww_frame f;
@@ -561,6 +573,11 @@ void pww_pod_prop_long(struct pww_build *b, uint32_t key, int64_t v) {
     pww_pod_long(b, v);
 }
 
+void pww_pod_prop_long_flags(struct pww_build *b, uint32_t key, uint32_t flags, int64_t v) {
+    pww_pod_prop(b, key, flags);
+    pww_pod_long(b, v);
+}
+
 void pww_pod_prop_rectangle(struct pww_build *b, uint32_t key, uint32_t width, uint32_t height) {
     pww_pod_prop(b, key, 0);
     pww_pod_rectangle(b, width, height);
@@ -575,6 +592,12 @@ void pww_pod_prop_choice_int(struct pww_build *b, uint32_t key, uint32_t choice,
         const int32_t *values, uint32_t count) {
     pww_pod_prop(b, key, 0);
     pww_pod_choice_int(b, choice, values, count);
+}
+
+void pww_pod_prop_choice_long(struct pww_build *b, uint32_t key, uint32_t flags, uint32_t choice,
+        const int64_t *values, uint32_t count) {
+    pww_pod_prop(b, key, flags);
+    pww_pod_choice_long(b, choice, values, count);
 }
 
 void pww_pod_prop_choice_fraction(struct pww_build *b, uint32_t key, uint32_t choice,

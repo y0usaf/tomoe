@@ -449,6 +449,8 @@ static void surface_unlock(struct surface *surface, struct surface_state *state)
 
 static void apply_state(struct surface *surface, struct surface_state *next) {
     uint32_t committed = next->committed;
+    int prev_w = surface->current.width, prev_h = surface->current.height;
+    bool prev_mapped = surface->mapped;
     bool buffer = committed & STATE_BUFFER;
     if (buffer && !next->buffer) surface_unmap(surface);
     feedbacks_discard(&surface->current.feedbacks);
@@ -506,21 +508,12 @@ static void apply_state(struct surface *surface, struct surface_state *next) {
     if (surface->role && surface->role->commit && (surface->role_resource || surface->role->no_object))
         surface->role->commit(surface);
     wl_signal_emit_mutable(&surface->events.commit, surface);
-    bool scene_changed = committed & (STATE_BUFFER | STATE_SURFACE_DAMAGE |
-        STATE_BUFFER_DAMAGE | STATE_VIEWPORT | STATE_OFFSET | STATE_INPUT |
-        STATE_OPAQUE | STATE_SCALE | STATE_TRANSFORM | STATE_ALPHA |
-        STATE_CONTENT_TYPE);
-    if (scene_changed) {
-        schedule_scene(surface->server);
-    } else if (committed) {
-        struct tomoe *server = surface->server;
-        if (!server->stopping) {
-            server->activity_serial++;
-            struct output *o;
-            wl_list_for_each(o, &server->outputs, link)
-                if (output_is_active(o)) screen_schedule_frame(o->screen);
-        }
-    }
+    bool structural = surface->mapped != prev_mapped ||
+        surface->current.width != prev_w || surface->current.height != prev_h ||
+        (committed & (STATE_VIEWPORT | STATE_OFFSET | STATE_INPUT |
+            STATE_SCALE | STATE_TRANSFORM));
+    if (structural || committed)
+        schedule_surface_commit(surface->server, surface, structural);
     buffer_unlock(surface->current.buffer);
     surface->current.buffer = NULL;
 }
@@ -1120,6 +1113,18 @@ void surface_send_leave(struct surface *surface, struct screen *output) {
         output_resources(surface, output, false);
         surface_output_free(so);
     }
+}
+
+bool surface_schedule_outputs(struct surface *surface) {
+    bool scheduled = false;
+    struct surface_output *so;
+    wl_list_for_each(so, &surface->outputs, link) {
+        struct output *o = output_for_screen(surface->server, so->output);
+        if (!o || !output_is_active(o)) continue;
+        screen_schedule_frame(o->screen);
+        scheduled = true;
+    }
+    return scheduled;
 }
 
 void surface_leave_all(struct surface *surface) {

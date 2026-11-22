@@ -1540,6 +1540,8 @@ void screen_to_world(struct tomoe *s, double *x, double *y);
 void physical_output_box(struct output *o, struct box *box);
 void schedule_scene(struct tomoe *s);
 void schedule_repaint(struct tomoe *s);
+void schedule_surface_commit(struct tomoe *s, struct surface *surface, bool structural);
+bool surface_schedule_outputs(struct surface *surface);
 void refresh_scene(struct tomoe *s);
 void forget_output(struct tomoe *s, struct screen *output);
 bool render_output(struct output *o, struct screen_state *state);

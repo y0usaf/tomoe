@@ -722,7 +722,6 @@ static struct program *shader_create(struct render *r, const char *source, bool 
         if (cached->hash == hash && cached->source && !strcmp(cached->source, source)) {
             cached->refs++;
             cached->used = ++r->shader_clock;
-            malloc_trim(0);
             return &cached->program;
         }
     }

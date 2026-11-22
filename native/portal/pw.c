@@ -110,8 +110,27 @@ static size_t build_format(struct pwv *v, uint8_t *pod, bool with_modifier) {
     pww_pod_prop_id(&b, SPA_FORMAT_MEDIATYPE, SPA_MEDIA_TYPE_VIDEO);
     pww_pod_prop_id(&b, SPA_FORMAT_MEDIASUBTYPE, SPA_MEDIA_SUBTYPE_RAW);
     pww_pod_prop_id(&b, SPA_FORMAT_VIDEO_FORMAT, spa_format_of(v->video.format));
-    if (with_modifier)
-        pww_pod_prop_long(&b, SPA_FORMAT_VIDEO_MODIFIER, (int64_t)v->video.modifier);
+    if (with_modifier) {
+        if (v->video.modifier_fixated) {
+            pww_pod_prop_long_flags(&b, SPA_FORMAT_VIDEO_MODIFIER, SPA_POD_PROP_FLAG_MANDATORY,
+                (int64_t)v->video.modifier);
+        } else if (v->video.modifier_count > 1) {
+            uint32_t flags = SPA_POD_PROP_FLAG_MANDATORY | SPA_POD_PROP_FLAG_DONT_FIXATE;
+            size_t count = v->video.modifier_count;
+            if (count > PWV_MAX_MODIFIERS) count = PWV_MAX_MODIFIERS;
+            int64_t vals[PWV_MAX_MODIFIERS + 1];
+            vals[0] = (int64_t)v->video.modifiers[0];
+            for (size_t i = 0; i < count; i++) vals[i + 1] = (int64_t)v->video.modifiers[i];
+            pww_pod_prop_choice_long(&b, SPA_FORMAT_VIDEO_MODIFIER, flags, SPA_CHOICE_ENUM,
+                vals, (uint32_t)(count + 1));
+        } else if (v->video.modifier_count == 1) {
+            uint32_t flags = SPA_POD_PROP_FLAG_MANDATORY | SPA_POD_PROP_FLAG_DONT_FIXATE;
+            pww_pod_prop_long_flags(&b, SPA_FORMAT_VIDEO_MODIFIER, flags,
+                (int64_t)v->video.modifiers[0]);
+        } else {
+            pww_pod_prop_long(&b, SPA_FORMAT_VIDEO_MODIFIER, (int64_t)v->video.modifier);
+        }
+    }
     pww_pod_prop_rectangle(&b, SPA_FORMAT_VIDEO_SIZE, (uint32_t)v->video.width,
         (uint32_t)v->video.height);
     pww_pod_prop_fraction(&b, SPA_FORMAT_VIDEO_FRAMERATE, 0, 1);
@@ -574,6 +593,7 @@ static int parse_format(struct pwv *v, struct pww_parse *p) {
         info.format == SPA_VIDEO_FORMAT_RGBX ? 0x34324258 : v->video.format;
     v->video.modifier = info.modifier;
     v->video.modifier_set = (info.flags & SPA_VIDEO_FLAG_MODIFIER) != 0;
+    v->video.modifier_fixated = (info.flags & SPA_VIDEO_FLAG_MODIFIER_FIXATION_REQUIRED) == 0;
     if (info.size.width && info.size.height) {
         v->video.width = (int)info.size.width;
         v->video.height = (int)info.size.height;

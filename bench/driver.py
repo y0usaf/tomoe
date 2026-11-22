@@ -647,8 +647,13 @@ def smaps(machine, runner, samples=3, gap=0.3):
         rows.append(rollup(machine, runner.pid))
         total = 0
         for pid in runner.tree():
-            if machine.execute(f"test -r /proc/{pid}/smaps_rollup", )[0] == 0:
-                total += rollup(machine, pid).get("Pss", 0)
+            rc, out = machine.execute(f"cat /proc/{pid}/smaps_rollup 2>/dev/null")
+            if rc == 0:
+                for line in out.splitlines():
+                    key, _, rest = line.partition(":")
+                    if key.strip() == "Pss" and rest.split():
+                        total += int(rest.split()[0])
+                        break
         trees.append(total)
     result = {"tree_pss_mb": round(statistics.median(trees) / 1024, 1),
               "tree_processes": len(runner.tree())}

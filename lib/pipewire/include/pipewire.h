@@ -333,12 +333,20 @@ int pww_recv(struct pww *w, pww_dispatch dispatch, void *data);
 
 void pww_pod_rectangle(struct pww_build *b, uint32_t width, uint32_t height);
 void pww_pod_fraction(struct pww_build *b, uint32_t num, uint32_t denom);
+enum {
+    SPA_POD_PROP_FLAG_MANDATORY = 1u << 3,
+    SPA_POD_PROP_FLAG_DONT_FIXATE = 1u << 4,
+};
+
 void pww_pod_choice_int(struct pww_build *b, uint32_t choice, const int32_t *values, uint32_t count);
+void pww_pod_choice_long(struct pww_build *b, uint32_t choice, const int64_t *values, uint32_t count);
 void pww_pod_choice_fraction(struct pww_build *b, uint32_t choice, const uint32_t *values, uint32_t count);
 void pww_pod_prop_long(struct pww_build *b, uint32_t key, int64_t v);
+void pww_pod_prop_long_flags(struct pww_build *b, uint32_t key, uint32_t flags, int64_t v);
 void pww_pod_prop_rectangle(struct pww_build *b, uint32_t key, uint32_t width, uint32_t height);
 void pww_pod_prop_fraction(struct pww_build *b, uint32_t key, uint32_t num, uint32_t denom);
 void pww_pod_prop_choice_int(struct pww_build *b, uint32_t key, uint32_t choice, const int32_t *values, uint32_t count);
+void pww_pod_prop_choice_long(struct pww_build *b, uint32_t key, uint32_t flags, uint32_t choice, const int64_t *values, uint32_t count);
 void pww_pod_prop_choice_fraction(struct pww_build *b, uint32_t key, uint32_t choice, const uint32_t *values, uint32_t count);
 
 enum pwn_state { PWN_CONNECTING, PWN_STREAMING, PWN_RETRYING, PWN_FAILED };

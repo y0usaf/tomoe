@@ -276,6 +276,9 @@ struct session {
     bool cursors, damaged;
     int width, height;
     uint32_t format;
+    struct buffer *staging;
+    int staging_width, staging_height;
+    uint32_t staging_format;
     struct image_frame *frame;
     struct cursor_session *cursor;
 };
@@ -371,7 +374,7 @@ static void capture_slot_release(struct image_frame *frame) {
 static void image_frame_release(struct image_frame *frame) {
     image_frame_settle(frame);
     capture_slot_release(frame);
-    if (frame->staging) buffer_drop(frame->staging);
+    buffer_unlock(frame->staging);
     frame->staging = NULL;
     frame->window = 0;
 }
@@ -544,7 +547,7 @@ static bool frame_readback(struct image_frame *frame) {
     frame->staging = NULL;
     bool ok = frame->buffer && blit(frame->server, frame->buffer, staging,
         (struct box){ 0, 0, staging->width, staging->height }, NULL, NULL);
-    buffer_drop(staging);
+    buffer_unlock(staging);
     return ok;
 }
 
@@ -554,14 +557,14 @@ static void frame_complete(struct image_frame *frame) {
     image_frame_settle(frame);
     capture_slot_release(frame);
     if (!frame->resource) {
-        if (frame->staging) buffer_drop(frame->staging);
+        buffer_unlock(frame->staging);
         frame->staging = NULL;
         buffer_unlock(frame->buffer);
         free(frame);
         return;
     }
     if (held) {
-        if (frame->staging) buffer_drop(frame->staging);
+        buffer_unlock(frame->staging);
         frame->staging = NULL;
         ext_image_copy_capture_frame_v1_send_failed(frame->resource,
             EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN);
@@ -761,13 +764,24 @@ static void serve_session(struct tomoe *s, struct session *session, struct outpu
         struct dmabuf_attributes dmabuf;
         frame->window = (uint32_t)session->source.id;
         if (!buffer_get_dmabuf(frame->buffer, &dmabuf)) {
-            const struct format *render = format_set_get(render_formats(s->renderer), format);
-            frame->staging = render ?
-                render_allocate(s->renderer, width, height, render) : NULL;
-            if (!frame->staging) {
+            if (!session->staging || session->staging_width != width ||
+                    session->staging_height != height || session->staging_format != format) {
+                if (session->staging) {
+                    buffer_drop(session->staging);
+                    session->staging = NULL;
+                }
+                const struct format *render = format_set_get(render_formats(s->renderer), format);
+                session->staging = render ?
+                    render_allocate(s->renderer, width, height, render) : NULL;
+                session->staging_width = session->staging ? width : 0;
+                session->staging_height = session->staging ? height : 0;
+                session->staging_format = session->staging ? format : 0;
+            }
+            if (!session->staging) {
                 image_frame_fail(frame, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN);
                 return;
             }
+            frame->staging = buffer_lock(session->staging);
             target = frame->staging;
         }
         ok = render_window_buffer(s, (uint32_t)session->source.id, target, session->cursors,
@@ -796,6 +810,7 @@ static void session_resource_destroy(struct wl_resource *resource) {
         image_frame_fail(session->frame, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_STOPPED);
     if (session->frame) session->frame->session = NULL;
     if (session->cursor) session->cursor->capture = NULL;
+    if (session->staging) buffer_drop(session->staging);
     wl_list_remove(&session->link);
     capture_restore_planes(session);
     free(session);

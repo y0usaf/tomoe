@@ -71,6 +71,8 @@ int spa_parse_video_format(const void *pod, size_t len, struct spa_video_info_ra
         case SPA_FORMAT_VIDEO_MODIFIER:
             info->modifier = pod_u64(ptype, size, value, info->modifier);
             info->flags |= SPA_VIDEO_FLAG_MODIFIER;
+            if ((flags & SPA_POD_PROP_FLAG_DONT_FIXATE) || ptype == SPA_TYPE_CHOICE)
+                info->flags |= SPA_VIDEO_FLAG_MODIFIER_FIXATION_REQUIRED;
             break;
         case SPA_FORMAT_VIDEO_SIZE: {
             const uint8_t *values = NULL;

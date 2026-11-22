@@ -32,6 +32,7 @@ struct stream {
     bool dying;
     size_t refresh;
     bool dmabuf;
+    bool modifier_fixated;
     int alloc;
     int udmabuf;
     int drm_fd;
@@ -39,6 +40,8 @@ struct stream {
     uint64_t modifier;
     uint64_t *modifiers;
     size_t modifier_count;
+    uint64_t offered_modifiers[PWV_MAX_MODIFIERS];
+    size_t offered_modifier_count;
     int planes;
     bool wants_cursor;
     struct ext_image_copy_capture_cursor_session_v1 *cursor;
@@ -131,6 +134,9 @@ static bool udmabuf_setup(struct stream *s) {
     s->udmabuf = open("/dev/udmabuf", O_RDWR | O_CLOEXEC);
     if (s->udmabuf < 0) return false;
     s->modifier = DRM_FORMAT_MOD_LINEAR;
+    s->modifier_fixated = false;
+    s->offered_modifiers[0] = DRM_FORMAT_MOD_LINEAR;
+    s->offered_modifier_count = 1;
     s->planes = 1;
     s->alloc = ALLOC_UDMABUF;
     return true;
@@ -151,27 +157,36 @@ static bool dmabuf_setup(struct stream *s) {
         s->drm_fd = -1;
         return false;
     }
-    uint64_t chosen = UINT64_MAX;
-    bool have = false;
+    s->offered_modifier_count = 0;
+    int first_planes = 0;
+    bool linear_ok = false;
+    int linear_planes = 0;
     for (size_t index = 0; index < s->modifier_count; index++) {
         uint64_t modifier = s->modifiers[index];
         if (modifier == DRM_FORMAT_MOD_INVALID) continue;
+        bool duplicate = false;
+        for (size_t k = 0; k < s->offered_modifier_count; k++)
+            if (s->offered_modifiers[k] == modifier) { duplicate = true; break; }
+        if (duplicate || (modifier == DRM_FORMAT_MOD_LINEAR && linear_ok)) continue;
         struct gbm_bo *bo = gbm_bo_create_with_modifiers2(s->gbm, s->width, s->height,
             s->format, &modifier, 1, GBM_BO_USE_RENDERING);
         if (!bo) continue;
-        bool linear = modifier == DRM_FORMAT_MOD_LINEAR;
+        int planes = gbm_bo_get_plane_count(bo);
         gbm_bo_destroy(bo);
-        if (linear) {
-            chosen = modifier;
-            have = true;
-            break;
-        }
-        if (!have) {
-            chosen = modifier;
-            have = true;
+        if (planes < 1 || planes > PLANES_MAX) continue;
+        if (modifier == DRM_FORMAT_MOD_LINEAR) {
+            linear_ok = true;
+            linear_planes = planes;
+        } else if (s->offered_modifier_count + 1 < PWV_MAX_MODIFIERS) {
+            if (!s->offered_modifier_count) first_planes = planes;
+            s->offered_modifiers[s->offered_modifier_count++] = modifier;
         }
     }
-    if (!have) {
+    if (linear_ok && s->offered_modifier_count < PWV_MAX_MODIFIERS) {
+        if (!s->offered_modifier_count) first_planes = linear_planes;
+        s->offered_modifiers[s->offered_modifier_count++] = DRM_FORMAT_MOD_LINEAR;
+    }
+    if (!s->offered_modifier_count) {
         portal_log("no offered modifier allocates on this device; capturing through memory");
         gbm_device_destroy(s->gbm);
         s->gbm = NULL;
@@ -179,27 +194,10 @@ static bool dmabuf_setup(struct stream *s) {
         s->drm_fd = -1;
         return false;
     }
-    s->modifier = chosen;
+    s->modifier = s->offered_modifiers[0];
+    s->modifier_fixated = false;
+    s->planes = first_planes;
     s->alloc = ALLOC_GBM;
-    struct gbm_bo *probe = gbm_bo_create_with_modifiers2(s->gbm, s->width, s->height, s->format,
-        &s->modifier, 1, GBM_BO_USE_RENDERING);
-    if (!probe) {
-        gbm_device_destroy(s->gbm);
-        s->gbm = NULL;
-        close(s->drm_fd);
-        s->drm_fd = -1;
-        return false;
-    }
-    s->planes = gbm_bo_get_plane_count(probe);
-    gbm_bo_destroy(probe);
-    if (s->planes < 1 || s->planes > PLANES_MAX) {
-        gbm_device_destroy(s->gbm);
-        s->gbm = NULL;
-        close(s->drm_fd);
-        s->drm_fd = -1;
-        s->planes = 0;
-        return false;
-    }
     return true;
 }
 
@@ -467,12 +465,32 @@ static void stream_state(void *data, int state, const char *error) {
     }
 }
 
+static void stream_republish(struct stream *s);
+
 static void stream_format(void *data, const struct pwv_video *video) {
     struct stream *s = data;
     if (s->dying) return;
     bool dmabuf = video->modifier_set && (s->gbm || s->udmabuf >= 0);
     s->dmabuf = dmabuf;
-    if (dmabuf) s->modifier = video->modifier;
+    if (!dmabuf) return;
+    s->modifier = video->modifier;
+    bool republish = !video->modifier_fixated && !s->modifier_fixated;
+    if (s->alloc == ALLOC_GBM && s->gbm) {
+        struct gbm_bo *probe = gbm_bo_create_with_modifiers2(s->gbm, s->width, s->height,
+            s->format, &s->modifier, 1, GBM_BO_USE_RENDERING);
+        if (probe) {
+            int planes = gbm_bo_get_plane_count(probe);
+            gbm_bo_destroy(probe);
+            if (planes >= 1 && planes <= PLANES_MAX && planes != s->planes) {
+                s->planes = planes;
+                republish = true;
+            }
+        }
+    }
+    if (republish) {
+        s->modifier_fixated = true;
+        stream_republish(s);
+    }
 }
 
 static void stream_process(void *data) {
@@ -553,29 +571,32 @@ static const struct pwv_events stream_events = {
     .process = stream_process,
 };
 
-static void stream_republish(struct stream *s) {
-    struct pwv_video video = {
+static void fill_pwv_video(const struct stream *s, struct pwv_video *video) {
+    *video = (struct pwv_video){
         .format = s->format,
         .modifier = s->modifier,
         .modifier_set = s->dmabuf,
+        .modifier_fixated = s->modifier_fixated,
+        .modifier_count = s->alloc == ALLOC_SHM ? 0 : s->offered_modifier_count,
         .width = s->width,
         .height = s->height,
         .planes = s->planes,
         .refresh = (uint32_t)(s->refresh ? s->refresh : 60),
     };
+    if (video->modifier_count > PWV_MAX_MODIFIERS) video->modifier_count = PWV_MAX_MODIFIERS;
+    for (size_t i = 0; i < video->modifier_count; i++)
+        video->modifiers[i] = s->offered_modifiers[i];
+}
+
+static void stream_republish(struct stream *s) {
+    struct pwv_video video;
+    fill_pwv_video(s, &video);
     pwv_publish(s->pw, &video, s->alloc == ALLOC_SHM ? PWV_ALLOC_MEMORY : PWV_ALLOC_DMABUF);
 }
 
 static int stream_connect(struct stream *s) {
-    struct pwv_video video = {
-        .format = s->format,
-        .modifier = s->modifier,
-        .modifier_set = s->dmabuf,
-        .width = s->width,
-        .height = s->height,
-        .planes = s->planes,
-        .refresh = (uint32_t)(s->refresh ? s->refresh : 60),
-    };
+    struct pwv_video video;
+    fill_pwv_video(s, &video);
     const char *name = s->source_type == SOURCE_WINDOW ? "tomoe-portal-toplevel-stream"
                                                       : "tomoe-portal-stream";
     s->pw = pwv_start(s->portal->loop, name, "tomoe portal screencast", &video,
