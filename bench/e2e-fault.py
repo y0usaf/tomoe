@@ -418,6 +418,120 @@ def check_x11(path, tomoe_bin):
     return f"x11=mapped,clip-x2w(4K,24M),clip-w2x(4K,2M),custom-mime-both,{recovery}"
 
 
+def check_x11_stale_reply(path):
+    sock = os.path.basename(path)
+    env = dict(os.environ, WAYLAND_DISPLAY=sock, DISPLAY=x_display())
+    logo = subprocess.Popen(["xlogo"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    text = os.urandom(1024).hex().encode()
+    owner_a = subprocess.Popen(["xclip", "-selection", "clipboard", "-i", "-quiet"], env=env,
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    owner_a.stdin.write(text)
+    owner_a.stdin.close()
+    owners = [owner_a]
+    paste = None
+    try:
+        deadline = time.monotonic() + X11_TIMEOUT
+        while time.monotonic() < deadline:
+            if run_timeout(["wl-paste", "--no-newline"], env).stdout == text:
+                break
+            time.sleep(0.2)
+        else:
+            raise SystemExit("x11-stale: FAIL owner A never pasted")
+        os.kill(owner_a.pid, signal.SIGSTOP)
+        stalled_at = time.monotonic()
+        paste = subprocess.Popen(["wl-paste", "--no-newline"], env=env, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
+        time.sleep(0.5)
+        owner_b = subprocess.Popen(["xclip", "-selection", "clipboard", "-i", "-quiet", "-t",
+            CUSTOM_MIME], env=env, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
+        owners.append(owner_b)
+        owner_b.stdin.write(b"custom")
+        owner_b.stdin.close()
+        time.sleep(0.5)
+        os.kill(owner_b.pid, signal.SIGSTOP)
+        time.sleep(max(0.0, stalled_at + 5.6 - time.monotonic()))
+        os.kill(owner_a.pid, signal.SIGCONT)
+        time.sleep(0.7)
+        os.kill(owner_b.pid, signal.SIGCONT)
+        deadline = time.monotonic() + 15
+        types = []
+        while time.monotonic() < deadline:
+            types = run_timeout(["wl-paste", "--list-types"], env).stdout.decode(errors="replace").split()
+            if CUSTOM_MIME in types:
+                return "x11_stale_reply=ignored"
+            time.sleep(0.2)
+        raise SystemExit(f"x11-stale: FAIL adoption of owner B took a stale reply; offered {types}")
+    finally:
+        for owner in owners:
+            try:
+                os.kill(owner.pid, signal.SIGCONT)
+            except OSError:
+                pass
+            owner.kill()
+            owner.wait()
+        if paste:
+            paste.kill()
+            paste.wait()
+        logo.kill()
+        logo.wait()
+
+
+def check_x11_ownership(path):
+    sock = os.path.basename(path)
+    env = dict(os.environ, WAYLAND_DISPLAY=sock, DISPLAY=x_display())
+    logo = subprocess.Popen(["xlogo"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    z_text = os.urandom(1024).hex().encode()
+    x_text = os.urandom(1024).hex().encode()
+    w_text = os.urandom(1024).hex().encode()
+    procs = []
+
+    def start(cmd, data):
+        proc = subprocess.Popen(cmd, env=env, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
+        proc.stdin.write(data)
+        proc.stdin.close()
+        procs.append(proc)
+        return proc
+
+    try:
+        owner_z = start(["xclip", "-selection", "clipboard", "-i", "-quiet"], z_text)
+        deadline = time.monotonic() + X11_TIMEOUT
+        while time.monotonic() < deadline:
+            if run_timeout(["wl-paste", "--no-newline"], env).stdout == z_text:
+                break
+            time.sleep(0.2)
+        else:
+            raise SystemExit("x11-ownership: FAIL owner Z never pasted")
+        os.kill(owner_z.pid, signal.SIGSTOP)
+        stalled_at = time.monotonic()
+        stalled = subprocess.Popen(["wl-paste", "--no-newline"], env=env, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
+        procs.append(stalled)
+        time.sleep(0.5)
+        start(["xclip", "-selection", "clipboard", "-i", "-quiet"], x_text)
+        time.sleep(0.5)
+        start(["wl-copy", "--foreground", "--type", "text/plain;charset=utf-8"], w_text)
+        time.sleep(max(0.0, stalled_at + 6.5 - time.monotonic()))
+        for attempt in range(5):
+            got = run_timeout(["wl-paste", "--no-newline"], env).stdout
+            if got != w_text:
+                kind = "X data" if got == x_text else "Z data" if got == z_text else "other"
+                raise SystemExit("x11-ownership: FAIL a stale X adoption replaced the Wayland selection "
+                    f"(paste {attempt}: {len(got)} bytes, {kind})")
+            time.sleep(0.1)
+        return "x11_ownership=kept"
+    finally:
+        for proc in procs:
+            try:
+                os.kill(proc.pid, signal.SIGCONT)
+            except OSError:
+                pass
+            proc.kill()
+            proc.wait()
+        logo.kill()
+        logo.wait()
+
 def main():
     args = sys.argv[1:]
     checks = args[0].split(",")
@@ -432,6 +546,10 @@ def main():
             results.append(check_flood(path))
         elif check == "xwm":
             results.append(check_xwm_kill(display, client_bin))
+        elif check == "x11-ownership":
+            results.append(check_x11_ownership(path))
+        elif check == "x11-stale":
+            results.append(check_x11_stale_reply(path))
         elif check == "x11":
             results.append(check_x11(path, args[3]))
         elif check == "idle-flush":
