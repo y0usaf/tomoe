@@ -20,6 +20,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/select.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/resource.h>
@@ -609,6 +610,14 @@ static uint64_t ready_state(int epfd, const struct epoll_event *events, int got)
         if (sscanf(line, "tfd: %d", &target) != 1) continue;
         int pending = 0;
         if (ioctl(target, FIONREAD, &pending) == 0) hash = mix(hash, (uint64_t)pending);
+        struct ucred peer;
+        socklen_t peer_size = sizeof(peer);
+        if (pending > 0 && !getsockopt(target, SOL_SOCKET, SO_PEERCRED, &peer, &peer_size) &&
+                peer.pid == getpid()) {
+            unsigned char head[64];
+            long peeked = raw(SYS_recvfrom, target, (long)head, sizeof(head), MSG_PEEK | MSG_DONTWAIT, 0, 0);
+            for (long c = 0; c < peeked; c++) hash = mix(hash, head[c]);
+        }
         struct stat st;
         if (fstat(target, &st) == 0) hash = mix(hash, (uint64_t)st.st_size);
     }
