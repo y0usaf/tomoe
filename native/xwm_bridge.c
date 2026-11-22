@@ -241,6 +241,13 @@ static bool bridge_send_raw(struct xwm_bridge *b, uint16_t type, const void *pay
 static int bridge_ping_expired(void *data) {
     struct xwm_bridge *b = data;
     if (!b->ping_pending || b->stopping) return 0;
+    uint32_t expected = b->ping_serial;
+    if (b->fd >= 0 && !b->broken && !bridge_drain_input(b)) {
+        bridge_disconnect(b, true);
+        return 0;
+    }
+    if (!b->ping_pending || b->ping_serial != expected || b->stopping || b->fd < 0 || b->broken)
+        return 0;
     tomoe_log(LOG_ERROR, "tomoe: tomoe-xwm %d did not answer a liveness ping in %d ms; restarting it",
         (int)b->sidecar_pid, BRIDGE_PING_DEADLINE_MS);
     b->ping_pending = false;
@@ -773,6 +780,7 @@ static void handle_message(struct xwm_bridge *b, const struct xwm_hdr *hdr,
         struct xwm_msg_pid msg;
         memcpy(&msg, payload, sizeof(msg));
         if (msg.pid <= 0) {
+            if (b->keepalive) wl_event_source_timer_update(b->keepalive, 0);
             x11_state_clear(b);
         } else {
             b->xwayland_pid = (pid_t)msg.pid;
