@@ -51,6 +51,10 @@ _Noreturn void lisp_error(const char *format, ...) __attribute__((format(printf,
 int lisp_call(const char *function, int argc, const lisp_value *argv, lisp_value *result,
     char *error, size_t error_size);
 void lisp_end_turn(void);
+void lisp_set_turn_clock(uint64_t ns);
+uint64_t lisp_turn_now_ns(void);
+void lisp_set_seed(uint64_t seed);
+uint64_t lisp_get_seed(void);
 const char *lisp_active_hook(void);
 
 lisp_value lisp_nil(void);

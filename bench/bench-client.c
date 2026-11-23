@@ -68,6 +68,8 @@ static struct wl_keyboard *keyboard;
 static struct zwlr_virtual_pointer_v1 *virtual_pointer;
 static struct zwp_virtual_keyboard_v1 *virtual_keyboard;
 static struct window windows[MAX_WINDOWS];
+static const char *chords_path;
+static const char *app_tag;
 static int window_count = 1;
 static int window_width = 480, window_height = 320;
 static int output_width = 1920, output_height = 1080;
@@ -351,9 +353,16 @@ static void keyboard_keymap(void *data, struct wl_keyboard *handle, uint32_t for
     close(fd);
 }
 
+
+static int window_index(struct wl_surface *surface);
+
 static void keyboard_enter(void *data, struct wl_keyboard *handle, uint32_t serial_number,
         struct wl_surface *surface, struct wl_array *keys) {
     (void)data; (void)handle; (void)serial_number; (void)surface; (void)keys;
+    if (chords_path) {
+        printf("enter %d\n", window_index(surface));
+        fflush(stdout);
+    }
     keyboard_events++;
     event_observed();
 }
@@ -415,7 +424,11 @@ static void toplevel_configure(void *data, struct xdg_toplevel *toplevel, int32_
 }
 
 static void toplevel_close(void *data, struct xdg_toplevel *toplevel) {
-    (void)data; (void)toplevel;
+    (void)data;
+    if (!chords_path) return;
+    for (int i = 0; i < window_count; i++)
+        if (windows[i].toplevel == toplevel) printf("close %d\n", i);
+    fflush(stdout);
 }
 
 static const struct xdg_toplevel_listener toplevel_listener = {
@@ -482,8 +495,9 @@ static void create_window(struct window *window, int index) {
     window->xdg = xdg_wm_base_get_xdg_surface(wm_base, window->surface);
     xdg_surface_add_listener(window->xdg, &surface_listener, window);
     window->toplevel = xdg_surface_get_toplevel(window->xdg);
-    char app_id[32];
-    snprintf(app_id, sizeof(app_id), "bench-%d", index);
+    char app_id[64];
+    if (app_tag) snprintf(app_id, sizeof(app_id), "bench-%s-%d", app_tag, index);
+    else snprintf(app_id, sizeof(app_id), "bench-%d", index);
     xdg_toplevel_set_app_id(window->toplevel, app_id);
     xdg_toplevel_set_title(window->toplevel, app_id);
     xdg_toplevel_add_listener(window->toplevel, &toplevel_listener, window);
@@ -721,11 +735,37 @@ static void end_drag(void) {
     settle();
 }
 
+static int window_index(struct wl_surface *surface) {
+    for (int i = 0; i < window_count; i++)
+        if (windows[i].surface == surface) return i;
+    return -1;
+}
+
+static void play_chords(void) {
+    if (!chords_path || access(chords_path, F_OK) != 0) return;
+    FILE *file = fopen(chords_path, "r");
+    if (!file) return;
+    char chord[256];
+    while (fscanf(file, "%255s", chord) == 1) {
+        int codes[8], count = 0;
+        for (char *part = strtok(chord, "+"); part && count < 8; part = strtok(NULL, "+"))
+            codes[count++] = atoi(part);
+        for (int i = 0; i < count; i++) inject_key(codes[i], true);
+        for (int i = count - 1; i >= 0; i--) inject_key(codes[i], false);
+        pump(50);
+    }
+    fclose(file);
+    unlink(chords_path);
+    printf("chords done\n");
+    fflush(stdout);
+}
+
 static void phase_frames(double seconds) {
     uint64_t end = now_ns() + (uint64_t)(seconds * 1e9);
     unsigned frames = 0;
     uint64_t started = now_ns();
     while (now_ns() < end) {
+        play_chords();
         for (int i = 1; i < window_count; i++) paint(&windows[i]);
         paint(&windows[0]);
         begin_sample();
@@ -866,6 +906,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--seconds") && i + 1 < argc) seconds = atof(argv[++i]);
         else if (!strcmp(argv[i], "--ready") && i + 1 < argc) ready = argv[++i];
         else if (!strcmp(argv[i], "--wait") && i + 1 < argc) wait_path = argv[++i];
+        else if (!strcmp(argv[i], "--chords") && i + 1 < argc) chords_path = argv[++i];
+        else if (!strcmp(argv[i], "--tag") && i + 1 < argc) app_tag = argv[++i];
         else if (!strcmp(argv[i], "--size") && i + 1 < argc) {
             if (sscanf(argv[++i], "%dx%d", &window_width, &window_height) != 2)
                 fail("--size wants WxH");

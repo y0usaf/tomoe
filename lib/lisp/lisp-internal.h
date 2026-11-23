@@ -321,6 +321,7 @@ struct lisp_runtime {
     uint64_t deadline_at;
     uint32_t watched_depth;
     uint64_t held_clock_ns;
+    uint64_t turn_clock_ns;
     uint64_t pending_steps;
     uint64_t pending_deadline_ns;
     uint64_t budget_failures;

@@ -32,16 +32,14 @@ static void rollup(uint64_t *rss, uint64_t *pss, uint64_t *anon, uint64_t *file)
     fclose(in);
 }
 
-lisp_value tomoe_memory_report(struct tomoe *s) {
-    struct lisp_heap_stats lisp;
-    lisp_heap_stats(&lisp);
+pv tomoe_memory_report(struct tomoe *s) {
     uint64_t rss, pss, anon, file;
     rollup(&rss, &pss, &anon, &file);
     struct mallinfo2 heap = mallinfo2();
     size_t textures, images;
     uint64_t texture_bytes;
     render_usage(s->renderer, &textures, &texture_bytes, &images);
-    lisp_value outputs = lisp_nil();
+    pv outputs = pv_nil();
     uint64_t buffer_total = 0;
     struct output *o;
     wl_list_for_each_reverse(o, &s->outputs, link) {
@@ -55,44 +53,34 @@ lisp_value tomoe_memory_report(struct tomoe *s) {
                 bytes += (uint64_t)dmabuf.stride[plane] * dmabuf.height;
         }
         buffer_total += bytes;
-        outputs = lisp_cons(lisp_list(6, lisp_keyword("NAME"), lisp_cstring(o->screen->name),
-            lisp_keyword("BUFFERS"), lisp_uint(buffers), lisp_keyword("BUFFER-BYTES"),
-            lisp_uint(bytes)), outputs);
+        outputs = pv_cons(pv_list(6, pv_keyword("NAME"), pv_cstring(o->screen->name),
+            pv_keyword("BUFFERS"), pv_uint(buffers), pv_keyword("BUFFER-BYTES"),
+            pv_uint(bytes)), outputs);
     }
-    lisp_value gpu = lisp_list(10, lisp_keyword("TEXTURES"), lisp_uint(textures),
-        lisp_keyword("TEXTURE-BYTES"), lisp_uint(texture_bytes),
-        lisp_keyword("IMAGES"), lisp_uint(images),
-        lisp_keyword("BUFFER-BYTES"), lisp_uint(buffer_total),
-        lisp_keyword("OUTPUTS"), outputs);
-    lisp_value region = lisp_list(24, lisp_keyword("REGION-BYTES"), lisp_uint(lisp.region_bytes),
-        lisp_keyword("HEAP-BYTES"), lisp_uint(lisp.heap_bytes),
-        lisp_keyword("GENERATION-BYTES"), lisp_uint(lisp.generation_bytes),
-        lisp_keyword("ARENA-PEAK"), lisp_uint(lisp.arena_peak),
-        lisp_keyword("PERSISTENT-USED"), lisp_uint(lisp.persistent_used),
-        lisp_keyword("PERSISTENT-HIGH-WATER"), lisp_uint(lisp.persistent_high_water),
-        lisp_keyword("ARENA-USED"), lisp_uint(lisp.arena_used),
-        lisp_keyword("ARENA-HIGH-WATER"), lisp_uint(lisp.arena_high_water),
-        lisp_keyword("GENERATIONS"), lisp_uint(lisp.generations),
-        lisp_keyword("RECLAIM-COUNT"), lisp_uint(lisp.reclaim_count),
-        lisp_keyword("RECLAIM-LONGEST-US"), lisp_uint(lisp.reclaim_longest_us),
-        lisp_keyword("BUDGET-FAILURES"), lisp_uint(lisp.budget_failures));
-    lisp_value tail = lisp_list(14,
-        lisp_keyword("GPU"), gpu,
-        lisp_keyword("LISP"), region,
-        lisp_keyword("BUDGETS"), budget_report(),
-        lisp_keyword("HOT-ALLOCS"), lisp_uint(budget_hot_allocs()),
-        lisp_keyword("HOT-ALLOCS-ALL"), lisp_uint(budget_hot_allocs_all()),
-        lisp_keyword("EVENTS-DROPPED"), lisp_uint(policy_events_dropped(s)),
-        lisp_keyword("SURFACES"), lisp_int(wl_list_length(&s->surfaces)));
-    lisp_value head = lisp_list(12,
-        lisp_keyword("RSS-BYTES"), lisp_uint(rss),
-        lisp_keyword("PSS-BYTES"), lisp_uint(pss),
-        lisp_keyword("ANON-BYTES"), lisp_uint(anon),
-        lisp_keyword("FILE-BYTES"), lisp_uint(file),
-        lisp_keyword("MALLOC-HEAP-USED"), lisp_uint(heap.uordblks + heap.hblkhd),
-        lisp_keyword("MALLOC-HEAP-HELD"), lisp_uint(heap.arena + heap.hblkhd));
-    lisp_value result = lisp_nil();
-    for (lisp_value p = head; !lisp_nilp(p); p = lisp_cdr(p)) result = lisp_cons(lisp_car(p), result);
-    for (lisp_value p = tail; !lisp_nilp(p); p = lisp_cdr(p)) result = lisp_cons(lisp_car(p), result);
-    return lisp_nreverse(result);
+    pv gpu = pv_list(10, pv_keyword("TEXTURES"), pv_uint(textures),
+        pv_keyword("TEXTURE-BYTES"), pv_uint(texture_bytes),
+        pv_keyword("IMAGES"), pv_uint(images),
+        pv_keyword("BUFFER-BYTES"), pv_uint(buffer_total),
+        pv_keyword("OUTPUTS"), outputs);
+    pv region = pv_nil();
+    pv tail = pv_list(16,
+        pv_keyword("POLICY-GENERATION"), pv_uint(policy_link_generation(s)),
+        pv_keyword("GPU"), gpu,
+        pv_keyword("LISP"), region,
+        pv_keyword("BUDGETS"), budget_report(),
+        pv_keyword("HOT-ALLOCS"), pv_uint(budget_hot_allocs()),
+        pv_keyword("HOT-ALLOCS-ALL"), pv_uint(budget_hot_allocs_all()),
+        pv_keyword("EVENTS-DROPPED"), pv_uint(policy_events_dropped(s)),
+        pv_keyword("SURFACES"), pv_int(wl_list_length(&s->surfaces)));
+    pv head = pv_list(12,
+        pv_keyword("RSS-BYTES"), pv_uint(rss),
+        pv_keyword("PSS-BYTES"), pv_uint(pss),
+        pv_keyword("ANON-BYTES"), pv_uint(anon),
+        pv_keyword("FILE-BYTES"), pv_uint(file),
+        pv_keyword("MALLOC-HEAP-USED"), pv_uint(heap.uordblks + heap.hblkhd),
+        pv_keyword("MALLOC-HEAP-HELD"), pv_uint(heap.arena + heap.hblkhd));
+    pv result = pv_nil();
+    for (pv p = head; !pv_nilp(p); p = pv_cdr(p)) result = pv_cons(pv_car(p), result);
+    for (pv p = tail; !pv_nilp(p); p = pv_cdr(p)) result = pv_cons(pv_car(p), result);
+    return pv_nreverse(result);
 }

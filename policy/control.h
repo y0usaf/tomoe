@@ -20,8 +20,6 @@ enum control_operation {
     CONTROL_QUIT
 };
 
-struct control_server *control_start(struct tomoe *server, const char *path, char *error,
-    size_t error_size);
 void control_stop(struct control_server *server);
 void control_serve(struct control_server *server);
 int control_client(const char *path, enum control_operation operation, int count, char **arguments,

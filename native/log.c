@@ -1,5 +1,4 @@
 #include "internal.h"
-#include "lisp.h"
 #include <execinfo.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -266,12 +265,6 @@ static void crash(int number, siginfo_t *info, void *context) {
         void *frames[64];
         int count = backtrace(frames, 64);
         backtrace_symbols_fd(frames, count, log_fd);
-        const char *hook = lisp_active_hook();
-        put(hook ? "tomoe: while Lisp ran " : "tomoe: outside Lisp\n");
-        if (hook) {
-            put(hook);
-            put("\n");
-        }
         put("tomoe: the compositor stops here\n");
     }
     errno = saved;

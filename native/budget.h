@@ -3,9 +3,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include "lisp.h"
+#include "pv.h"
 
-extern const size_t budget_lisp_region_bootstrap;
 
 enum budget_kind {
     BUDGET_LISP_HEAP_MB,
@@ -38,7 +37,7 @@ uint64_t budget_limit(enum budget_kind kind);
 bool budget_admit(enum budget_kind kind, uint64_t amount);
 void budget_release(enum budget_kind kind, uint64_t amount);
 void budget_refuse(enum budget_kind kind);
-lisp_value budget_report(void);
+pv budget_report(void);
 
 void budget_hot_enter(const char *tag);
 void budget_hot_leave(void);

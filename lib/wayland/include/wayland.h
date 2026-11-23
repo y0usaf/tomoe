@@ -145,6 +145,7 @@ void wl_event_loop_destroy(struct wl_event_loop *loop);
 struct wl_event_source *wl_event_loop_add_fd(struct wl_event_loop *loop, int fd, uint32_t mask,
     wl_event_loop_fd_func_t func, void *data);
 int wl_event_source_fd_update(struct wl_event_source *source, uint32_t mask);
+int wl_event_source_get_fd(struct wl_event_source *source);
 struct wl_event_source *wl_event_loop_add_timer(struct wl_event_loop *loop,
     wl_event_loop_timer_func_t func, void *data);
 int wl_event_source_timer_update(struct wl_event_source *source, int ms_delay);
@@ -196,6 +197,7 @@ struct wl_display *wl_display_create(void);
 void wl_display_destroy(struct wl_display *display);
 struct wl_event_loop *wl_display_get_event_loop(struct wl_display *display);
 int wl_display_add_socket(struct wl_display *display, const char *name);
+void wl_display_set_accepting(struct wl_display *display, bool accepting);
 void wl_display_terminate(struct wl_display *display);
 void wl_display_flush_clients(struct wl_display *display);
 void wl_display_destroy_clients(struct wl_display *display);

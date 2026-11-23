@@ -263,9 +263,9 @@ static void spring_state(const struct tomoe *s, const struct screenshot *shot, d
             velocity[i] = 0;
             continue;
         }
-        position[i] = lisp_spring_at(st->screenshot_motion_stiffness,
+        position[i] = spring_curve(st->screenshot_motion_stiffness,
             st->screenshot_motion_damping, shot->from[i], shot->to[i], shot->velocity[i], elapsed);
-        velocity[i] = (lisp_spring_at(st->screenshot_motion_stiffness,
+        velocity[i] = (spring_curve(st->screenshot_motion_stiffness,
             st->screenshot_motion_damping, shot->from[i], shot->to[i], shot->velocity[i],
             elapsed + step) - position[i]) / step;
     }

@@ -3,10 +3,13 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include "lisp.h"
+#include "pv.h"
+
+enum { RES_HELD_MS = 50 };
 #include "policy.h"
 
 enum { LOOP_READABLE = 1, LOOP_WRITABLE = 2 };
+int tomoe_test_flag(const char *name);
 
 struct res_buffer {
     char *data;
@@ -24,7 +27,7 @@ void rb_free(struct res_buffer *buffer);
 
 char *res_dup(const char *text);
 char *res_dup_span(const char *text, size_t length);
-void res_push_event(struct tomoe *server, enum tomoe_event_type type, uint16_t flags,
+bool res_push_event(struct tomoe *server, enum tomoe_event_type type, uint16_t flags,
     const char *text, size_t length);
 void res_append_keyword(struct res_buffer *buffer, const char *name);
 void res_engine_kick(void);
@@ -302,7 +305,7 @@ const char *res_exec_status_name(int status);
 void res_processes_apply(struct want_process *wanted, size_t count);
 void res_processes_service(uint64_t now, uint64_t *next);
 const char *res_process_status_name(int status);
-lisp_value res_spawn(lisp_value plist, bool launch);
+pv res_spawn(pv plist, bool launch);
 size_t res_process_reservations(void);
 
 uint64_t res_refresh_ms(void);
@@ -320,21 +323,21 @@ void res_services_stop(void);
 void res_services_service(uint64_t now, uint64_t *next);
 bool res_media(const char *method, char *error, size_t size);
 bool res_backlight(int64_t percent, char *error, size_t size);
-lisp_value res_services_value(void);
-lisp_value res_system_value(void);
+pv res_services_value(void);
+pv res_system_value(void);
 bool res_system_read(void);
 
-bool res_sources_set(lisp_value paths, char *error, size_t size);
+bool res_sources_set(pv paths, char *error, size_t size);
 void res_sources_service(uint64_t now, uint64_t *next);
 void res_sources_free(void);
 
-lisp_value resources_read_text(const char *text, size_t length);
-bool res_plist_get(lisp_value plist, const char *name, lisp_value *out);
+pv resources_read_text(const char *text, size_t length);
+bool res_plist_get(pv plist, const char *name, pv *out);
 void res_error_text(char *error, size_t size, const char *format, ...)
     __attribute__((format(printf, 3, 4)));
-char *res_plist_string(lisp_value value);
-char *res_plist_string_field(lisp_value plist, const char *name);
-char **res_plist_environment(lisp_value plist, size_t *count, char *error, size_t size);
+char *res_plist_string(pv value);
+char *res_plist_string_field(pv plist, const char *name);
+char **res_plist_environment(pv plist, size_t *count, char *error, size_t size);
 int64_t res_process_parent(int64_t pid);
 
 #endif

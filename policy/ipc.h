@@ -7,7 +7,6 @@
 struct tomoe;
 struct ipc_server;
 
-struct ipc_server *ipc_start(struct tomoe *server, const char *path, char *error, size_t error_size);
 void ipc_stop(struct ipc_server *server);
 void ipc_serve(struct ipc_server *server);
 bool ipc_pending(struct ipc_server *server);

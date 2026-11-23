@@ -1750,11 +1750,31 @@ lisp_value builtin_random(int argc, lisp_value *argv)
     return make_double(limit * (double)(lisp.rng_state >> 11) / 9007199254740992.0);
 }
 
+uint64_t lisp_turn_now_ns(void)
+{
+    return lisp.turn_clock_ns ? lisp.turn_clock_ns : lisp_now_ns();
+}
+
+void lisp_set_turn_clock(uint64_t ns)
+{
+    lisp.turn_clock_ns = ns;
+}
+
+uint64_t lisp_get_seed(void)
+{
+    return lisp.rng_state;
+}
+
+void lisp_set_seed(uint64_t seed)
+{
+    lisp.rng_state = seed ? seed : 0x9e3779b97f4a7c15ull;
+}
+
 lisp_value builtin_get_internal_time(int argc, lisp_value *argv)
 {
     (void)argc;
     (void)argv;
-    return make_int((int64_t)((lisp.held_clock_ns ? lisp.held_clock_ns : lisp_now_ns()) / 1000ull));
+    return make_int((int64_t)((lisp.held_clock_ns ? lisp.held_clock_ns : lisp_turn_now_ns()) / 1000ull));
 }
 
 lisp_value builtin_with_held_clock(int argc, lisp_value *argv)
@@ -1763,7 +1783,7 @@ lisp_value builtin_with_held_clock(int argc, lisp_value *argv)
         lisp_error("%%WITH-HELD-CLOCK needs a function");
     uint64_t saved = lisp.held_clock_ns;
     if (!saved)
-        lisp.held_clock_ns = lisp_now_ns();
+        lisp.held_clock_ns = lisp_turn_now_ns();
     int ctl = push_ctl(CTL_CATCH);
     if (setjmp(lisp.ctl[ctl].jb) != 0) {
         lisp.ctl_top = ctl;

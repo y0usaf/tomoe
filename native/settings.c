@@ -83,8 +83,6 @@ static int budget_key(const char *key, double value) {
     size_t length = sizeof(prefix) - 1;
     if (strncmp(key, prefix, length) != 0) return 0;
     if (!budget_set_limit(key + length, (uint64_t)value)) return 0;
-    if (!strcmp(key + length, "lisp-heap-mb") && value > 0)
-        lisp_set_region_limit((size_t)value * 1024 * 1024);
     return 1;
 }
 

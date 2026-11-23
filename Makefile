@@ -64,7 +64,7 @@ PROTOCOLS = \
 
 NAMES = $(basename $(notdir $(PROTOCOLS)))
 HEADERS = build/wayland-server-protocol.h build/wayland-client-protocol.h $(NAMES:%=build/%-protocol.h) $(NAMES:%=build/%-client-protocol.h)
-LIBRARIES = png bus lisp wayland xkb pipewire udev
+LIBRARIES = png bus wayland xkb pipewire udev
 LIB_SOURCES = $(foreach l,$(LIBRARIES),$(wildcard lib/$(l)/*.c))
 LIB_HEADERS = $(wildcard lib/*/*.h lib/*/include/*.h lib/wayland/scanner/*.h)
 LIB_INCLUDE = $(LIBRARIES:%=-Ilib/%/include) -Ilib/wayland/scanner
@@ -91,7 +91,19 @@ vpath %.xml $(sort $(dir $(PROTOCOLS)))
 
 XWM = $(patsubst native/xwm/%.c,build/obj/xwm-%.o,$(wildcard native/xwm/*.c))
 
-all: build/tomoe build/tomoe-portal build/tomoe-xwm
+LISP_OBJECTS = $(patsubst lib/%.c,build/obj/lib/%.o,$(wildcard lib/lisp/*.c))
+POLICY = $(patsubst policy/%.c,build/obj/policy-%.o,$(wildcard policy/*.c)) $(LISP_OBJECTS) build/obj/pv.o build/obj/desktop-paths.o build/obj/lib/wayland/wire.o
+CFLAGS_POLICY = $(CFLAGS_BASE) -DTOMOE_VERSION='"$(VERSION)"' -Ipolicy -Inative -Ilib/lisp/include -Ilib/wayland/include -Ilib/wayland/scanner -Ibuild
+
+all: build/tomoe build/tomoe-portal build/tomoe-xwm build/tomoe-policy
+
+build/tomoe-policy: $(POLICY)
+	$(CC) $(LTO) $^ -o $@ -lm
+
+build/obj/policy-%.o: policy/%.c $(wildcard policy/*.h) native/pv.h native/policy_proto.h native/desktop-session.h $(wildcard lib/lisp/include/*.h) | build/obj
+	$(CC) $(CFLAGS_POLICY) -c $< -o $@
+
+build/obj/policy-main.o: $(wildcard lisp/*.lisp)
 
 build/tomoe-xwm: $(XWM)
 	$(CC) $(LTO) $^ -o $@
@@ -109,8 +121,6 @@ build/tomoe: $(NATIVE) $(SUPPORT:%=build/%.o)
 	$(CC) $(LTO) $(NATIVE) $(SUPPORT:%=build/%.o) -o $@ $(LINK) -lm \
 		-Wl,--export-dynamic-symbol=tomoe_png_glyph_info \
 		-Wl,--export-dynamic-symbol=tomoe_png_glyph_rows
-
-build/obj/main.o: $(wildcard lisp/*.lisp)
 
 build/obj/%.o: native/%.c $(wildcard native/*.h) $(LIB_HEADERS) $(HEADERS) | build/obj
 	$(CC) $(CFLAGS_NATIVE) -c $< -o $@

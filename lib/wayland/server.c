@@ -797,6 +797,12 @@ int wl_display_add_socket(struct wl_display *display, const char *name) {
     return 0;
 }
 
+void wl_display_set_accepting(struct wl_display *display, bool accepting) {
+    struct server_socket *s;
+    wl_list_for_each(s, &display->sockets, link)
+        if (s->source) wl_event_source_fd_update(s->source, accepting ? WL_EVENT_READABLE : 0);
+}
+
 void wl_display_terminate(struct wl_display *display) {
     uint64_t one = 1;
     if (write(display->terminate_fd, &one, sizeof(one)) < 0) LOG("failed to write to the termination eventfd\n");

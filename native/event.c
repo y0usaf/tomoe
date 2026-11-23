@@ -37,6 +37,8 @@ static void ring_ready(struct tomoe *s) {
     uint64_t capacity = budget_limit(BUDGET_EVENTS);
     if (capacity < 16) capacity = EVENT_CAPACITY_BOOTSTRAP;
     if (capacity > EVENT_CAPACITY_MAX) capacity = EVENT_CAPACITY_MAX;
+    const char *forced = tomoe_test_flag_value("policy-ring");
+    if (forced && strtoull(forced, NULL, 10) >= 4) capacity = strtoull(forced, NULL, 10);
     if (!budget_admit(BUDGET_EVENTS, capacity))
         tomoe_log(LOG_WARNING, "tomoe: event ring exceeds its budget");
     s->event_ring = calloc((size_t)capacity, sizeof(*s->event_ring));
@@ -111,20 +113,68 @@ static bool drop_optional(struct tomoe *s) {
     return false;
 }
 
+static bool coalescible(uint16_t type) {
+    return type == EV_WATCH || type == EV_SOURCE || type == EV_SERVICES || type == EV_SYSTEM;
+}
+
+static bool drop_coalescible(struct tomoe *s) {
+    for (size_t i = 0; i < s->event_count; i++) {
+        if (!coalescible(ring_slot(s, i)->type)) continue;
+        for (size_t j = i; j + 1 < s->event_count; j++) *ring_slot(s, j) = *ring_slot(s, j + 1);
+        s->event_count--;
+        s->event_dropped++;
+        tomoe_log(LOG_ERROR, "tomoe: event queue full while tomoe-policy is down; dropped the oldest "
+            "status event");
+        return true;
+    }
+    return false;
+}
+
+void policy_ring_drop_coalescible(struct tomoe *s) {
+    size_t kept = 0, dropped = 0;
+    for (size_t i = 0; i < s->event_count; i++) {
+        struct tomoe_event event = *ring_slot(s, i);
+        if (coalescible(event.type)) {
+            dropped++;
+            continue;
+        }
+        *ring_slot(s, kept++) = event;
+    }
+    s->event_count = kept;
+    s->observation_barrier = 0;
+    if (dropped) tomoe_log(LOG_ERROR, "tomoe: dropped %zu queued status events after the event ring filled", dropped);
+}
+
+void policy_ring_drop_same(struct tomoe *s, uint16_t type, const char *key, size_t length) {
+    for (size_t i = 0; i < s->event_count; i++) {
+        struct tomoe_event *event = ring_slot(s, i);
+        size_t have = 0;
+        const char *text = event->type == type ? policy_event_string_at(s, event->str[0], &have) : NULL;
+        if (!text || have < length || memcmp(text, key, length)) continue;
+        for (size_t j = i; j + 1 < s->event_count; j++) *ring_slot(s, j) = *ring_slot(s, j + 1);
+        s->event_count--;
+        return;
+    }
+}
+
 struct tomoe_event *policy_event_push(struct tomoe *s, enum tomoe_event_type type) {
     if (!s || s->stopping || s->failed || type >= EV_TYPE_COUNT) return NULL;
     if (type != EV_GRAB) motion_drag_flush(s);
     if (!policy_reads(s, type)) return NULL;
     if (!s->event_ring) ring_ready(s);
     if (!s->event_capacity) return NULL;
+    if (s->event_count == s->event_capacity && !s->policy_accepting && !s->policy_capturing)
+        drop_coalescible(s);
     if (s->event_count == s->event_capacity) {
         if (!drop_optional(s)) {
             s->event_dropped++;
             drop_log(s);
+            policy_link_overflow(s);
             return NULL;
         }
     }
     struct tomoe_event *event = ring_slot(s, s->event_count++);
+    s->event_serial++;
     memset(event, 0, sizeof(*event));
     event->type = (uint16_t)type;
     event->flags = policy_event_flags(type);
@@ -133,14 +183,80 @@ struct tomoe_event *policy_event_push(struct tomoe *s, enum tomoe_event_type typ
     return event;
 }
 
+const struct tomoe_event *policy_ring_at(struct tomoe *s, size_t index) {
+    return ring_slot(s, index);
+}
+
+void policy_ring_keep_pending(struct tomoe *s) {
+    size_t kept = 0;
+    for (size_t i = 0; i < s->event_count; i++) {
+        struct tomoe_event event = *ring_slot(s, i);
+        if (policy_event_flags(event.type) & (EVF_FACT | EVF_OPTIONAL | EVF_COALESCE)) continue;
+        *ring_slot(s, kept++) = event;
+    }
+    s->event_count = kept;
+    s->observation_barrier = 0;
+    if (!kept) s->event_arena_used = 0;
+}
+
+void policy_ring_stash(struct tomoe *s, struct policy_ring_saved *saved, struct tomoe_event *scratch,
+        size_t slots) {
+    saved->ring = s->event_ring;
+    saved->capacity = s->event_capacity;
+    saved->head = s->event_head;
+    saved->count = s->event_count;
+    saved->barrier = s->observation_barrier;
+    saved->arena = s->event_arena;
+    saved->used = s->event_arena_used;
+    saved->size = s->event_arena_size;
+    s->event_ring = scratch;
+    s->event_capacity = slots;
+    s->event_head = s->event_count = s->observation_barrier = 0;
+    s->event_arena = NULL;
+    s->event_arena_used = s->event_arena_size = 0;
+}
+
+void policy_ring_unstash(struct tomoe *s, const struct policy_ring_saved *saved) {
+    free(s->event_arena);
+    s->event_ring = saved->ring;
+    s->event_capacity = saved->capacity;
+    s->event_head = saved->head;
+    s->event_count = saved->count;
+    s->observation_barrier = saved->barrier;
+    s->event_arena = saved->arena;
+    s->event_arena_used = saved->used;
+    s->event_arena_size = saved->size;
+}
+
+void policy_ring_pop(struct tomoe *s) {
+    if (!s->event_count) return;
+    s->event_count--;
+    if (s->observation_barrier > s->event_count) s->observation_barrier = s->event_count;
+    if (!s->event_count) {
+        s->event_head = 0;
+        s->event_arena_used = 0;
+    }
+}
+
+void policy_ring_consume(struct tomoe *s, size_t consumed) {
+    if (consumed >= s->event_count) {
+        s->event_head = 0;
+        s->event_count = 0;
+        s->observation_barrier = 0;
+        s->event_arena_used = 0;
+        return;
+    }
+    s->event_head = (s->event_head + consumed) % s->event_capacity;
+    s->event_count -= consumed;
+    s->observation_barrier = s->observation_barrier > consumed ?
+        s->observation_barrier - consumed : 0;
+}
+
 int policy_event_barrier(struct tomoe *s) {
     return s ? (int)s->observation_barrier : 0;
 }
 
-bool policy_events_pending(struct tomoe *s) {
-    if (!s || !s->event_count) return false;
-    return !s->grab_held;
-}
+
 
 uint64_t policy_events_dropped(struct tomoe *s) {
     return s ? s->event_dropped : 0;
@@ -324,74 +440,79 @@ void input_stream_key(struct tomoe *s, uint32_t time_msec, uint32_t keycode,
     input_stream_fields(s, event, tomoe_keyboard_focus(s));
 }
 
-static lisp_value json_object(lisp_value members) {
-    return lisp_cons(lisp_keyword("JSON-OBJECT"), lisp_cons(members, lisp_nil()));
+static pv json_object(pv members) {
+    return pv_cons(pv_keyword("JSON-OBJECT"), pv_cons(members, pv_nil()));
 }
 
-static lisp_value json_member(lisp_value members, const char *key, lisp_value value) {
-    return lisp_cons(lisp_cons(lisp_cstring(key), value), members);
+static pv json_member(pv members, const char *key, pv value) {
+    return pv_cons(pv_cons(pv_cstring(key), value), members);
 }
 
-static lisp_value json_string(struct tomoe *s, uint32_t handle) {
+static pv json_string(struct tomoe *s, uint32_t handle) {
     size_t length = 0;
     const char *text = policy_event_string_at(s, handle, &length);
-    return text ? lisp_string(text, length) : lisp_nil();
+    return text ? pv_string(text, length) : pv_nil();
 }
 
-static lisp_value json_modifiers(uint32_t mask) {
+static pv json_modifiers(uint32_t mask) {
     static const struct { uint32_t bit; const char *name; } names[] = {
         { MOD_SHIFT, "shift" }, { MOD_CTRL, "ctrl" }, { MOD_ALT, "alt" },
         { MOD_LOGO, "logo" },
     };
-    lisp_value list = lisp_nil();
+    pv list = pv_nil();
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
-        if (mask & names[i].bit) list = lisp_cons(lisp_cstring(names[i].name), list);
-    return lisp_cons(lisp_keyword("JSON-ARRAY"), lisp_cons(lisp_nreverse(list), lisp_nil()));
+        if (mask & names[i].bit) list = pv_cons(pv_cstring(names[i].name), list);
+    return pv_cons(pv_keyword("JSON-ARRAY"), pv_cons(pv_nreverse(list), pv_nil()));
 }
 
-static lisp_value json_state(uint32_t state) {
-    return lisp_cstring(state ? "released" : "pressed");
+static pv json_state(uint32_t state) {
+    return pv_cstring(state ? "released" : "pressed");
 }
 
-static void broadcast_activity(struct tomoe *s, const struct tomoe_event *event) {
-    lisp_value members = json_member(lisp_nil(), "hand",
-        lisp_cstring(event->id == HAND_LEFT ? "left" : "right"));
-    ipc_broadcast("keyboard_activity", json_object(members));
+static pv broadcast_activity(struct tomoe *s, const struct tomoe_event *event) {
+    pv members = json_member(pv_nil(), "hand",
+        pv_cstring(event->id == HAND_LEFT ? "left" : "right"));
+    return json_object(members);
 }
 
-static void broadcast_input(struct tomoe *s, const struct tomoe_event *event) {
-    const char *name = event->id == INPUT_MOTION ? "pointer_motion" :
+static pv broadcast_input(struct tomoe *s, const struct tomoe_event *event, const char **out) {
+    *out = event->id == INPUT_MOTION ? "pointer_motion" :
         event->id == INPUT_BUTTON ? "pointer_button" : "key";
-    lisp_value members = lisp_nil();
-    members = json_member(members, "time", lisp_uint(event->time_us));
-    members = json_member(members, "x", lisp_int(event->x));
-    members = json_member(members, "y", lisp_int(event->y));
+    pv members = pv_nil();
+    members = json_member(members, "time", pv_uint(event->time_us));
+    members = json_member(members, "x", pv_int(event->x));
+    members = json_member(members, "y", pv_int(event->y));
     if (event->id == INPUT_KEY) {
-        members = json_member(members, "keycode", lisp_uint(event->keycode));
+        members = json_member(members, "keycode", pv_uint(event->keycode));
         members = json_member(members, "keysym", json_string(s, event->str[1]));
         members = json_member(members, "state", json_state(event->state));
         members = json_member(members, "modifiers", json_modifiers(event->modifiers));
     } else if (event->id == INPUT_BUTTON) {
-        members = json_member(members, "button", lisp_uint(event->button));
+        members = json_member(members, "button", pv_uint(event->button));
         members = json_member(members, "state", json_state(event->state));
     }
     if (event->flags & INP_OUTPUT) {
         members = json_member(members, "output", json_string(s, event->str[0]));
-        members = json_member(members, "output_x", lisp_int((int32_t)event->dx));
-        members = json_member(members, "output_y", lisp_int((int)event->fx));
+        members = json_member(members, "output_x", pv_int((int32_t)event->dx));
+        members = json_member(members, "output_y", pv_int((int)event->fx));
     } else {
-        members = json_member(members, "output", lisp_nil());
+        members = json_member(members, "output", pv_nil());
     }
     members = json_member(members, "window",
-        event->flags & INP_WINDOW ? lisp_uint(event->binding_or_callback_id) : lisp_nil());
+        event->flags & INP_WINDOW ? pv_uint(event->binding_or_callback_id) : pv_nil());
     if (event->flags & INP_WINDOW_POSITION) {
-        members = json_member(members, "window_x", lisp_int((int32_t)event->dy));
-        members = json_member(members, "window_y", lisp_int((int)event->fy));
+        members = json_member(members, "window_x", pv_int((int32_t)event->dy));
+        members = json_member(members, "window_y", pv_int((int)event->fy));
     }
-    ipc_broadcast(name, json_object(members));
+    return json_object(members);
 }
 
-void policy_event_broadcast(struct tomoe *s, const struct tomoe_event *event) {
-    if (event->type == EV_ACTIVITY) broadcast_activity(s, event);
-    else if (event->type == EV_INPUT) broadcast_input(s, event);
+pv policy_broadcast_value(struct tomoe *s, const struct tomoe_event *event, const char **name) {
+    *name = NULL;
+    if (event->type == EV_ACTIVITY) {
+        *name = "keyboard_activity";
+        return broadcast_activity(s, event);
+    }
+    if (event->type == EV_INPUT) return broadcast_input(s, event, name);
+    return pv_nil();
 }

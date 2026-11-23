@@ -1112,8 +1112,7 @@ static void bridge_disconnect(struct xwm_bridge *b, bool schedule_retry) {
             if (b->kill_source) wl_event_source_timer_update(b->kill_source, 2000);
             return;
         } else if (!b->stopping) {
-            kill(b->sidecar_pid, SIGKILL);
-            while (waitpid(b->sidecar_pid, NULL, 0) < 0 && errno == EINTR) {}
+            reap_later(b->server, b->sidecar_pid, -1);
             b->sidecar_pid = 0;
             b->killing_pid = 0;
         }

@@ -1,12 +1,14 @@
+diff --git a/native/animation.c b/native/animation.c
+index cba08ce..5b33c41 100644
 --- a/native/animation.c
 +++ b/native/animation.c
 @@ -1,3 +1,5 @@
 +#include <sys/syscall.h>
 +#include <unistd.h>
  #include "internal.h"
- #include "spring.h"
  #include <float.h>
-@@ -72,7 +74,7 @@ static double animation_eval(const struct animation *a, double passed) {
+ 
+@@ -71,7 +73,7 @@ static double animation_eval(const struct animation *a, double passed) {
  
  double animation_now(void) {
      struct timespec now;

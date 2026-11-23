@@ -382,12 +382,11 @@ static void exec_deliver(struct res_exec *exec) {
     else rb_append(&text, "NIL", 3);
     rb_append(&text, ")", 1);
     char *message = rb_take(&text);
-    if (message) {
-        res_push_event(res.server, EV_EXEC, EVF_FACT, message, text.length);
-        free(message);
-    }
+    bool pushed = message && res_push_event(res.server, EV_EXEC, EVF_FACT, message, text.length);
+    free(message);
     free(out);
     free(err);
+    if (!pushed) return;
     exec->delivered = true;
     free(exec->out);
     free(exec->err);
@@ -438,8 +437,11 @@ static void exec_poll(struct res_exec *exec, uint64_t now, uint64_t *next) {
             exec_release(exec);
         }
     }
-    if (!exec->delivered && !exec->lease.job && exec_terminal(exec->status)) exec_deliver(exec);
-    if (!exec->delivered) {
+    if (!exec->delivered && !exec->lease.job && exec_terminal(exec->status)) {
+        if (policy_reads(res.server, EV_EXEC)) exec_deliver(exec);
+        else if (now + RES_HELD_MS < *next) *next = now + RES_HELD_MS;
+    }
+    if (!exec->delivered && (exec->lease.job || !exec_terminal(exec->status))) {
         uint64_t due = now + 1000;
         if (exec->status == EXEC_PENDING) due = now;
         else if (exec->lease.kill_at) due = exec->lease.kill_at;
@@ -1130,15 +1132,15 @@ void res_processes_stop(void) {
     res.history_count = 0;
 }
 
-static bool plist_argv(lisp_value plist, char ***argv, size_t *count, char *error,
+static bool plist_argv(pv plist, char ***argv, size_t *count, char *error,
         size_t size) {
-    lisp_value value;
-    if (!res_plist_get(plist, "ARGV", &value) || !lisp_consp(value)) {
+    pv value;
+    if (!res_plist_get(plist, "ARGV", &value) || !pv_consp(value)) {
         res_error_text(error, size, "A launch needs a non-empty :ARGV list.");
         return false;
     }
     size_t length = 0;
-    for (lisp_value cursor = value; lisp_consp(cursor); cursor = lisp_cdr(cursor)) length++;
+    for (pv cursor = value; pv_consp(cursor); cursor = pv_cdr(cursor)) length++;
     if (!length || length > 128) {
         res_error_text(error, size, "Process argv must contain 1 through 128 strings.");
         return false;
@@ -1146,8 +1148,8 @@ static bool plist_argv(lisp_value plist, char ***argv, size_t *count, char *erro
     char **entries = calloc(length + 1, sizeof(char *));
     if (!entries) { res_error_text(error, size, "Cannot allocate resources."); return false; }
     size_t index = 0;
-    for (lisp_value cursor = value; lisp_consp(cursor); cursor = lisp_cdr(cursor)) {
-        char *entry = res_plist_string(lisp_car(cursor));
+    for (pv cursor = value; pv_consp(cursor); cursor = pv_cdr(cursor)) {
+        char *entry = res_plist_string(pv_car(cursor));
         if (!entry) { res_error_text(error, size, "Process argv entries must be strings."); return false; }
         entries[index++] = entry;
     }
@@ -1157,21 +1159,21 @@ static bool plist_argv(lisp_value plist, char ***argv, size_t *count, char *erro
     return true;
 }
 
-lisp_value res_spawn(lisp_value plist, bool launch) {
+pv res_spawn(pv plist, bool launch) {
     char error[512];
     error[0] = 0;
     char **argv = NULL;
     size_t argc = 0;
     char *command = NULL;
-    lisp_value shell;
-    if (res_plist_get(plist, "ARGV", &shell) && lisp_stringp(shell)) {
+    pv shell;
+    if (res_plist_get(plist, "ARGV", &shell) && pv_stringp(shell)) {
         command = res_plist_string(shell);
         if (!command || !*command || strlen(command) > 65536) {
             free(command);
-            lisp_error("Invalid process command.");
+            pv_error("Invalid process command.");
         }
     } else if (!plist_argv(plist, &argv, &argc, error, sizeof(error))) {
-        lisp_error("%s", error);
+        pv_error("%s", error);
     }
     struct res_process process;
     memset(&process, 0, sizeof(process));
@@ -1184,16 +1186,16 @@ lisp_value res_spawn(lisp_value plist, bool launch) {
     process.cwd = res_plist_string_field(plist, "CWD");
     process.directory = res_plist_string_field(plist, "DIRECTORY");
     process.env = res_plist_environment(plist, &process.env_count, error, sizeof(error));
-    if (!process.env && error[0]) lisp_error("%s", error);
-    lisp_value focus;
-    if (res_plist_get(plist, "FOCUS", &focus)) process.focus = !lisp_nilp(focus);
+    if (!process.env && error[0]) pv_error("%s", error);
+    pv focus;
+    if (res_plist_get(plist, "FOCUS", &focus)) process.focus = !pv_nilp(focus);
     if (!launch && !process.focus) process.focus = false;
     if (process_reservations() + 1 > 128) {
         process_free(&process);
-        lisp_error("More than 128 live or reserved managed processes.");
+        pv_error("More than 128 live or reserved managed processes.");
     }
-    lisp_value input;
-    process.input = res_plist_get(plist, "INPUT", &input) && !lisp_nilp(input);
+    pv input;
+    process.input = res_plist_get(plist, "INPUT", &input) && !pv_nilp(input);
     process_start(&process);
     uint64_t lease_id = process.lease ? process.lease->id : 0;
     if (process.status == PROCESS_SPAWN_ERROR) {
@@ -1201,11 +1203,11 @@ lisp_value res_spawn(lisp_value plist, bool launch) {
         snprintf(message, sizeof(message), "%s",
                  process.error ? process.error : "Cannot start process.");
         process_free(&process);
-        lisp_error("%s", message);
+        pv_error("%s", message);
     }
     process_free(&process);
-    if (launch) return lisp_nil();
-    return lisp_uint(lease_id);
+    if (launch) return pv_nil();
+    return pv_uint(lease_id);
 }
 
 int64_t res_process_parent(int64_t pid) {

@@ -129,67 +129,69 @@ void res_append_keyword(struct res_buffer *buffer, const char *name) {
     rb_append(buffer, "|", 1);
 }
 
-void res_push_event(struct tomoe *server, enum tomoe_event_type type, uint16_t flags,
+bool res_push_event(struct tomoe *server, enum tomoe_event_type type, uint16_t flags,
         const char *text, size_t length) {
+    if (type == EV_WATCH && !policy_accepting(server) && text) {
+        const char *content = memmem(text, length, " :CONTENT ", 10);
+        if (content) policy_ring_drop_same(server, EV_WATCH, text, (size_t)(content - text));
+    }
     struct tomoe_event *event = policy_event_push(server, type);
-    if (!event) return;
+    if (!event) return false;
     event->flags = flags;
     event->str[0] = policy_event_string(server, text, length);
     event->str[1] = EVENT_NO_STRING;
     event->str[2] = EVENT_NO_STRING;
     event->str[3] = EVENT_NO_STRING;
+    return true;
 }
 
 uint64_t res_now(void) {
     return loop_now_ms();
 }
 
-lisp_value resources_read_text(const char *text, size_t length) {
-    lisp_value value = lisp_nil();
-    char error[256];
-    if (!text) return value;
-    if (lisp_read_data(text, length, &value, error, sizeof(error))) return lisp_nil();
-    return value;
+pv resources_read_text(const char *text, size_t length) {
+    if (!text) return pv_nil();
+    return pv_read(text, length);
 }
 
-static lisp_value res_event_value(struct tomoe *server, const struct tomoe_event *event) {
+static pv res_event_value(struct tomoe *server, const struct tomoe_event *event) {
     size_t length = 0;
-    if (event->str[0] == EVENT_NO_STRING) return lisp_nil();
+    if (event->str[0] == EVENT_NO_STRING) return pv_nil();
     const char *text = policy_event_string_at(server, event->str[0], &length);
-    if (!text) return lisp_nil();
+    if (!text) return pv_nil();
     return resources_read_text(text, length);
 }
 
-static lisp_value converter_timer(struct tomoe *server, const struct tomoe_event *event) {
+static pv converter_timer(struct tomoe *server, const struct tomoe_event *event) {
     return res_event_value(server, event);
 }
 
-static lisp_value converter_watch(struct tomoe *server, const struct tomoe_event *event) {
+static pv converter_watch(struct tomoe *server, const struct tomoe_event *event) {
     return res_event_value(server, event);
 }
 
-static lisp_value converter_exec(struct tomoe *server, const struct tomoe_event *event) {
+static pv converter_exec(struct tomoe *server, const struct tomoe_event *event) {
     return res_event_value(server, event);
 }
 
-static lisp_value converter_process(struct tomoe *server, const struct tomoe_event *event) {
+static pv converter_process(struct tomoe *server, const struct tomoe_event *event) {
     return res_event_value(server, event);
 }
 
-static lisp_value converter_services(struct tomoe *server, const struct tomoe_event *event) {
-    lisp_value value = res_event_value(server, event);
-    if (lisp_nilp(value)) return value;
-    return lisp_cons(lisp_keyword("TYPE"),
-        lisp_cons(lisp_keyword("services"),
-        lisp_cons(lisp_keyword("SERVICES"),
-        lisp_cons(value, lisp_nil()))));
+static pv converter_services(struct tomoe *server, const struct tomoe_event *event) {
+    pv value = res_event_value(server, event);
+    if (pv_nilp(value)) return value;
+    return pv_cons(pv_keyword("TYPE"),
+        pv_cons(pv_keyword("services"),
+        pv_cons(pv_keyword("SERVICES"),
+        pv_cons(value, pv_nil()))));
 }
 
-static lisp_value converter_system(struct tomoe *server, const struct tomoe_event *event) {
+static pv converter_system(struct tomoe *server, const struct tomoe_event *event) {
     return res_event_value(server, event);
 }
 
-static lisp_value converter_source(struct tomoe *server, const struct tomoe_event *event) {
+static pv converter_source(struct tomoe *server, const struct tomoe_event *event) {
     return res_event_value(server, event);
 }
 
@@ -233,6 +235,7 @@ static uint64_t timer_next(const struct res_timer *timer) {
 }
 
 void res_timers_service(uint64_t now, uint64_t *next) {
+    bool held = false;
     uint64_t start = now;
     size_t delivered = 0;
     for (;;) {
@@ -248,6 +251,10 @@ void res_timers_service(uint64_t now, uint64_t *next) {
             if (due->deadline < *next) *next = due->deadline;
             break;
         }
+        if (!policy_reads(res.server, EV_TIMER)) {
+            held = true;
+            break;
+        }
         delivered++;
         due->fired = true;
         struct res_buffer text = {0};
@@ -257,9 +264,14 @@ void res_timers_service(uint64_t now, uint64_t *next) {
         rb_quoted_cstring(&text, due->owner);
         rb_append(&text, ")", 1);
         char *message = rb_take(&text);
-        if (message) {
-            res_push_event(res.server, EV_TIMER, EVF_FACT, message, strlen(message));
-            free(message);
+        if (message && due->repeat && policy_loading(res.server) && !tomoe_test_flag("policy-timer-pileup"))
+            policy_ring_drop_same(res.server, EV_TIMER, message, strlen(message));
+        bool pushed = message && res_push_event(res.server, EV_TIMER, EVF_FACT, message, strlen(message));
+        free(message);
+        if (!pushed) {
+            due->fired = false;
+            held = true;
+            break;
         }
         if (due->repeat) {
             due->deadline = res_now() + timer_next(due);
@@ -270,6 +282,7 @@ void res_timers_service(uint64_t now, uint64_t *next) {
         struct res_timer *timer = &res.timers[index];
         if (!timer->fired && timer->deadline < *next) *next = timer->deadline;
     }
+    if (held && *next < res_now() + RES_HELD_MS) *next = res_now() + RES_HELD_MS;
 }
 
 void res_timers_free(void) {
@@ -345,54 +358,54 @@ void resources_stop(struct tomoe *server) {
     (void)server;
 }
 
-static bool res_get(lisp_value plist, const char *name, lisp_value *out) {
-    lisp_value cursor = plist;
-    while (lisp_consp(cursor)) {
-        lisp_value key = lisp_car(cursor);
-        lisp_value tail = lisp_cdr(cursor);
-        if (!lisp_consp(tail)) return false;
-        if (lisp_keywordp(key) && lisp_eq_keyword(key, name)) {
-            *out = lisp_car(tail);
+static bool res_get(pv plist, const char *name, pv *out) {
+    pv cursor = plist;
+    while (pv_consp(cursor)) {
+        pv key = pv_car(cursor);
+        pv tail = pv_cdr(cursor);
+        if (!pv_consp(tail)) return false;
+        if (pv_keywordp(key) && pv_eq_keyword(key, name)) {
+            *out = pv_car(tail);
             return true;
         }
-        cursor = lisp_cdr(tail);
+        cursor = pv_cdr(tail);
     }
     return false;
 }
 
-static bool res_get_keyword(lisp_value plist, const char *name, const char **out) {
-    lisp_value value;
+static bool res_get_keyword(pv plist, const char *name, const char **out) {
+    pv value;
     if (!res_get(plist, name, &value)) return false;
-    if (!lisp_keywordp(value)) return false;
-    const char *symbol = lisp_symbol_name(value);
+    if (!pv_keywordp(value)) return false;
+    const char *symbol = pv_symbol_name(value);
     if (!symbol) return false;
     *out = symbol;
     return true;
 }
 
-static bool res_get_string(lisp_value plist, const char *name, char **out) {
-    lisp_value value;
+static bool res_get_string(pv plist, const char *name, char **out) {
+    pv value;
     *out = NULL;
     if (!res_get(plist, name, &value)) return true;
-    if (lisp_nilp(value)) return true;
-    if (!lisp_stringp(value)) return false;
+    if (pv_nilp(value)) return true;
+    if (!pv_stringp(value)) return false;
     size_t length = 0;
-    const char *text = lisp_get_string(value, &length);
+    const char *text = pv_get_string(value, &length);
     if (!text) return false;
     *out = res_dup_span(text, length);
     return *out != NULL;
 }
 
-static bool res_get_int(lisp_value plist, const char *name, int64_t *out) {
-    lisp_value value;
+static bool res_get_int(pv plist, const char *name, int64_t *out) {
+    pv value;
     if (!res_get(plist, name, &value)) return false;
-    if (!lisp_intp(value)) return false;
-    *out = lisp_get_int(value);
+    if (!pv_intp(value)) return false;
+    *out = pv_get_int(value);
     return true;
 }
 
-static char *res_keyword_text(lisp_value value) {
-    const char *symbol = lisp_symbol_name(value);
+static char *res_keyword_text(pv value) {
+    const char *symbol = pv_symbol_name(value);
     if (!symbol) return NULL;
     return res_dup(symbol);
 }
@@ -425,44 +438,44 @@ static void want_process_free(struct want_process *want) {
     free(want->env);
 }
 
-static bool res_parse_timer(lisp_value entry, struct want_timer *want, char *error,
+static bool res_parse_timer(pv entry, struct want_timer *want, char *error,
         size_t size) {
-    lisp_value owner, arguments;
-    if (!res_get(entry, "OWNER", &owner) || !lisp_stringp(owner)) {
+    pv owner, arguments;
+    if (!res_get(entry, "OWNER", &owner) || !pv_stringp(owner)) {
         res_error(error, size, "Owned timer without an owner name.");
         return false;
     }
     size_t owner_length = 0;
-    const char *owner_text = lisp_get_string(owner, &owner_length);
+    const char *owner_text = pv_get_string(owner, &owner_length);
     want->owner = res_dup_span(owner_text, owner_length);
-    if (!res_get(entry, "ARGUMENTS", &arguments) || !lisp_consp(arguments)) {
+    if (!res_get(entry, "ARGUMENTS", &arguments) || !pv_consp(arguments)) {
         res_error(error, size, "Owned timer without arguments.");
         return false;
     }
-    lisp_value name = lisp_car(arguments);
-    lisp_value tail = lisp_cdr(arguments);
-    if (!lisp_keywordp(name) || !lisp_consp(tail)) {
+    pv name = pv_car(arguments);
+    pv tail = pv_cdr(arguments);
+    if (!pv_keywordp(name) || !pv_consp(tail)) {
         res_error(error, size, "Invalid owned timer.");
         return false;
     }
     want->name = res_keyword_text(name);
-    lisp_value milliseconds = lisp_car(tail);
-    tail = lisp_cdr(tail);
-    if (!lisp_consp(tail)) {
+    pv milliseconds = pv_car(tail);
+    tail = pv_cdr(tail);
+    if (!pv_consp(tail)) {
         res_error(error, size, "Invalid owned timer.");
         return false;
     }
-    want->repeat = !lisp_nilp(lisp_car(tail));
-    if (lisp_intp(milliseconds)) {
-        int64_t value = lisp_get_int(milliseconds);
+    want->repeat = !pv_nilp(pv_car(tail));
+    if (pv_intp(milliseconds)) {
+        int64_t value = pv_get_int(milliseconds);
         if (value < 0 || value > 2147483647) {
             res_error(error, size, "Invalid timer period.");
             return false;
         }
         want->declared = value;
         want->clock = TIMER_CLOCK_NONE;
-    } else if (lisp_keywordp(milliseconds)) {
-        const char *symbol = lisp_symbol_name(milliseconds);
+    } else if (pv_keywordp(milliseconds)) {
+        const char *symbol = pv_symbol_name(milliseconds);
         if (symbol && !strcmp(symbol, "REFRESH")) {
             want->clock = TIMER_CLOCK_REFRESH;
             want->declared = (int64_t)res_refresh_ms();
@@ -483,52 +496,52 @@ static bool res_parse_timer(lisp_value entry, struct want_timer *want, char *err
     return true;
 }
 
-static bool res_parse_watch(lisp_value entry, struct want_watch *want, char *error,
+static bool res_parse_watch(pv entry, struct want_watch *want, char *error,
         size_t size) {
-    lisp_value owner, arguments;
+    pv owner, arguments;
     int64_t source = 0;
     if (res_get_int(entry, "SOURCE-ID", &source) && source > 0) want->source_id = (uint64_t)source;
     if (!res_get_string(entry, "DIRECTORY", &want->directory)) {
         res_error(error, size, "Invalid file watch directory.");
         return false;
     }
-    if (!res_get(entry, "OWNER", &owner) || !lisp_stringp(owner)) {
+    if (!res_get(entry, "OWNER", &owner) || !pv_stringp(owner)) {
         res_error(error, size, "File watch without an owner name.");
         return false;
     }
     size_t owner_length = 0;
-    const char *owner_text = lisp_get_string(owner, &owner_length);
+    const char *owner_text = pv_get_string(owner, &owner_length);
     want->owner = res_dup_span(owner_text, owner_length);
-    if (!res_get(entry, "ARGUMENTS", &arguments) || !lisp_consp(arguments)) {
+    if (!res_get(entry, "ARGUMENTS", &arguments) || !pv_consp(arguments)) {
         res_error(error, size, "File watch without arguments.");
         return false;
     }
-    lisp_value name = lisp_car(arguments);
-    lisp_value tail = lisp_cdr(arguments);
-    if (!lisp_keywordp(name) || !lisp_consp(tail)) {
+    pv name = pv_car(arguments);
+    pv tail = pv_cdr(arguments);
+    if (!pv_keywordp(name) || !pv_consp(tail)) {
         res_error(error, size, "Invalid file watch.");
         return false;
     }
     want->name = res_keyword_text(name);
-    lisp_value path = lisp_car(tail);
-    tail = lisp_cdr(tail);
-    if (!lisp_stringp(path) || !lisp_consp(tail)) {
+    pv path = pv_car(tail);
+    tail = pv_cdr(tail);
+    if (!pv_stringp(path) || !pv_consp(tail)) {
         res_error(error, size, "Invalid file watch.");
         return false;
     }
     size_t path_length = 0;
-    const char *path_text = lisp_get_string(path, &path_length);
+    const char *path_text = pv_get_string(path, &path_length);
     if (!path_length || path_length > 65536 || memchr(path_text, 0, path_length)) {
         res_error(error, size, "Invalid file watch path.");
         return false;
     }
     want->path = res_dup_span(path_text, path_length);
-    lisp_value limit = lisp_car(tail);
-    if (!lisp_intp(limit)) {
+    pv limit = pv_car(tail);
+    if (!pv_intp(limit)) {
         res_error(error, size, "Invalid file watch content limit.");
         return false;
     }
-    int64_t value = lisp_get_int(limit);
+    int64_t value = pv_get_int(limit);
     if (value < 1 || value > 65536) {
         res_error(error, size, "Invalid file watch content limit.");
         return false;
@@ -537,58 +550,58 @@ static bool res_parse_watch(lisp_value entry, struct want_watch *want, char *err
     return true;
 }
 
-static bool res_parse_exec(lisp_value entry, struct want_exec *want, char *error,
+static bool res_parse_exec(pv entry, struct want_exec *want, char *error,
         size_t size) {
-    lisp_value owner, arguments;
-    if (!res_get(entry, "OWNER", &owner) || !lisp_stringp(owner)) {
+    pv owner, arguments;
+    if (!res_get(entry, "OWNER", &owner) || !pv_stringp(owner)) {
         res_error(error, size, "Owned execution without an owner name.");
         return false;
     }
     size_t owner_length = 0;
-    const char *owner_text = lisp_get_string(owner, &owner_length);
+    const char *owner_text = pv_get_string(owner, &owner_length);
     want->owner = res_dup_span(owner_text, owner_length);
-    if (!res_get(entry, "ARGUMENTS", &arguments) || !lisp_consp(arguments)) {
+    if (!res_get(entry, "ARGUMENTS", &arguments) || !pv_consp(arguments)) {
         res_error(error, size, "Owned execution without arguments.");
         return false;
     }
-    lisp_value name = lisp_car(arguments);
-    lisp_value tail = lisp_cdr(arguments);
-    if (!lisp_keywordp(name) || !lisp_consp(tail)) {
+    pv name = pv_car(arguments);
+    pv tail = pv_cdr(arguments);
+    if (!pv_keywordp(name) || !pv_consp(tail)) {
         res_error(error, size, "Invalid owned execution.");
         return false;
     }
     want->name = res_keyword_text(name);
-    lisp_value command = lisp_car(tail);
-    tail = lisp_cdr(tail);
-    if (!lisp_stringp(command) || !lisp_consp(tail)) {
+    pv command = pv_car(tail);
+    tail = pv_cdr(tail);
+    if (!pv_stringp(command) || !pv_consp(tail)) {
         res_error(error, size, "Invalid async command string.");
         return false;
     }
     size_t command_length = 0;
-    const char *command_text = lisp_get_string(command, &command_length);
+    const char *command_text = pv_get_string(command, &command_length);
     if (command_length > 65536 || memchr(command_text, 0, command_length)) {
         res_error(error, size, "Invalid async command string.");
         return false;
     }
     want->command = res_dup_span(command_text, command_length);
-    lisp_value timeout = lisp_car(tail);
-    tail = lisp_cdr(tail);
-    if (!lisp_intp(timeout) || !lisp_consp(tail)) {
+    pv timeout = pv_car(tail);
+    tail = pv_cdr(tail);
+    if (!pv_intp(timeout) || !pv_consp(tail)) {
         res_error(error, size, "Invalid execution timeout.");
         return false;
     }
-    int64_t timeout_value = lisp_get_int(timeout);
+    int64_t timeout_value = pv_get_int(timeout);
     if (timeout_value < 1 || timeout_value > 2147483647) {
         res_error(error, size, "Invalid execution timeout.");
         return false;
     }
     want->timeout = timeout_value;
-    lisp_value limit = lisp_car(tail);
-    if (!lisp_intp(limit)) {
+    pv limit = pv_car(tail);
+    if (!pv_intp(limit)) {
         res_error(error, size, "Invalid execution output limit.");
         return false;
     }
-    int64_t limit_value = lisp_get_int(limit);
+    int64_t limit_value = pv_get_int(limit);
     if (limit_value < 1 || limit_value > 65536) {
         res_error(error, size, "Invalid execution output limit.");
         return false;
@@ -597,18 +610,18 @@ static bool res_parse_exec(lisp_value entry, struct want_exec *want, char *error
     return true;
 }
 
-static char *res_string_value(lisp_value value) {
-    if (!lisp_stringp(value)) return NULL;
+static char *res_string_value(pv value) {
+    if (!pv_stringp(value)) return NULL;
     size_t length = 0;
-    const char *text = lisp_get_string(value, &length);
+    const char *text = pv_get_string(value, &length);
     if (!text || memchr(text, 0, length)) return NULL;
     return res_dup_span(text, length);
 }
 
-static bool res_parse_vector(lisp_value list, char ***out, size_t *count, size_t limit,
+static bool res_parse_vector(pv list, char ***out, size_t *count, size_t limit,
         bool executable, char *error, size_t size) {
     size_t length = 0;
-    for (lisp_value cursor = list; lisp_consp(cursor); cursor = lisp_cdr(cursor)) length++;
+    for (pv cursor = list; pv_consp(cursor); cursor = pv_cdr(cursor)) length++;
     if (!length || length > limit) {
         res_error(error, size, executable ? "Process argv must contain 1 through 128 strings."
                                           : "More than 64 environment overrides.");
@@ -617,8 +630,8 @@ static bool res_parse_vector(lisp_value list, char ***out, size_t *count, size_t
     char **vector = res_alloc((length + 1) * sizeof(char *));
     if (!vector) { res_error(error, size, "Cannot allocate resources."); return false; }
     size_t index = 0;
-    for (lisp_value cursor = list; lisp_consp(cursor); cursor = lisp_cdr(cursor)) {
-        char *entry = res_string_value(lisp_car(cursor));
+    for (pv cursor = list; pv_consp(cursor); cursor = pv_cdr(cursor)) {
+        char *entry = res_string_value(pv_car(cursor));
         if (!entry) {
             for (size_t done = 0; done < index; done++) free(vector[done]);
             free(vector);
@@ -639,10 +652,10 @@ static bool res_parse_vector(lisp_value list, char ***out, size_t *count, size_t
     return true;
 }
 
-static bool res_parse_environment(lisp_value list, char ***out, size_t *count, char *error,
+static bool res_parse_environment(pv list, char ***out, size_t *count, char *error,
         size_t size) {
     size_t length = 0;
-    for (lisp_value cursor = list; lisp_consp(cursor); cursor = lisp_cdr(cursor)) length++;
+    for (pv cursor = list; pv_consp(cursor); cursor = pv_cdr(cursor)) length++;
     if (length > 64) {
         res_error(error, size, "More than 64 environment overrides.");
         return false;
@@ -650,16 +663,16 @@ static bool res_parse_environment(lisp_value list, char ***out, size_t *count, c
     char **vector = res_alloc((length + 1) * sizeof(char *));
     if (!vector) { res_error(error, size, "Cannot allocate resources."); return false; }
     size_t index = 0;
-    for (lisp_value cursor = list; lisp_consp(cursor); cursor = lisp_cdr(cursor)) {
-        lisp_value pair = lisp_car(cursor);
-        if (!lisp_consp(pair)) {
+    for (pv cursor = list; pv_consp(cursor); cursor = pv_cdr(cursor)) {
+        pv pair = pv_car(cursor);
+        if (!pv_consp(pair)) {
             for (size_t done = 0; done < index; done++) free(vector[done]);
             free(vector);
             res_error(error, size, "Environment entries must be (name . value) pairs.");
             return false;
         }
-        char *name = res_string_value(lisp_car(pair));
-        char *value = res_string_value(lisp_cdr(pair));
+        char *name = res_string_value(pv_car(pair));
+        char *value = res_string_value(pv_cdr(pair));
         if (!name || !value || !*name || strchr(name, '=')) {
             free(name); free(value);
             for (size_t done = 0; done < index; done++) free(vector[done]);
@@ -705,99 +718,99 @@ static bool res_parse_environment(lisp_value list, char ***out, size_t *count, c
     return true;
 }
 
-static bool res_parse_process(lisp_value entry, struct want_process *want, char *error,
+static bool res_parse_process(pv entry, struct want_process *want, char *error,
         size_t size) {
-    lisp_value owner, arguments;
+    pv owner, arguments;
     int64_t token = 0;
     if (res_get_int(entry, "TOKEN", &token) && token > 0) want->token = (uint64_t)token;
     if (!res_get_string(entry, "DIRECTORY", &want->directory)) {
         res_error(error, size, "Invalid process directory.");
         return false;
     }
-    if (!res_get(entry, "OWNER", &owner) || !lisp_stringp(owner)) {
+    if (!res_get(entry, "OWNER", &owner) || !pv_stringp(owner)) {
         res_error(error, size, "Process declaration without an owner name.");
         return false;
     }
     size_t owner_length = 0;
-    const char *owner_text = lisp_get_string(owner, &owner_length);
+    const char *owner_text = pv_get_string(owner, &owner_length);
     want->owner = res_dup_span(owner_text, owner_length);
-    if (!res_get(entry, "ARGUMENTS", &arguments) || !lisp_consp(arguments)) {
+    if (!res_get(entry, "ARGUMENTS", &arguments) || !pv_consp(arguments)) {
         res_error(error, size, "Process declaration without arguments.");
         return false;
     }
-    lisp_value kind = lisp_car(arguments);
-    lisp_value tail = lisp_cdr(arguments);
-    if (!lisp_keywordp(kind) || !lisp_consp(tail)) {
+    pv kind = pv_car(arguments);
+    pv tail = pv_cdr(arguments);
+    if (!pv_keywordp(kind) || !pv_consp(tail)) {
         res_error(error, size, "Invalid process declaration.");
         return false;
     }
-    const char *symbol = lisp_symbol_name(kind);
+    const char *symbol = pv_symbol_name(kind);
     if (symbol && !strcmp(symbol, "ONCE")) want->kind = PROCESS_ONCE;
     else if (symbol && !strcmp(symbol, "SERVICE")) want->kind = PROCESS_SERVICE;
     else { res_error(error, size, "Invalid process kind."); return false; }
-    lisp_value name = lisp_car(tail);
-    tail = lisp_cdr(tail);
-    if (!lisp_keywordp(name) || !lisp_consp(tail)) {
+    pv name = pv_car(tail);
+    tail = pv_cdr(tail);
+    if (!pv_keywordp(name) || !pv_consp(tail)) {
         res_error(error, size, "Invalid process declaration.");
         return false;
     }
     want->name = res_keyword_text(name);
-    lisp_value command = lisp_car(tail);
-    tail = lisp_cdr(tail);
-    if (lisp_stringp(command)) {
+    pv command = pv_car(tail);
+    tail = pv_cdr(tail);
+    if (pv_stringp(command)) {
         want->command = res_string_value(command);
         if (!want->command) { res_error(error, size, "Invalid process command."); return false; }
         if (strlen(want->command) > 65536) {
             res_error(error, size, "Invalid process command.");
             return false;
         }
-    } else if (lisp_consp(command)) {
+    } else if (pv_consp(command)) {
         if (!res_parse_vector(command, &want->argv, &want->argc, 128, true, error, size))
             return false;
     } else {
         res_error(error, size, "Invalid process command.");
         return false;
     }
-    lisp_value cwd = lisp_car(tail);
-    tail = lisp_cdr(tail);
-    if (!lisp_nilp(cwd)) {
+    pv cwd = pv_car(tail);
+    tail = pv_cdr(tail);
+    if (!pv_nilp(cwd)) {
         want->cwd = res_string_value(cwd);
         if (!want->cwd || !*want->cwd) {
             res_error(error, size, "Invalid process directory.");
             return false;
         }
     }
-    if (!lisp_consp(tail)) { res_error(error, size, "Invalid process declaration."); return false; }
-    if (!res_parse_environment(lisp_car(tail), &want->env, &want->env_count, error, size))
+    if (!pv_consp(tail)) { res_error(error, size, "Invalid process declaration."); return false; }
+    if (!res_parse_environment(pv_car(tail), &want->env, &want->env_count, error, size))
         return false;
-    tail = lisp_cdr(tail);
-    if (!lisp_consp(tail)) { res_error(error, size, "Invalid process declaration."); return false; }
-    lisp_value run = lisp_car(tail);
-    tail = lisp_cdr(tail);
-    if (!lisp_nilp(run)) {
-        const char *run_symbol = lisp_keywordp(run) ? lisp_symbol_name(run) : NULL;
+    tail = pv_cdr(tail);
+    if (!pv_consp(tail)) { res_error(error, size, "Invalid process declaration."); return false; }
+    pv run = pv_car(tail);
+    tail = pv_cdr(tail);
+    if (!pv_nilp(run)) {
+        const char *run_symbol = pv_keywordp(run) ? pv_symbol_name(run) : NULL;
         if (run_symbol && !strcmp(run_symbol, "ONCE-PER-SESSION")) want->run = RUN_ONCE_PER_SESSION;
         else if (run_symbol && !strcmp(run_symbol, "ONCE-PER-CONFIG-VERSION"))
             want->run = RUN_ONCE_PER_CONFIG_VERSION;
         else { res_error(error, size, "Invalid process run mode."); return false; }
     }
-    if (!lisp_consp(tail)) { res_error(error, size, "Invalid process declaration."); return false; }
-    lisp_value restart = lisp_car(tail);
-    tail = lisp_cdr(tail);
-    const char *restart_symbol = lisp_keywordp(restart) ? lisp_symbol_name(restart) : NULL;
+    if (!pv_consp(tail)) { res_error(error, size, "Invalid process declaration."); return false; }
+    pv restart = pv_car(tail);
+    tail = pv_cdr(tail);
+    const char *restart_symbol = pv_keywordp(restart) ? pv_symbol_name(restart) : NULL;
     if (restart_symbol && !strcmp(restart_symbol, "NEVER")) want->restart = RESTART_NEVER;
     else if (restart_symbol && !strcmp(restart_symbol, "ON-FAILURE")) want->restart = RESTART_ON_FAILURE;
     else if (restart_symbol && !strcmp(restart_symbol, "ON-EXIT")) want->restart = RESTART_ON_EXIT;
-    else if (lisp_nilp(restart) && want->kind == PROCESS_ONCE) want->restart = RESTART_NEVER;
+    else if (pv_nilp(restart) && want->kind == PROCESS_ONCE) want->restart = RESTART_NEVER;
     else { res_error(error, size, "Invalid process restart policy."); return false; }
-    if (!lisp_consp(tail)) { res_error(error, size, "Invalid process declaration."); return false; }
-    lisp_value reload = lisp_car(tail);
-    const char *reload_symbol = lisp_keywordp(reload) ? lisp_symbol_name(reload) : NULL;
+    if (!pv_consp(tail)) { res_error(error, size, "Invalid process declaration."); return false; }
+    pv reload = pv_car(tail);
+    const char *reload_symbol = pv_keywordp(reload) ? pv_symbol_name(reload) : NULL;
     if (reload_symbol && !strcmp(reload_symbol, "KEEP-IF-UNCHANGED"))
         want->reload = RELOAD_KEEP_IF_UNCHANGED;
     else if (reload_symbol && !strcmp(reload_symbol, "ALWAYS-RESTART"))
         want->reload = RELOAD_ALWAYS_RESTART;
-    else if (lisp_nilp(reload) && want->kind == PROCESS_ONCE)
+    else if (pv_nilp(reload) && want->kind == PROCESS_ONCE)
         want->reload = RELOAD_KEEP_IF_UNCHANGED;
     else { res_error(error, size, "Invalid process reload policy."); return false; }
     return true;
@@ -882,22 +895,22 @@ static void res_plan_free(struct res_plan *plan) {
     memset(plan, 0, sizeof(*plan));
 }
 
-static const char *res_plan_make(lisp_value wanted, struct res_plan *plan, char *error, size_t size) {
+static const char *res_plan_make(pv wanted, struct res_plan *plan, char *error, size_t size) {
     memset(plan, 0, sizeof(*plan));
     error[0] = 0;
     if (!res.started && res.server) resources_start(res.server);
     if (!res.started) return "Resource ownership is not running.";
     size_t length = 0;
-    for (lisp_value cursor = wanted; lisp_consp(cursor); cursor = lisp_cdr(cursor)) length++;
+    for (pv cursor = wanted; pv_consp(cursor); cursor = pv_cdr(cursor)) length++;
     plan->timers = res_alloc((length + 1) * sizeof(*plan->timers));
     plan->watches = res_alloc((length + 1) * sizeof(*plan->watches));
     plan->execs = res_alloc((length + 1) * sizeof(*plan->execs));
     plan->processes = res_alloc((length + 1) * sizeof(*plan->processes));
     bool ok = plan->timers && plan->watches && plan->execs && plan->processes;
-    for (lisp_value cursor = wanted; ok && lisp_consp(cursor); cursor = lisp_cdr(cursor)) {
-        lisp_value entry = lisp_car(cursor);
+    for (pv cursor = wanted; ok && pv_consp(cursor); cursor = pv_cdr(cursor)) {
+        pv entry = pv_car(cursor);
         const char *kind = NULL;
-        if (!lisp_consp(entry) || !res_get_keyword(entry, "KIND", &kind)) {
+        if (!pv_consp(entry) || !res_get_keyword(entry, "KIND", &kind)) {
             res_error(error, size, "Resource entry without a kind.");
             ok = false;
             break;
@@ -953,20 +966,20 @@ static const char *res_plan_make(lisp_value wanted, struct res_plan *plan, char 
     return rejection;
 }
 
-static lisp_value prim_resources_check(int argc, lisp_value *argv) {
+static pv prim_resources_check(int argc, pv *argv) {
     char error[512];
     struct res_plan plan;
     const char *rejection = res_plan_make(argv[0], &plan, error, sizeof(error));
-    if (rejection) return lisp_cstring(rejection);
+    if (rejection) return pv_cstring(rejection);
     res_plan_free(&plan);
-    return lisp_nil();
+    return pv_nil();
 }
 
-static lisp_value prim_resources_commit(int argc, lisp_value *argv) {
+static pv prim_resources_commit(int argc, pv *argv) {
     char error[512];
     struct res_plan plan;
     const char *rejection = res_plan_make(argv[0], &plan, error, sizeof(error));
-    if (rejection) return lisp_cstring(rejection);
+    if (rejection) return pv_cstring(rejection);
     res.commit_sequence++;
     res_apply_timers(plan.timers, plan.timer_count);
     free(plan.timers);
@@ -977,78 +990,78 @@ static lisp_value prim_resources_commit(int argc, lisp_value *argv) {
     res_watches_apply(plan.watches, plan.watch_count);
     free(plan.watches);
     res_schedule(res_now());
-    return lisp_nil();
+    return pv_nil();
 }
 
-static lisp_value prim_spawn(int argc, lisp_value *argv) {
-    if (!res.started) lisp_error("Resource ownership is not running.");
+static pv prim_spawn(int argc, pv *argv) {
+    if (!res.started) pv_error("Resource ownership is not running.");
     return res_spawn(argv[0], false);
 }
 
-static lisp_value prim_launch(int argc, lisp_value *argv) {
-    if (!res.started) lisp_error("Resource ownership is not running.");
+static pv prim_launch(int argc, pv *argv) {
+    if (!res.started) pv_error("Resource ownership is not running.");
     (void)res_spawn(argv[0], true);
-    return lisp_nil();
+    return pv_nil();
 }
 
-static lisp_value prim_media(int argc, lisp_value *argv) {
-    const char *action = lisp_keywordp(argv[0]) ? lisp_symbol_name(argv[0]) : NULL;
+static pv prim_media(int argc, pv *argv) {
+    const char *action = pv_keywordp(argv[0]) ? pv_symbol_name(argv[0]) : NULL;
     const char *method = NULL;
     if (action && !strcmp(action, "PLAY-PAUSE")) method = "PlayPause";
     else if (action && !strcmp(action, "NEXT")) method = "Next";
     else if (action && !strcmp(action, "PREVIOUS")) method = "Previous";
-    else lisp_error("Media action must be :PLAY-PAUSE, :NEXT or :PREVIOUS.");
+    else pv_error("Media action must be :PLAY-PAUSE, :NEXT or :PREVIOUS.");
     char error[512];
-    if (!res_media(method, error, sizeof(error))) lisp_error("%s", error);
-    return lisp_nil();
+    if (!res_media(method, error, sizeof(error))) pv_error("%s", error);
+    return pv_nil();
 }
 
-static lisp_value prim_backlight(int argc, lisp_value *argv) {
-    if (!lisp_intp(argv[0])) lisp_error("Brightness step must be an integer.");
+static pv prim_backlight(int argc, pv *argv) {
+    if (!pv_intp(argv[0])) pv_error("Brightness step must be an integer.");
     char error[512];
-    if (!res_backlight(lisp_get_int(argv[0]), error, sizeof(error))) lisp_error("%s", error);
-    return lisp_nil();
+    if (!res_backlight(pv_get_int(argv[0]), error, sizeof(error))) pv_error("%s", error);
+    return pv_nil();
 }
 
-static lisp_value prim_describe(int argc, lisp_value *argv) {
-    if (!lisp_keywordp(argv[0])) lisp_error("Describe needs a keyword kind.");
-    const char *kind = lisp_symbol_name(argv[0]);
+static pv prim_describe(int argc, pv *argv) {
+    if (!pv_keywordp(argv[0])) pv_error("Describe needs a keyword kind.");
+    const char *kind = pv_symbol_name(argv[0]);
     return resources_describe(res.server, kind);
 }
 
-static lisp_value prim_services(int argc, lisp_value *argv) {
+static pv prim_services(int argc, pv *argv) {
     return res_services_value();
 }
 
-static lisp_value prim_system(int argc, lisp_value *argv) {
+static pv prim_system(int argc, pv *argv) {
     return res_system_value();
 }
 
-static lisp_value prim_background_window_p(int argc, lisp_value *argv) {
-    if (!lisp_intp(argv[0])) return lisp_nil();
-    return lisp_bool(res_background_window_p(lisp_get_int(argv[0])));
+static pv prim_background_window_p(int argc, pv *argv) {
+    if (!pv_intp(argv[0])) return pv_nil();
+    return pv_bool(res_background_window_p(pv_get_int(argv[0])));
 }
 
-static lisp_value prim_sources(int argc, lisp_value *argv) {
-    if (!res.started) lisp_error("Resource ownership is not running.");
+static pv prim_sources(int argc, pv *argv) {
+    if (!res.started) pv_error("Resource ownership is not running.");
     char error[512];
-    if (!res_sources_set(argv[0], error, sizeof(error))) lisp_error("%s", error);
-    return lisp_nil();
+    if (!res_sources_set(argv[0], error, sizeof(error))) pv_error("%s", error);
+    return pv_nil();
 }
 
 void resources_register_primitives(struct tomoe *server) {
     res.server = server;
-    lisp_define_primitive("%resources-check", prim_resources_check, 1, 1);
-    lisp_define_primitive("%resources-commit", prim_resources_commit, 1, 1);
-    lisp_define_primitive("%spawn", prim_spawn, 1, 1);
-    lisp_define_primitive("%launch", prim_launch, 1, 1);
-    lisp_define_primitive("%media", prim_media, 1, 1);
-    lisp_define_primitive("%backlight", prim_backlight, 1, 1);
-    lisp_define_primitive("%describe", prim_describe, 1, 1);
-    lisp_define_primitive("%services", prim_services, 0, 0);
-    lisp_define_primitive("%system", prim_system, 0, 0);
-    lisp_define_primitive("%background-window-p", prim_background_window_p, 1, 1);
-    lisp_define_primitive("%sources", prim_sources, 1, 1);
+    prim_define("%resources-check", prim_resources_check, 1, 1);
+    prim_define("%resources-commit", prim_resources_commit, 1, 1);
+    prim_define("%spawn", prim_spawn, 1, 1);
+    prim_define("%launch", prim_launch, 1, 1);
+    prim_define("%media", prim_media, 1, 1);
+    prim_define("%backlight", prim_backlight, 1, 1);
+    prim_define("%describe", prim_describe, 1, 1);
+    prim_define("%services", prim_services, 0, 0);
+    prim_define("%system", prim_system, 0, 0);
+    prim_define("%background-window-p", prim_background_window_p, 1, 1);
+    prim_define("%sources", prim_sources, 1, 1);
     policy_set_converter(EV_TIMER, converter_timer);
     policy_set_converter(EV_WATCH, converter_watch);
     policy_set_converter(EV_EXEC, converter_exec);
@@ -1058,20 +1071,20 @@ void resources_register_primitives(struct tomoe *server) {
     policy_set_converter(EV_SOURCE, converter_source);
 }
 
-lisp_value resources_describe(struct tomoe *server, const char *kind) {
-    lisp_value list = lisp_nil();
+pv resources_describe(struct tomoe *server, const char *kind) {
+    pv list = pv_nil();
     (void)server;
     if (!kind) return list;
     if (!strcmp(kind, "TIMERS")) {
         for (size_t index = res.timer_count; index > 0; index--) {
             struct res_timer *timer = &res.timers[index - 1];
-            lisp_value plist = lisp_list(10,
-                lisp_keyword("OWNER"), lisp_cstring(timer->owner),
-                lisp_keyword("NAME"), lisp_keyword(timer->name),
-                lisp_keyword("KIND"), lisp_keyword(timer->repeat ? "INTERVAL" : "ONCE"),
-                lisp_keyword("MILLISECONDS"), lisp_int(res_timer_period(timer)),
-                lisp_keyword("STATUS"), lisp_keyword(timer->fired ? "FIRED" : "PENDING"));
-            list = lisp_cons(plist, list);
+            pv plist = pv_list(10,
+                pv_keyword("OWNER"), pv_cstring(timer->owner),
+                pv_keyword("NAME"), pv_keyword(timer->name),
+                pv_keyword("KIND"), pv_keyword(timer->repeat ? "INTERVAL" : "ONCE"),
+                pv_keyword("MILLISECONDS"), pv_int(res_timer_period(timer)),
+                pv_keyword("STATUS"), pv_keyword(timer->fired ? "FIRED" : "PENDING"));
+            list = pv_cons(plist, list);
         }
         return list;
     }
@@ -1082,62 +1095,62 @@ lisp_value resources_describe(struct tomoe *server, const char *kind) {
             struct res_watch *watch = &res.watches[index - 1];
             const char *status = (watch->status >= 0 && watch->status <= WATCH_MISSING)
                 ? names[watch->status] : "READY";
-            lisp_value plist = lisp_list(10,
-                lisp_keyword("OWNER"), lisp_cstring(watch->owner),
-                lisp_keyword("NAME"), lisp_keyword(watch->name),
-                lisp_keyword("PATH"), lisp_cstring(watch->path),
-                lisp_keyword("CONTENT-LIMIT"), lisp_uint(watch->limit),
-                lisp_keyword("STATUS"), lisp_keyword(status));
-            list = lisp_cons(plist, list);
+            pv plist = pv_list(10,
+                pv_keyword("OWNER"), pv_cstring(watch->owner),
+                pv_keyword("NAME"), pv_keyword(watch->name),
+                pv_keyword("PATH"), pv_cstring(watch->path),
+                pv_keyword("CONTENT-LIMIT"), pv_uint(watch->limit),
+                pv_keyword("STATUS"), pv_keyword(status));
+            list = pv_cons(plist, list);
         }
         return list;
     }
     if (!strcmp(kind, "EXECUTIONS")) {
         for (size_t index = res.exec_count; index > 0; index--) {
             struct res_exec *exec = &res.execs[index - 1];
-            lisp_value code = exec->has_code ? lisp_int(exec->code) : lisp_nil();
-            lisp_value plist = lisp_list(14,
-                lisp_keyword("OWNER"), lisp_cstring(exec->owner),
-                lisp_keyword("NAME"), lisp_keyword(exec->name),
-                lisp_keyword("STATUS"), lisp_keyword(res_exec_status_name(exec->status)),
-                lisp_keyword("DELIVERED"), lisp_bool(exec->delivered),
-                lisp_keyword("TIMEOUT"), lisp_int(exec->timeout),
-                lisp_keyword("OUTPUT-LIMIT"), lisp_uint(exec->limit),
-                lisp_keyword("CODE"), code);
-            list = lisp_cons(plist, list);
+            pv code = exec->has_code ? pv_int(exec->code) : pv_nil();
+            pv plist = pv_list(14,
+                pv_keyword("OWNER"), pv_cstring(exec->owner),
+                pv_keyword("NAME"), pv_keyword(exec->name),
+                pv_keyword("STATUS"), pv_keyword(res_exec_status_name(exec->status)),
+                pv_keyword("DELIVERED"), pv_bool(exec->delivered),
+                pv_keyword("TIMEOUT"), pv_int(exec->timeout),
+                pv_keyword("OUTPUT-LIMIT"), pv_uint(exec->limit),
+                pv_keyword("CODE"), code);
+            list = pv_cons(plist, list);
         }
         return list;
     }
     if (!strcmp(kind, "MANAGED-PROCESSES")) {
         for (size_t index = res.process_count; index > 0; index--) {
             struct res_process *process = &res.processes[index - 1];
-            lisp_value code = process->has_code ? lisp_int(process->code) : lisp_nil();
-            lisp_value error = process->error ? lisp_cstring(process->error) : lisp_nil();
-            lisp_value plist = lisp_list(14,
-                lisp_keyword("OWNER"), lisp_cstring(process->owner),
-                lisp_keyword("NAME"), lisp_keyword(process->name),
-                lisp_keyword("KIND"), lisp_keyword(process->kind == PROCESS_ONCE ? "ONCE" : "SERVICE"),
-                lisp_keyword("STATUS"), lisp_keyword(res_process_status_name(process->status)),
-                lisp_keyword("ATTEMPTS"), lisp_int(process->attempts),
-                lisp_keyword("RUNNING"), lisp_bool(process->lease && process->lease->job),
-                lisp_keyword("CODE"), code,
-                lisp_keyword("ERROR"), error);
-            list = lisp_cons(plist, list);
+            pv code = process->has_code ? pv_int(process->code) : pv_nil();
+            pv error = process->error ? pv_cstring(process->error) : pv_nil();
+            pv plist = pv_list(14,
+                pv_keyword("OWNER"), pv_cstring(process->owner),
+                pv_keyword("NAME"), pv_keyword(process->name),
+                pv_keyword("KIND"), pv_keyword(process->kind == PROCESS_ONCE ? "ONCE" : "SERVICE"),
+                pv_keyword("STATUS"), pv_keyword(res_process_status_name(process->status)),
+                pv_keyword("ATTEMPTS"), pv_int(process->attempts),
+                pv_keyword("RUNNING"), pv_bool(process->lease && process->lease->job),
+                pv_keyword("CODE"), code,
+                pv_keyword("ERROR"), error);
+            list = pv_cons(plist, list);
         }
         return list;
     }
     if (!strcmp(kind, "COUNTERS")) {
-        return lisp_list(10,
-            lisp_keyword("RETIRING-EXECUTIONS"), lisp_uint(res.exec_retiring),
-            lisp_keyword("RETIRING-PROCESSES"), lisp_uint(res.retired_count),
-            lisp_keyword("ONCE-PROCESSES"), lisp_uint(res.lease_count),
-            lisp_keyword("PENDING-SPAWNS"), lisp_int(0),
-            lisp_keyword("PROCESS-HISTORY"), lisp_uint(res.history_count));
+        return pv_list(10,
+            pv_keyword("RETIRING-EXECUTIONS"), pv_uint(res.exec_retiring),
+            pv_keyword("RETIRING-PROCESSES"), pv_uint(res.retired_count),
+            pv_keyword("ONCE-PROCESSES"), pv_uint(res.lease_count),
+            pv_keyword("PENDING-SPAWNS"), pv_int(0),
+            pv_keyword("PROCESS-HISTORY"), pv_uint(res.history_count));
     }
     return list;
 }
 
-bool res_plist_get(lisp_value plist, const char *name, lisp_value *out) {
+bool res_plist_get(pv plist, const char *name, pv *out) {
     return res_get(plist, name, out);
 }
 
@@ -1148,20 +1161,20 @@ void res_error_text(char *error, size_t size, const char *format, ...) {
     va_end(arguments);
 }
 
-char *res_plist_string(lisp_value value) {
+char *res_plist_string(pv value) {
     return res_string_value(value);
 }
 
-char *res_plist_string_field(lisp_value plist, const char *name) {
+char *res_plist_string_field(pv plist, const char *name) {
     char *text = NULL;
     res_get_string(plist, name, &text);
     return text;
 }
 
-char **res_plist_environment(lisp_value plist, size_t *count, char *error, size_t size) {
-    lisp_value value;
+char **res_plist_environment(pv plist, size_t *count, char *error, size_t size) {
+    pv value;
     *count = 0;
-    if (!res_get(plist, "ENV", &value) || lisp_nilp(value)) {
+    if (!res_get(plist, "ENV", &value) || pv_nilp(value)) {
         char **empty = calloc(1, sizeof(char *));
         return empty;
     }

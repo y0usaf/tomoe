@@ -1,9 +1,7 @@
 #include "control.h"
 
-#include "backend.h"
 #include "desktop-session.h"
-#include "policy.h"
-#include "timing.h"
+#include "sidecar.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -26,6 +24,7 @@ enum {
 };
 
 struct control_client {
+    uint32_t core_watch;
     struct wl_list link;
     struct control_server *server;
     struct loop_source *watch;
@@ -63,6 +62,8 @@ static void client_update_watch(struct control_client *client) {
 
 static void client_kill(struct control_client *client) {
     if (client->dead) return;
+    core_unwatch_fd(client->core_watch);
+    client->core_watch = 0;
     client->dead = true;
     if (client->watch) loop_remove(client->watch);
     client->watch = NULL;
@@ -217,14 +218,56 @@ static bool finite_number(lisp_value value) {
     return lisp_numberp(value) && isfinite(lisp_get_double(value));
 }
 
-static bool native_text(lisp_value *result, const char *text, const char *missing,
-        char *error, size_t error_size) {
-    if (!text) {
+static bool native_query(lisp_value *result, int prim, int argc, const lisp_value *argv,
+        const char *missing, char *error, size_t error_size) {
+    if (core_call(prim, argc, argv, result, error, error_size)) return false;
+    if (lisp_nilp(*result)) {
         snprintf(error, error_size, "%s", missing);
         return false;
     }
-    if (lisp_read_data(text, strlen(text), result, error, error_size)) return false;
     return true;
+}
+
+static lisp_value memory_report(char *error, size_t error_size, bool *ok) {
+    lisp_value report = core_memory_report(error, error_size, ok);
+    if (!*ok) return lisp_nil();
+    struct lisp_heap_stats lisp;
+    lisp_heap_stats(&lisp);
+    lisp_value region = lisp_list(24, lisp_keyword("REGION-BYTES"), lisp_uint(lisp.region_bytes),
+        lisp_keyword("HEAP-BYTES"), lisp_uint(lisp.heap_bytes),
+        lisp_keyword("GENERATION-BYTES"), lisp_uint(lisp.generation_bytes),
+        lisp_keyword("ARENA-PEAK"), lisp_uint(lisp.arena_peak),
+        lisp_keyword("PERSISTENT-USED"), lisp_uint(lisp.persistent_used),
+        lisp_keyword("PERSISTENT-HIGH-WATER"), lisp_uint(lisp.persistent_high_water),
+        lisp_keyword("ARENA-USED"), lisp_uint(lisp.arena_used),
+        lisp_keyword("ARENA-HIGH-WATER"), lisp_uint(lisp.arena_high_water),
+        lisp_keyword("GENERATIONS"), lisp_uint(lisp.generations),
+        lisp_keyword("RECLAIM-COUNT"), lisp_uint(lisp.reclaim_count),
+        lisp_keyword("RECLAIM-LONGEST-US"), lisp_uint(lisp.reclaim_longest_us),
+        lisp_keyword("BUDGET-FAILURES"), lisp_uint(lisp.budget_failures));
+    lisp_value last = lisp_nil();
+    for (lisp_value tail = report; lisp_consp(tail) && lisp_consp(lisp_cdr(tail));
+            tail = lisp_cdr(lisp_cdr(tail))) {
+        if (lisp_eq_keyword(lisp_car(tail), "LISP"))
+            lisp_set_cdr(tail, lisp_cons(region, lisp_cdr(lisp_cdr(tail))));
+        last = lisp_cdr(tail);
+    }
+    uint64_t rss = 0, pss = 0;
+    FILE *in = fopen("/proc/self/smaps_rollup", "r");
+    if (in) {
+        char line[256];
+        while (fgets(line, sizeof(line), in)) {
+            unsigned long long kb;
+            if (sscanf(line, "Rss: %llu kB", &kb) == 1) rss = kb * 1024;
+            else if (sscanf(line, "Pss: %llu kB", &kb) == 1) pss = kb * 1024;
+        }
+        fclose(in);
+    }
+    lisp_value extra = lisp_list(4, lisp_keyword("POLICY-RSS-BYTES"), lisp_uint(rss),
+        lisp_keyword("POLICY-PSS-BYTES"), lisp_uint(pss));
+    if (lisp_consp(last)) lisp_set_cdr(last, extra);
+    else report = extra;
+    return report;
 }
 
 static int handle_request(struct control_server *server, const char *text, size_t length,
@@ -257,7 +300,6 @@ static int handle_request(struct control_server *server, const char *text, size_
         return 0;
     }
     lisp_value result = lisp_nil();
-    struct tomoe *s = server->server;
     if (!strcasecmp(operation, "FRAMES") || !strcasecmp(operation, "ANIMATION") ||
             !strcasecmp(operation, "MEMORY") || !strcasecmp(operation, "INSPECT") ||
             !strcasecmp(operation, "RELOAD") || !strcasecmp(operation, "QUIT")) {
@@ -268,23 +310,31 @@ static int handle_request(struct control_server *server, const char *text, size_
         }
     }
     if (!strcasecmp(operation, "FRAMES")) {
-        if (!native_text(&result, tomoe_frames(s), "Cannot serialize native frame counters.",
-                error, sizeof(error))) {
+        if (!native_query(&result, TPL_PRIM_FRAMES, 0, NULL,
+                "Cannot serialize native frame counters.", error, sizeof(error))) {
             *reply = error_reply(error);
             return 0;
         }
     } else if (!strcasecmp(operation, "ANIMATION")) {
-        if (!native_text(&result, tomoe_animation(s), "Cannot serialize native animation counters.",
-                error, sizeof(error))) {
+        if (!native_query(&result, TPL_PRIM_ANIMATION, 0, NULL,
+                "Cannot serialize native animation counters.", error, sizeof(error))) {
             *reply = error_reply(error);
             return 0;
         }
     } else if (!strcasecmp(operation, "MEMORY")) {
         lisp_end_turn();
-        result = tomoe_memory_report(s);
+        bool ok;
+        result = memory_report(error, sizeof(error), &ok);
+        if (!ok) {
+            *reply = error_reply(error);
+            return 0;
+        }
     } else if (!strcasecmp(operation, "INSPECT")) {
         lisp_set_limits(5000000, 1000000000ULL);
-        if (policy_call(POLICY_HOOK_INSPECT, 0, NULL, &result, error, sizeof(error))) {
+        policy_hook_begin(true);
+        int failed = policy_call(POLICY_HOOK_INSPECT, 0, NULL, &result, error, sizeof(error));
+        policy_hook_end_keep();
+        if (failed) {
             *reply = error_reply(error);
             return 0;
         }
@@ -293,10 +343,10 @@ static int handle_request(struct control_server *server, const char *text, size_
             *reply = error_reply("timings takes at most one argument.");
             return 0;
         }
-        if (count) tomoe_timing_reset();
+        if (count) core_send(TPL_PRIM_TIMING_RESET, 0, NULL);
         lisp_value native = lisp_nil();
-        if (!native_text(&native, tomoe_timings(), "Cannot serialize native latency samples.",
-                error, sizeof(error))) {
+        if (!native_query(&native, TPL_PRIM_TIMINGS, 0, NULL,
+                "Cannot serialize native latency samples.", error, sizeof(error))) {
             *reply = error_reply(error);
             return 0;
         }
@@ -318,15 +368,16 @@ static int handle_request(struct control_server *server, const char *text, size_
             *reply = error_reply("hit-test requires two finite coordinates.");
             return 0;
         }
-        const char *text_result = tomoe_hit_test(s, lisp_get_double(lisp_car(args)),
-            lisp_get_double(lisp_car(lisp_cdr(args))));
-        if (!native_text(&result, text_result, "Native hit-test returned no result.",
-                error, sizeof(error))) {
+        lisp_value point[2] = { lisp_double(lisp_get_double(lisp_car(args))),
+            lisp_double(lisp_get_double(lisp_car(lisp_cdr(args)))) };
+        if (!native_query(&result, TPL_PRIM_HIT_TEST, 2, point,
+                "Native hit-test returned no result.", error, sizeof(error))) {
             *reply = error_reply(error);
             return 0;
         }
     } else if (!strcasecmp(operation, "QUIT")) {
-        loop_request_quit(s);
+        core_send(TPL_PRIM_QUIT, 0, NULL);
+        core_flush();
     } else if (!strcasecmp(operation, "RELOAD") || !strcasecmp(operation, "MOUNT") ||
             !strcasecmp(operation, "UNMOUNT") || !strcasecmp(operation, "EVENT")) {
         lisp_value argv[2] = { lisp_car(rest), args };
@@ -345,7 +396,13 @@ static int handle_request(struct control_server *server, const char *text, size_
             argv[1] = lisp_cons(event, lisp_nil());
         }
         lisp_set_limits(5000000, 1000000000ULL);
-        if (policy_call(POLICY_HOOK_CONTROL, 2, argv, &result, error, sizeof(error))) {
+        bool loading = !strcasecmp(operation, "RELOAD") || !strcasecmp(operation, "MOUNT");
+        if (loading) policy_link_loading(true);
+        policy_hook_begin(true);
+        int failed = policy_call(POLICY_HOOK_CONTROL, 2, argv, &result, error, sizeof(error));
+        policy_hook_end_keep();
+        if (loading) policy_link_loading(false);
+        if (failed) {
             *reply = error_reply(error);
             return 0;
         }
@@ -403,57 +460,17 @@ static void server_ready(void *data, int fd, uint32_t mask) {
     if (mask & WL_EVENT_READABLE) server->readable = true;
 }
 
-struct control_server *control_start(struct tomoe *server, const char *path, char *error,
-        size_t error_size) {
-    if (desktop_socket_answering(path)) {
-        snprintf(error, error_size, "Another session is listening on %s.", path);
-        return NULL;
-    }
-    unlink(path);
-    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-    if (fd < 0) {
-        snprintf(error, error_size, "Cannot open the control socket: %s.", strerror(errno));
-        return NULL;
-    }
-    struct sockaddr_un address;
-    memset(&address, 0, sizeof(address));
-    address.sun_family = AF_UNIX;
-    if (strlen(path) >= sizeof(address.sun_path)) {
-        snprintf(error, error_size, "Control socket path is too long.");
-        close(fd);
-        return NULL;
-    }
-    strcpy(address.sun_path, path);
-    if (bind(fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
-        snprintf(error, error_size, "Cannot bind %s: %s.", path, strerror(errno));
-        close(fd);
-        return NULL;
-    }
-    if (chmod(path, 0600) < 0 || listen(fd, 8) < 0) {
-        snprintf(error, error_size, "Cannot listen on %s: %s.", path, strerror(errno));
-        close(fd);
-        unlink(path);
-        return NULL;
-    }
+struct control_server *control_adopt(int fd) {
     struct control_server *result = calloc(1, sizeof(*result));
-    if (!result) {
-        close(fd);
-        unlink(path);
-        snprintf(error, error_size, "Cannot allocate the control server.");
-        return NULL;
-    }
+    if (!result) return NULL;
     wl_list_init(&result->clients);
-    result->server = server;
     result->fd = fd;
-    result->path = strdup(path);
-    result->watch = loop_watch_fd(server, fd, WL_EVENT_READABLE, server_ready, result);
-    if (!result->path || !result->watch) {
-        if (result->watch) loop_remove(result->watch);
-        close(fd);
-        unlink(path);
-        free(result->path);
+    int flags = fcntl(fd, F_GETFL);
+    if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+    result->watch = loop_watch_fd(NULL, fd, WL_EVENT_READABLE, server_ready, result);
+    if (!result->watch) {
         free(result);
-        snprintf(error, error_size, "Cannot watch the control socket.");
         return NULL;
     }
     return result;
@@ -471,10 +488,11 @@ void control_serve(struct control_server *server) {
             } else {
                 client->server = server;
                 client->fd = fd;
+                client->core_watch = core_watch_fd(fd);
                 client->accepted_ms = loop_now_ms();
                 wl_list_init(&client->link);
                 wl_list_insert(&server->clients, &client->link);
-                client->watch = loop_watch_fd(server->server, fd,
+                client->watch = loop_watch_fd(NULL, fd,
                     WL_EVENT_READABLE, client_ready, client);
                 if (!client->watch) {
                     client_kill(client);
@@ -505,8 +523,6 @@ void control_stop(struct control_server *server) {
     }
     if (server->watch) loop_remove(server->watch);
     if (server->fd >= 0) close(server->fd);
-    if (server->path) unlink(server->path);
-    free(server->path);
     free(server);
 }
 
@@ -541,7 +557,7 @@ static int write_all(int fd, const char *data, size_t length) {
 static int reply_frame(int fd, lisp_value *reply, char *error, size_t error_size) {
     char digits[8];
     if (read_exact(fd, digits, 1)) {
-        snprintf(error, error_size, "Control server closed the connection.");
+        snprintf(error, error_size, "Control server closed the connection; outcome unknown.");
         return -1;
     }
     size_t header = 0;
@@ -552,7 +568,7 @@ static int reply_frame(int fd, lisp_value *reply, char *error, size_t error_size
         }
         header++;
         if (read_exact(fd, digits + header, 1)) {
-            snprintf(error, error_size, "Control server closed the connection.");
+            snprintf(error, error_size, "Control server closed the connection; outcome unknown.");
             return -1;
         }
     }
@@ -579,7 +595,7 @@ static int reply_frame(int fd, lisp_value *reply, char *error, size_t error_size
     }
     if (read_exact(fd, text, length)) {
         free(text);
-        snprintf(error, error_size, "Control server closed the connection.");
+        snprintf(error, error_size, "Control server closed the connection; outcome unknown.");
         return -1;
     }
     text[length] = '\0';

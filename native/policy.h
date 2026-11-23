@@ -3,18 +3,13 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include "lisp.h"
+#include <sys/types.h>
+#include "pv.h"
+#include "spring.h"
+#include "policy_proto.h"
 
 struct tomoe;
 
-#define POLICY_HOOK_BOOT "TOMOE::TOMOE-BOOT"
-#define POLICY_HOOK_LOAD "TOMOE::TOMOE-LOAD"
-#define POLICY_HOOK_UNMOUNT "TOMOE::TOMOE-UNMOUNT"
-#define POLICY_HOOK_DISPATCH "TOMOE::TOMOE-DISPATCH"
-#define POLICY_HOOK_COMMAND "TOMOE::TOMOE-COMMAND"
-#define POLICY_HOOK_JSON "TOMOE::TOMOE-JSON"
-#define POLICY_HOOK_CONTROL "TOMOE::TOMOE-CONTROL"
-#define POLICY_HOOK_INSPECT "TOMOE::TOMOE-INSPECT"
 
 enum tomoe_event_type {
     EV_NONE = 0,
@@ -110,23 +105,64 @@ int policy_event_barrier(struct tomoe *server);
 bool policy_reads(struct tomoe *server, enum tomoe_event_type type);
 bool policy_event_delivers(struct tomoe *server, enum tomoe_event_type type);
 uint16_t policy_event_flags(enum tomoe_event_type type);
-void policy_event_broadcast(struct tomoe *server, const struct tomoe_event *event);
 uint64_t policy_events_dropped(struct tomoe *server);
 bool policy_events_pending(struct tomoe *server);
 void policy_drain(struct tomoe *server);
-typedef lisp_value (*policy_converter)(struct tomoe *server, const struct tomoe_event *event);
+typedef pv (*policy_converter)(struct tomoe *server, const struct tomoe_event *event);
 void policy_set_converter(enum tomoe_event_type type, policy_converter fn);
 
+typedef pv (*prim_fn)(int argc, pv *argv);
+void prim_define(const char *name, prim_fn fn, int min_args, int max_args);
 void policy_register_primitives(struct tomoe *server);
 void resources_register_primitives(struct tomoe *server);
 void ui_layout_register_primitives(struct tomoe *server);
 void loop_register_primitives(struct tomoe *server);
 
-int policy_call(const char *hook, int argc, const lisp_value *argv, lisp_value *result,
-    char *error, size_t error_size);
-void ipc_broadcast(const char *name, lisp_value value);
-bool ipc_subscribed(void);
-void ipc_screencast_answer(uint64_t token, lisp_value result);
+struct policy_link;
+struct policy_link_options {
+    const char *config;
+    bool bare;
+    bool watch;
+    int control_fd;
+    int json_fd;
+};
+struct policy_link *policy_link_start(struct tomoe *server, const struct policy_link_options *options);
+void policy_link_stop(struct policy_link *link);
+void policy_binary_path(char *out, size_t size);
+void reap_later(struct tomoe *server, pid_t pid, int pidfd);
+bool reap_status(pid_t pid, int *status);
+bool reap_pending(pid_t pid);
+uint32_t policy_link_generation(struct tomoe *server);
+bool policy_accepting(struct tomoe *server);
+bool policy_loading(struct tomoe *server);
+bool policy_link_up(struct tomoe *server);
+bool policy_link_floor(struct tomoe *server, const char *command);
+pv policy_event_value(struct tomoe *server, const struct tomoe_event *event, pv *aux);
+pv policy_broadcast_value(struct tomoe *server, const struct tomoe_event *event, const char **name);
+void policy_state(struct tomoe *server, struct tpl_state *state);
+pv policy_call_primitive(int prim, int argc, pv *argv);
+int policy_primitive_index(const char *name);
+void policy_link_overflow(struct tomoe *server);
+const struct tomoe_event *policy_ring_at(struct tomoe *server, size_t index);
+void policy_ring_consume(struct tomoe *server, size_t consumed);
+void policy_ring_keep_pending(struct tomoe *server);
+void policy_ring_pop(struct tomoe *server);
+void policy_ring_drop_coalescible(struct tomoe *server);
+struct policy_ring_saved {
+    struct tomoe_event *ring;
+    size_t capacity, head, count, barrier;
+    char *arena;
+    size_t used, size;
+};
+void policy_ring_stash(struct tomoe *server, struct policy_ring_saved *saved, struct tomoe_event *scratch,
+    size_t slots);
+void policy_ring_unstash(struct tomoe *server, const struct policy_ring_saved *saved);
+void policy_ring_drop_same(struct tomoe *server, uint16_t type, const char *key, size_t length);
+typedef void (*policy_fact_fn)(struct tomoe *server, void *data);
+void window_facts(struct tomoe *server, policy_fact_fn emit, void *data);
+void layer_facts(struct tomoe *server, policy_fact_fn emit, void *data);
+void outputs_fact(struct tomoe *server);
+void window_floor_cycle(struct tomoe *server, int direction);
 
 typedef void (*loop_fd_fn)(void *data, int fd, uint32_t mask);
 typedef void (*loop_timer_fn)(void *data);
@@ -146,10 +182,9 @@ bool tomoe_system_readings_wanted(struct tomoe *server);
 void resources_stop(struct tomoe *server);
 int tomoe_service_run_begin(const char *runtime, int *cleared, char *error, size_t error_size);
 void tomoe_service_run_end(void);
-lisp_value tomoe_memory_report(struct tomoe *server);
-lisp_value resources_describe(struct tomoe *server, const char *kind);
+pv tomoe_memory_report(struct tomoe *server);
+pv resources_describe(struct tomoe *server, const char *kind);
 
 void loop_request_quit(struct tomoe *server);
-void ipc_broadcast(const char *name, lisp_value payload);
 
 #endif

@@ -25,7 +25,7 @@ static double curve_y(const struct animation_config *c, double x) {
 }
 
 static double spring_at(const struct animation *a, double t) {
-    return lisp_spring_at(a->config.stiffness, a->config.damping_ratio,
+    return spring_curve(a->config.stiffness, a->config.damping_ratio,
         a->from, a->to, a->v0, t);
 }
 

@@ -578,20 +578,20 @@ static void system_sample(uint64_t now) {
     }
 }
 
-lisp_value res_services_value(void) {
+pv res_services_value(void) {
     struct res_buffer text = {0};
     services_text(&text);
     char *message = rb_take(&text);
-    if (!message) return lisp_nil();
-    lisp_value value = resources_read_text(message, strlen(message));
+    if (!message) return pv_nil();
+    pv value = resources_read_text(message, strlen(message));
     free(message);
     return value;
 }
 
-lisp_value res_system_value(void) {
+pv res_system_value(void) {
     if (!res.system_text) {
         char *text = sample_system();
-        if (!text) return lisp_nil();
+        if (!text) return pv_nil();
         res.system_text = text;
     }
     return resources_read_text(res.system_text, strlen(res.system_text));
@@ -750,16 +750,16 @@ static void sources_watch(struct res_source *source) {
             source_callback, source);
 }
 
-bool res_sources_set(lisp_value paths, char *error, size_t size) {
+bool res_sources_set(pv paths, char *error, size_t size) {
     size_t count = 0;
-    for (lisp_value cursor = paths; lisp_consp(cursor); cursor = lisp_cdr(cursor)) count++;
+    for (pv cursor = paths; pv_consp(cursor); cursor = pv_cdr(cursor)) count++;
     struct res_source *sources = calloc(count ? count : 1, sizeof(*sources));
     if (!sources) { res_error_text(error, size, "Cannot allocate resources."); return false; }
     size_t length = 0;
-    for (lisp_value cursor = paths; lisp_consp(cursor); cursor = lisp_cdr(cursor)) {
+    for (pv cursor = paths; pv_consp(cursor); cursor = pv_cdr(cursor)) {
         size_t text_length = 0;
-        const char *text = lisp_stringp(lisp_car(cursor))
-            ? lisp_get_string(lisp_car(cursor), &text_length) : NULL;
+        const char *text = pv_stringp(pv_car(cursor))
+            ? pv_get_string(pv_car(cursor), &text_length) : NULL;
         if (!text || text[0] != '/') {
             for (size_t index = 0; index < length; index++) free(sources[index].path);
             free(sources);

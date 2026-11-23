@@ -2,7 +2,7 @@
 
 #include "desktop-session.h"
 #include "json.h"
-#include "policy.h"
+#include "sidecar.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -29,6 +29,7 @@ enum {
 };
 
 struct ipc_client {
+    uint32_t core_watch;
     struct wl_list link;
     struct ipc_server *server;
     struct loop_source *watch;
@@ -76,6 +77,8 @@ static void ipc_update_watch(struct ipc_client *client) {
 
 static void ipc_kill(struct ipc_client *client) {
     if (client->dead) return;
+    core_unwatch_fd(client->core_watch);
+    client->core_watch = 0;
     client->dead = true;
     if (client->server) {
         struct ipc_screencast *pending, *next;
@@ -288,7 +291,10 @@ static void ipc_dispatch(struct ipc_server *server, struct ipc_client *client,
     lisp_value result = lisp_nil();
     lisp_set_limits(5000000, 1000000000ULL);
     char failure[4 * IPC_ERROR_CHARACTERS + 1];
-    if (policy_call(POLICY_HOOK_JSON, 2, arguments, &result, failure, sizeof(failure))) {
+    policy_hook_begin(true);
+    int failed = policy_call(POLICY_HOOK_JSON, 2, arguments, &result, failure, sizeof(failure));
+    policy_hook_end_keep();
+    if (failed) {
         if (screencast) {
             server->screencast_active = false;
             free(server->screencast_early_reply);
@@ -470,9 +476,10 @@ void ipc_serve(struct ipc_server *server) {
             }
             client->server = server;
             client->fd = fd;
+            client->core_watch = core_watch_fd(fd);
             wl_list_init(&client->link);
             wl_list_insert(&server->clients, &client->link);
-            client->watch = loop_watch_fd(server->server, fd,
+            client->watch = loop_watch_fd(NULL, fd,
                 WL_EVENT_READABLE, ipc_ready, client);
             if (!client->watch) {
                 ipc_kill(client);
@@ -496,57 +503,18 @@ void ipc_serve(struct ipc_server *server) {
     }
 }
 
-struct ipc_server *ipc_start(struct tomoe *server, const char *path, char *error, size_t error_size) {
-    if (desktop_socket_answering(path)) {
-        snprintf(error, error_size, "Another session is listening on %s.", path);
-        return NULL;
-    }
-    unlink(path);
-    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-    if (fd < 0) {
-        snprintf(error, error_size, "Cannot open the JSON socket: %s.", strerror(errno));
-        return NULL;
-    }
-    struct sockaddr_un address;
-    memset(&address, 0, sizeof(address));
-    address.sun_family = AF_UNIX;
-    if (strlen(path) >= sizeof(address.sun_path)) {
-        snprintf(error, error_size, "JSON socket path is too long.");
-        close(fd);
-        return NULL;
-    }
-    strcpy(address.sun_path, path);
-    if (bind(fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
-        snprintf(error, error_size, "Cannot bind %s: %s.", path, strerror(errno));
-        close(fd);
-        return NULL;
-    }
-    if (chmod(path, 0600) < 0 || listen(fd, 16) < 0) {
-        snprintf(error, error_size, "Cannot listen on %s: %s.", path, strerror(errno));
-        close(fd);
-        unlink(path);
-        return NULL;
-    }
+struct ipc_server *ipc_adopt(int fd) {
     struct ipc_server *result = calloc(1, sizeof(*result));
-    if (!result) {
-        close(fd);
-        unlink(path);
-        snprintf(error, error_size, "Cannot allocate the JSON server.");
-        return NULL;
-    }
+    if (!result) return NULL;
     wl_list_init(&result->clients);
     wl_list_init(&result->screencasts);
-    result->server = server;
     result->fd = fd;
-    result->path = strdup(path);
-    result->watch = loop_watch_fd(server, fd, WL_EVENT_READABLE, ipc_server_ready, result);
-    if (!result->path || !result->watch) {
-        if (result->watch) loop_remove(result->watch);
-        close(fd);
-        unlink(path);
-        free(result->path);
+    int flags = fcntl(fd, F_GETFL);
+    if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+    result->watch = loop_watch_fd(NULL, fd, WL_EVENT_READABLE, ipc_server_ready, result);
+    if (!result->watch) {
         free(result);
-        snprintf(error, error_size, "Cannot watch the JSON socket.");
         return NULL;
     }
     broadcast_server = result;
@@ -564,8 +532,6 @@ void ipc_stop(struct ipc_server *server) {
     if (server->fd >= 0) close(server->fd);
     free(server->screencast_early_reply);
     server->screencast_early_reply = NULL;
-    if (server->path) unlink(server->path);
-    free(server->path);
     if (broadcast_server == server) broadcast_server = NULL;
     free(server);
 }

@@ -1072,6 +1072,16 @@ static void layer_event(struct layer *l) {
     l->announced = true;
 }
 
+void layer_facts(struct tomoe *s, policy_fact_fn emit, void *data) {
+    struct layer *l;
+    wl_list_for_each(l, &s->layers, link) {
+        if (!l->mapped) continue;
+        l->announced = false;
+        layer_event(l);
+        emit(s, data);
+    }
+}
+
 static void layer_reparent_to(struct layer *l, int layer) {
     if (!l || layer < ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND ||
             layer > ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY) return;

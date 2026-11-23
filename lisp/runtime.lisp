@@ -43,6 +43,38 @@ on to it, so a recorded trace can compare an incremental layout with a full one.
         :definitions-generation 0 :package-serial 0 :next-source-id 0 :budget-limits nil
         :ipc-baseline-sent nil))
 
+(defvar *absorbing-facts* nil
+  "True while a resumed instance takes the compositor's facts without a transaction.")
+
+(defvar *resume-states* nil
+  "The saved (name source state) of each root mount a resumed instance adopts.")
+
+(defun resume-state (spec)
+  (let ((entry (find (spec-name spec) *resume-states* :test #'equal :key #'first)))
+    (when (and entry (equal (second entry) (spec-source spec)))
+      (setf *resume-states* (remove entry *resume-states*))
+      (list (third entry)))))
+
+(defun %resume-entries (names)
+  "The (name source state) of each root mount named in NAMES, for the compositor to keep."
+  (loop for mounted in (root-mounts (runtime-mounts))
+        when (member (spec-name (mounted-spec mounted)) names :test #'equal)
+          collect (list (spec-name (mounted-spec mounted)) (spec-source (mounted-spec mounted))
+                        (mounted-state mounted))))
+
+(defun mark-resume-dirty (old new)
+  "Tell the policy host which root mounts changed state or went away in this commit."
+  (let ((old-roots (root-mounts old)) (new-roots (root-mounts new)))
+    (flet ((named (name roots)
+             (find name roots :test #'equal :key (lambda (m) (spec-name (mounted-spec m))))))
+      (dolist (mounted new-roots)
+        (let* ((name (spec-name (mounted-spec mounted))) (previous (named name old-roots)))
+          (unless (and previous (eq (mounted-state previous) (mounted-state mounted)))
+            (%resume-dirty name))))
+      (dolist (mounted old-roots)
+        (let ((name (spec-name (mounted-spec mounted))))
+          (unless (named name new-roots) (%resume-dirty name)))))))
+
 (defvar *pending-writes* nil
   "This hook's state writes, held in the turn's arena until %PERSIST-STATE.")
 
@@ -1400,6 +1432,7 @@ native outputs and grab still as committed. Only dispatch counts can differ."
           (%r! :outputs-revision (%outputs-revision))))
       (when (not (equal (getf old :virtual-outputs) (getf context :virtual-outputs)))
         (configure-virtual-outputs (getf old :virtual-outputs) (getf context :virtual-outputs)))
+      (mark-resume-dirty (runtime-mounts) mounts)
       (%r! :mounts mounts)
       (%r! :effective context)
       (%r! :output-recovery-failures nil)
@@ -1506,7 +1539,10 @@ evaluates is held to +SOURCE-STEPS+ and every reducer it invokes to its own watc
                                            :test #'equal :key (lambda (m) (spec-name (mounted-spec m))))
                       collect (if (and previous (equal (spec-source spec) (spec-source (mounted-spec previous))))
                                   (let ((copy (copy-mounted previous))) (setf (nth 1 copy) spec) copy)
-                                  (make-mounted :spec spec :state (copy-data (spec-initial spec))))))
+                                  (let ((saved (resume-state spec)))
+                                    (make-mounted :spec spec
+                                                  :state (copy-data (if saved (first saved)
+                                                                        (spec-initial spec))))))))
               (patched (remove-if-not (lambda (mounted) (spec-patch (mounted-spec mounted)))
                                       (root-mounts (runtime-mounts)))))
           (transact
@@ -1769,7 +1805,8 @@ evaluates is held to +SOURCE-STEPS+ and every reducer it invokes to its own watc
     (%r! :pending-context
          (union (intersection changed '(:windows :window-geometry :layers :outputs :connectors :services :system))
                 (runtime-pending-context)))
-    (when (and (or changed (runtime-pending-context))
+    (when (and (not *absorbing-facts*)
+               (or changed (runtime-pending-context))
                (event-matters-p changed force))
       (let ((failure nil))
         (%catch (lambda () (transact (runtime-mounts) event changed force))
@@ -1848,9 +1885,11 @@ evaluates is held to +SOURCE-STEPS+ and every reducer it invokes to its own watc
       (report-config-error failure fallback)
       failure)))
 
-(defun TOMOE-BOOT (sources bare watch)
-  (let ((*pending-writes* nil))
+(defun TOMOE-BOOT (sources bare watch &optional facts resume)
+  (let ((*pending-writes* nil) (*resume-states* resume))
   (%boot-state nil)
+  (let ((*absorbing-facts* t))
+    (dolist (event facts) (dispatch-event event)))
   (let ((trace (%getenv "TOMOE_LAYOUT_TRACE")))
     (setf *layout-trace-path* (and trace (plusp (length trace)) (%keep trace))))
   (%r! :watch (and watch t))
@@ -1883,15 +1922,17 @@ evaluates is held to +SOURCE-STEPS+ and every reducer it invokes to its own watc
     (%persist-state)
     failure))
 
-(defun TOMOE-DISPATCH (events)
+(defun TOMOE-DISPATCH (events &optional serials)
   (let ((*pending-writes* nil))
   (dolist (event events)
+    (%event-begin (pop serials))
     (cond ((eq (getf event :type) :source)
            (let ((failure nil))
              (%catch (lambda () (configure (runtime-sources) (getf event :path)))
                      (lambda (text) (setf failure text)))
              (when failure (report-config-error failure nil))))
           (t (dispatch-event event))))
+  (%event-begin nil)
   (withdraw-runaways)
   (%persist-state)
   nil))

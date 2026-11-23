@@ -1,19 +1,25 @@
+diff --git a/native/main.c b/native/main.c
+index 0d99893..e82d1c2 100644
 --- a/native/main.c
 +++ b/native/main.c
-@@ -708,6 +708,10 @@ static int run_compositor(const struct cli_options *options) {
-         const char *message = lisp_get_string(boot_result, &length);
-         if (message) tomoe_log(LOG_ERROR, "tomoe: %.*s", (int)length, message);
-     }
+@@ -501,9 +501,13 @@ static int run_compositor(const struct cli_options *options) {
+     if (resources_start(server))
+         tomoe_log(LOG_ERROR, "tomoe: cannot start the native resources");
+     resources = true;
 +    char warm[512];
 +    const char *cache = getenv("TOMOE_FRAME_CACHE");
 +    snprintf(warm, sizeof(warm), "%s/.tomoe-frame-cache", cache && *cache ? cache : "/tmp");
-+    if (access(warm, F_OK) == 0) lisp_set_limits(1, 1);
-     while (!loop_state.quit) {
-         int timeout = policy_events_pending(server) ? 0 : -1;
-         int step = tomoe_step(server, timeout);
-@@ -732,6 +736,18 @@ static int run_compositor(const struct cli_options *options) {
-         ipc_serve(ipc);
-         lisp_end_turn();
++    bool warmed = access(warm, F_OK) == 0;
+     {
+         struct policy_link_options link_options = {
+-            .config = options->config, .bare = options->bare, .watch = options->watch,
++            .config = options->config, .bare = options->bare || warmed, .watch = options->watch,
+             .control_fd = control_fd, .json_fd = json_fd
+         };
+         policy = policy_link_start(server, &link_options);
+@@ -537,6 +541,18 @@ static int run_compositor(const struct cli_options *options) {
+         timing_turn_mark(STAGE_IPC);
+         timing_turn_mark(STAGE_LISP_END);
      }
 +    FILE *keep = fopen(warm, "w");
 +    if (keep) {
@@ -27,6 +33,6 @@
 +        fputs("warm\n", keep);
 +        fclose(keep);
 +    }
-     uint64_t deadline = loop_now_ms() + 100;
-     while (ipc_pending(ipc) && loop_now_ms() < deadline) ipc_drain(ipc, 1);
      status = loop_state.failed ? 1 : 0;
+     if (loop_state.quit)
+         stop_reason = loop_state.quit_reason[0] ? loop_state.quit_reason : "it was asked to quit";

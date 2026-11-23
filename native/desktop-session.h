@@ -14,6 +14,7 @@ int desktop_json_client_path(const char *explicit_name, char *out, size_t size, 
     size_t error_size);
 bool desktop_socket_answering(const char *path);
 int desktop_connect_unix(const char *path, int timeout_seconds);
+int desktop_listen_unix(const char *path, int backlog, char *error, size_t error_size);
 int desktop_free_x_display(char *out, size_t size, char *error, size_t error_size);
 int desktop_parent_wayland_display(char *out, size_t size);
 int desktop_primary_drm_devices(const char *path, char *out, size_t size, char *error,

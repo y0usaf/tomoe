@@ -253,6 +253,38 @@ static void window_geometry_event(struct window *w) {
     event->dy = (uint32_t)w->client_height;
 }
 
+static bool floor_focus_candidate(struct window *w) {
+    return w->mapped && w->admitted && w->desired_visible && w->tree && w->tree->enabled;
+}
+
+void window_floor_cycle(struct tomoe *s, int direction) {
+    struct window *list[512];
+    size_t count = 0, current = SIZE_MAX;
+    struct window *w;
+    wl_list_for_each(w, &s->windows, link) {
+        if (!floor_focus_candidate(w) || count == 512) continue;
+        if (w->target.id == s->focused) current = count;
+        list[count++] = w;
+    }
+    if (!count) return;
+    size_t next = current == SIZE_MAX ? 0 :
+        (current + count + (size_t)(direction > 0 ? 1 : count - 1)) % count;
+    tomoe_focus(s, list[next]->target.id);
+    update_keyboard_focus(s);
+    schedule_scene(s);
+}
+
+void window_facts(struct tomoe *s, policy_fact_fn emit, void *data) {
+    struct window *w;
+    wl_list_for_each(w, &s->windows, link) {
+        if (!registered_window(w)) continue;
+        window_event(w, "map", NULL);
+        emit(s, data);
+        window_geometry_event(w);
+        emit(s, data);
+    }
+}
+
 struct window *find_window(struct tomoe *s, uint32_t id) {
     struct window *w;
     wl_list_for_each(w, &s->windows, link)

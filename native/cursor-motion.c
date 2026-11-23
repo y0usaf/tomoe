@@ -1,5 +1,5 @@
 #include "internal.h"
-#include "lisp.h"
+#include "pv.h"
 
 enum { CURSOR_WINDOW_MS = 100 };
 
@@ -7,29 +7,29 @@ static struct tomoe *cursor_server;
 
 static void pointer_velocity(const struct tomoe *s, double now, double *vx, double *vy);
 
-static lisp_value cursor_plist(lisp_value plist, const char *name) {
-    lisp_value tail = plist;
-    while (lisp_consp(tail)) {
-        lisp_value rest = lisp_cdr(tail);
-        if (!lisp_consp(rest)) return lisp_nil();
-        if (lisp_eq_keyword(lisp_car(tail), name)) return lisp_car(rest);
-        tail = lisp_cdr(rest);
+static pv cursor_plist(pv plist, const char *name) {
+    pv tail = plist;
+    while (pv_consp(tail)) {
+        pv rest = pv_cdr(tail);
+        if (!pv_consp(rest)) return pv_nil();
+        if (pv_eq_keyword(pv_car(tail), name)) return pv_car(rest);
+        tail = pv_cdr(rest);
     }
-    return lisp_nil();
+    return pv_nil();
 }
 
-static int cursor_field(lisp_value head) {
-    if (lisp_eq_keyword(head, "SPEED")) return CURSOR_FIELD_SPEED;
-    if (lisp_eq_keyword(head, "ANGLE")) return CURSOR_FIELD_ANGLE;
-    if (lisp_eq_keyword(head, "ACCELERATION")) return CURSOR_FIELD_ACCELERATION;
-    if (lisp_eq_keyword(head, "SHAKE")) return CURSOR_FIELD_SHAKE;
-    if (lisp_eq_keyword(head, "VX")) return CURSOR_FIELD_VX;
-    if (lisp_eq_keyword(head, "VY")) return CURSOR_FIELD_VY;
-    lisp_error("Unsupported cursor term field.");
+static int cursor_field(pv head) {
+    if (pv_eq_keyword(head, "SPEED")) return CURSOR_FIELD_SPEED;
+    if (pv_eq_keyword(head, "ANGLE")) return CURSOR_FIELD_ANGLE;
+    if (pv_eq_keyword(head, "ACCELERATION")) return CURSOR_FIELD_ACCELERATION;
+    if (pv_eq_keyword(head, "SHAKE")) return CURSOR_FIELD_SHAKE;
+    if (pv_eq_keyword(head, "VX")) return CURSOR_FIELD_VX;
+    if (pv_eq_keyword(head, "VY")) return CURSOR_FIELD_VY;
+    pv_error("Unsupported cursor term field.");
 }
 
 static struct cursor_term_clause *term_clause(struct cursor_term *term, int field, double scale) {
-    if (term->count == CURSOR_TERM_CLAUSES) lisp_error("Cursor term exceeds its clause budget.");
+    if (term->count == CURSOR_TERM_CLAUSES) pv_error("Cursor term exceeds its clause budget.");
     struct cursor_term_clause *clause = &term->clauses[term->count++];
     clause->field = field;
     clause->scale = scale;
@@ -38,36 +38,36 @@ static struct cursor_term_clause *term_clause(struct cursor_term *term, int fiel
     return clause;
 }
 
-static void parse_clause(struct cursor_term *term, lisp_value clause) {
-    lisp_value rest = lisp_cdr(clause);
-    if (!lisp_consp(rest)) lisp_error("Cursor terms need a scale.");
-    double scale = lisp_get_double(lisp_car(rest));
-    struct cursor_term_clause *entry = term_clause(term, cursor_field(lisp_car(clause)), scale);
-    lisp_value options = lisp_cdr(rest);
-    lisp_value above = cursor_plist(options, "ABOVE"), below = cursor_plist(options, "BELOW");
-    if (!lisp_nilp(above)) entry->above = lisp_get_double(above);
-    if (!lisp_nilp(below)) entry->below = lisp_get_double(below);
+static void parse_clause(struct cursor_term *term, pv clause) {
+    pv rest = pv_cdr(clause);
+    if (!pv_consp(rest)) pv_error("Cursor terms need a scale.");
+    double scale = pv_get_double(pv_car(rest));
+    struct cursor_term_clause *entry = term_clause(term, cursor_field(pv_car(clause)), scale);
+    pv options = pv_cdr(rest);
+    pv above = cursor_plist(options, "ABOVE"), below = cursor_plist(options, "BELOW");
+    if (!pv_nilp(above)) entry->above = pv_get_double(above);
+    if (!pv_nilp(below)) entry->below = pv_get_double(below);
 }
 
-static void parse_term(lisp_value value, struct cursor_term *term) {
+static void parse_term(pv value, struct cursor_term *term) {
     term->count = 0;
-    if (lisp_nilp(value)) return;
-    if (!lisp_consp(value)) {
-        term_clause(term, CURSOR_FIELD_CONSTANT, lisp_get_double(value));
+    if (pv_nilp(value)) return;
+    if (!pv_consp(value)) {
+        term_clause(term, CURSOR_FIELD_CONSTANT, pv_get_double(value));
         return;
     }
-    if (lisp_keywordp(lisp_car(value))) {
+    if (pv_keywordp(pv_car(value))) {
         parse_clause(term, value);
         return;
     }
-    for (lisp_value tail = value; lisp_consp(tail); tail = lisp_cdr(tail)) {
-        lisp_value clause = lisp_car(tail);
-        if (lisp_consp(clause)) parse_clause(term, clause);
-        else term_clause(term, CURSOR_FIELD_CONSTANT, lisp_get_double(clause));
+    for (pv tail = value; pv_consp(tail); tail = pv_cdr(tail)) {
+        pv clause = pv_car(tail);
+        if (pv_consp(clause)) parse_clause(term, clause);
+        else term_clause(term, CURSOR_FIELD_CONSTANT, pv_get_double(clause));
     }
 }
 
-static void parse_effect(lisp_value spec, struct cursor_effect *effect) {
+static void parse_effect(pv spec, struct cursor_effect *effect) {
     memset(effect, 0, sizeof(*effect));
     effect->settle = 0.08;
     parse_term(cursor_plist(spec, "ROTATION"), &effect->rotation);
@@ -76,8 +76,8 @@ static void parse_effect(lisp_value spec, struct cursor_effect *effect) {
     parse_term(cursor_plist(spec, "STRETCH-ANGLE"), &effect->stretch_angle);
     parse_term(cursor_plist(spec, "OFFSET-X"), &effect->offset_x);
     parse_term(cursor_plist(spec, "OFFSET-Y"), &effect->offset_y);
-    lisp_value settle = cursor_plist(spec, "SETTLE");
-    if (!lisp_nilp(settle)) effect->settle = lisp_get_double(settle);
+    pv settle = cursor_plist(spec, "SETTLE");
+    if (!pv_nilp(settle)) effect->settle = pv_get_double(settle);
 }
 
 struct cursor_fields {
@@ -171,23 +171,23 @@ void cursor_effects_evaluate(struct tomoe *s, double now) {
     cursor_motion_apply(s, matrix, offset, settle);
 }
 
-static lisp_value cursor_effects(int argc, lisp_value *argv) {
+static pv cursor_effects(int argc, pv *argv) {
     cursor_server->cursor_effects.count = 0;
-    for (lisp_value tail = argv[0]; lisp_consp(tail); tail = lisp_cdr(tail)) {
-        lisp_value spec = cursor_plist(lisp_car(tail), "SPEC");
+    for (pv tail = argv[0]; pv_consp(tail); tail = pv_cdr(tail)) {
+        pv spec = cursor_plist(pv_car(tail), "SPEC");
         if (cursor_server->cursor_effects.count == CURSOR_EFFECTS_MAX)
-            lisp_error("Cursor effect set exceeds its budget.");
+            pv_error("Cursor effect set exceeds its budget.");
         struct cursor_effect *effect =
             &cursor_server->cursor_effects.entries[cursor_server->cursor_effects.count++];
         parse_effect(spec, effect);
     }
     cursor_effects_evaluate(cursor_server, animation_now());
-    return lisp_nil();
+    return pv_nil();
 }
 
 void cursor_effects_register_primitives(struct tomoe *server) {
     cursor_server = server;
-    lisp_define_primitive("%cursor-effects", cursor_effects, 1, 1);
+    prim_define("%cursor-effects", cursor_effects, 1, 1);
 }
 
 static bool matrix_identity(const double *matrix) {

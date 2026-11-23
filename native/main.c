@@ -2,11 +2,7 @@
 
 #include "backend.h"
 #include "budget.h"
-#include "control.h"
 #include "desktop-session.h"
-#include "ipc.h"
-#include "json.h"
-#include "lisp.h"
 #include "policy.h"
 #include "supervise.h"
 
@@ -23,59 +19,6 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
-
-static const char lisp_prelude[] = {
-#embed "../lisp/prelude.lisp"
-};
-static const char lisp_api[] = {
-#embed "../lisp/api.lisp"
-};
-static const char lisp_ui[] = {
-#embed "../lisp/ui.lisp"
-};
-static const char lisp_cursor[] = {
-#embed "../lisp/cursor.lisp"
-};
-static const char lisp_dialogs[] = {
-#embed "../lisp/dialogs.lisp"
-};
-static const char lisp_rules[] = {
-#embed "../lisp/rules.lisp"
-};
-static const char lisp_ipc[] = {
-#embed "../lisp/ipc.lisp"
-};
-static const char lisp_plan[] = {
-#embed "../lisp/plan.lisp"
-};
-static const char lisp_runtime[] = {
-#embed "../lisp/runtime.lisp"
-};
-static const char lisp_livepatch[] = {
-#embed "../lisp/livepatch.lisp"
-};
-static const char lisp_desktop[] = {
-#embed "../lisp/desktop.lisp"
-};
-static const char lisp_default_config[] = {
-#embed "../lisp/default-config.lisp"
-};
-
-static const struct lisp_builtin_source tomoe_builtin_sources[] = {
-    { "prelude", lisp_prelude, sizeof(lisp_prelude) },
-    { "api", lisp_api, sizeof(lisp_api) },
-    { "ui", lisp_ui, sizeof(lisp_ui) },
-    { "cursor", lisp_cursor, sizeof(lisp_cursor) },
-    { "dialogs", lisp_dialogs, sizeof(lisp_dialogs) },
-    { "rules", lisp_rules, sizeof(lisp_rules) },
-    { "ipc", lisp_ipc, sizeof(lisp_ipc) },
-    { "plan", lisp_plan, sizeof(lisp_plan) },
-    { "runtime", lisp_runtime, sizeof(lisp_runtime) },
-    { "livepatch", lisp_livepatch, sizeof(lisp_livepatch) },
-    { "desktop", lisp_desktop, sizeof(lisp_desktop) },
-    { "default-config", lisp_default_config, sizeof(lisp_default_config) },
-};
-static const size_t tomoe_builtin_source_count = sizeof(tomoe_builtin_sources) / sizeof(tomoe_builtin_sources[0]);
 
 enum { JSON_WIRE_VERSION = 3, CONTROL_WIRE_VERSION = 2 };
 
@@ -183,30 +126,16 @@ void loop_request_quit(struct tomoe *server) {
     loop_state.quit = true;
 }
 
-static lisp_value primitive_quit(int count, lisp_value *arguments) {
+static pv primitive_quit(int count, pv *arguments) {
     (void)count;
     (void)arguments;
     loop_state.quit = true;
-    return lisp_nil();
-}
-
-static lisp_value primitive_reload_requested(int count, lisp_value *arguments) {
-    (void)count;
-    (void)arguments;
-    return lisp_nil();
-}
-
-static lisp_value primitive_xwayland_display(int count, lisp_value *arguments) {
-    (void)count;
-    (void)arguments;
-    return lisp_cstring(loop_state.xwayland_display);
+    return pv_nil();
 }
 
 void loop_register_primitives(struct tomoe *server) {
     (void)server;
-    lisp_define_primitive("%QUIT", primitive_quit, 0, 0);
-    lisp_define_primitive("%RELOAD-REQUESTED", primitive_reload_requested, 0, 0);
-    lisp_define_primitive("%XWAYLAND-DISPLAY", primitive_xwayland_display, 0, 0);
+    prim_define("%QUIT", primitive_quit, 0, 0);
 }
 
 #ifndef TOMOE_PATH_PREFIX
@@ -307,51 +236,27 @@ static char *absolute_source(const char *path, char *error, size_t error_size) {
     return strdup(resolved);
 }
 
-static int control_operation(const char *name, enum control_operation *operation) {
-    static const struct {
-        const char *name;
-        enum control_operation operation;
-    } operations[] = {
-        { "inspect", CONTROL_INSPECT },
-        { "reload", CONTROL_RELOAD },
-        { "mount", CONTROL_MOUNT },
-        { "unmount", CONTROL_UNMOUNT },
-        { "event", CONTROL_EVENT },
-        { "hit-test", CONTROL_HIT_TEST },
-        { "frames", CONTROL_FRAMES },
-        { "animation", CONTROL_ANIMATION },
-        { "memory", CONTROL_MEMORY },
-        { "timings", CONTROL_TIMINGS },
-        { "quit", CONTROL_QUIT }
-    };
-    for (size_t i = 0; i < sizeof(operations) / sizeof(operations[0]); i++) {
-        if (!strcmp(name, operations[i].name)) {
-            *operation = operations[i].operation;
-            return 0;
-        }
-    }
-    return -1;
+static bool client_verb(const char *name) {
+    static const char *const verbs[] = { "msg", "commands", "command", "inspect", "reload",
+        "mount", "unmount", "event", "hit-test", "frames", "animation", "memory", "timings",
+        "quit" };
+    for (size_t i = 0; i < sizeof(verbs) / sizeof(verbs[0]); i++)
+        if (!strcmp(name, verbs[i])) return true;
+    return false;
 }
 
-static int client_values_ready(void) {
-    static bool ready;
-    if (ready) return 0;
-    if (lisp_init(budget_lisp_region_bootstrap))
-        return cli_error("Cannot initialise the Lisp runtime.");
-    ready = true;
-    return 0;
-}
-
-static int client_status(int code, const char *error) {
-    if (!code) return 0;
-    if (error && *error) return cli_error("%s", error);
-    return code;
-}
-
-static int client_verb_allowed(const struct cli_options *options, const char *verb) {
-    if (options->config || options->bare || strcmp(options->backend, "auto"))
-        return cli_error("Server options cannot be combined with %s.", verb);
-    return 0;
+static int exec_client(int argc, char **argv) {
+    char binary[PATH_MAX];
+    policy_binary_path(binary, sizeof(binary));
+    char **args = calloc((size_t)argc + 3, sizeof(*args));
+    if (!args) return cli_error("Cannot allocate the client arguments.");
+    args[0] = binary;
+    args[1] = "--client";
+    for (int i = 0; i < argc; i++) args[i + 2] = argv[i];
+    execv(binary, args);
+    execvp("tomoe-policy", args);
+    free(args);
+    return cli_error("Cannot run %s: %s", binary, strerror(errno));
 }
 
 static int run_compositor(const struct cli_options *options);
@@ -412,98 +317,10 @@ static int run_cli(int argc, char **argv) {
             options.watch = true;
         } else if (!strcmp(option, "--no-watch")) {
             options.watch = false;
-        } else if (!strcmp(option, "msg")) {
-            int status = client_verb_allowed(&options, "msg");
-            if (status) return status;
-            int remaining = argc - index;
-            if (remaining < 1 || remaining > 2)
-                return cli_error("msg requires METHOD and at most one JSON argument.");
-            if (client_values_ready()) return 1;
-            const char *method = argv[index++];
-            lisp_value params = lisp_nil();
-            if (index < argc) {
-                char error[512];
-                if (json_parse(argv[index], strlen(argv[index]), false, &params, error,
-                        sizeof(error)))
-                    return cli_error("%s", error);
-                index++;
-            }
-            char path[PATH_MAX], error[512];
-            if (desktop_json_client_path(options.explicit_name ? options.name : NULL, path,
-                    sizeof(path), error, sizeof(error)))
-                return cli_error("%s", error);
-            return client_status(ipc_client(path, method, params, error, sizeof(error)), error);
-        } else if (!strcmp(option, "commands")) {
-            int status = client_verb_allowed(&options, "commands");
-            if (status) return status;
-            if (index < argc) return cli_error("commands takes no arguments.");
-            if (client_values_ready()) return 1;
-            char path[PATH_MAX], error[512];
-            if (desktop_json_client_path(options.explicit_name ? options.name : NULL, path,
-                    sizeof(path), error, sizeof(error)))
-                return cli_error("%s", error);
-            return client_status(ipc_client(path, "commands", lisp_nil(), error,
-                sizeof(error)), error);
-        } else if (!strcmp(option, "command")) {
-            int status = client_verb_allowed(&options, "command");
-            if (status) return status;
-            if (index >= argc) return cli_error("command requires a NAME.");
-            if (client_values_ready()) return 1;
-            const char *command = argv[index++];
-            int pairs = argc - index;
-            const char **keys = pairs ? calloc((size_t)pairs, sizeof(*keys)) : NULL;
-            lisp_value *values = pairs ? calloc((size_t)pairs, sizeof(*values)) : NULL;
-            if (pairs && (!keys || !values)) {
-                free(keys);
-                free(values);
-                return cli_error("Cannot allocate the command arguments.");
-            }
-            for (int i = 0; i < pairs; i++) {
-                const char *argument = argv[index + i];
-                const char *equals = strchr(argument, '=');
-                if (!equals || equals == argument) {
-                    free(keys);
-                    free(values);
-                    return cli_error("command arguments are NAME=VALUE, not %s.", argument);
-                }
-                size_t length = (size_t)(equals - argument);
-                char *key = malloc(length + 1);
-                if (!key) {
-                    free(keys);
-                    free(values);
-                    return cli_error("Cannot allocate the command arguments.");
-                }
-                memcpy(key, argument, length);
-                key[length] = '\0';
-                keys[i] = key;
-                values[i] = lisp_cstring(equals + 1);
-            }
-            lisp_value arguments = json_build_object(pairs, keys, values);
-            for (int i = 0; i < pairs; i++) free((void *)keys[i]);
-            free(keys);
-            free(values);
-            const char *request_keys[2] = { "name", "arguments" };
-            lisp_value request_values[2] = { lisp_cstring(command), arguments };
-            lisp_value params = json_build_object(2, request_keys, request_values);
-            char path[PATH_MAX], error[512];
-            if (desktop_json_client_path(options.explicit_name ? options.name : NULL, path,
-                    sizeof(path), error, sizeof(error)))
-                return cli_error("%s", error);
-            return client_status(ipc_client(path, "command", params, error, sizeof(error)),
-                error);
+        } else if (client_verb(option)) {
+            return exec_client(argc, argv);
         } else {
-            enum control_operation operation;
-            if (control_operation(option, &operation)) {
-                return cli_error("Unknown option or command: %s", option);
-            }
-            int status = client_verb_allowed(&options, "a control command");
-            if (status) return status;
-            if (client_values_ready()) return 1;
-            char path[PATH_MAX], error[512];
-            if (desktop_control_path(options.name, path, sizeof(path), error, sizeof(error)))
-                return cli_error("%s", error);
-            return client_status(control_client(path, operation, argc - index, argv + index,
-                error, sizeof(error)), error);
+            return cli_error("Unknown option or command: %s", option);
         }
     }
     if (!options.bare && !options.config && !options.config_missing)
@@ -634,38 +451,29 @@ static int run_compositor(const struct cli_options *options) {
     }
     int status = 1;
     const char *stop_reason = "it could not start";
-    struct control_server *control = NULL;
-    struct ipc_server *ipc = NULL;
+    int control_fd = -1, json_fd = -1;
+    struct policy_link *policy = NULL;
     struct desktop_bus *bus = NULL;
     bool resources = false;
     bool session = false;
     int signal_fd = -1;
     struct loop_source *signal_watch = NULL;
-    if (lisp_init(budget_lisp_region_bootstrap)) {
-        tomoe_log(LOG_ERROR, "tomoe: cannot initialise the Lisp runtime");
-        goto done;
-    }
     policy_register_primitives(server);
     resources_register_primitives(server);
     ui_layout_register_primitives(server);
     loop_register_primitives(server);
-    if (lisp_load_builtins(tomoe_builtin_sources, tomoe_builtin_source_count, error,
-            sizeof(error))) {
-        tomoe_log(LOG_ERROR, "tomoe: %s", error);
-        goto done;
-    }
     signal_fd = session_signals_start(server, &signal_watch, error, sizeof(error));
     if (signal_fd < 0) {
         tomoe_log(LOG_ERROR, "tomoe: %s", error);
         goto done;
     }
-    control = control_start(server, control_path, error, sizeof(error));
-    if (!control) {
+    control_fd = desktop_listen_unix(control_path, 8, error, sizeof(error));
+    if (control_fd < 0) {
         tomoe_log(LOG_ERROR, "tomoe: %s", error);
         goto done;
     }
-    ipc = ipc_start(server, json_path, error, sizeof(error));
-    if (!ipc) {
+    json_fd = desktop_listen_unix(json_path, 16, error, sizeof(error));
+    if (json_fd < 0) {
         tomoe_log(LOG_ERROR, "tomoe: %s", error);
         goto done;
     }
@@ -693,17 +501,16 @@ static int run_compositor(const struct cli_options *options) {
     if (resources_start(server))
         tomoe_log(LOG_ERROR, "tomoe: cannot start the native resources");
     resources = true;
-    lisp_value sources = lisp_nil();
-    if (options->config)
-        sources = lisp_cons(lisp_cstring(options->config), lisp_nil());
-    lisp_value boot_args[3] = { sources, lisp_bool(options->bare), lisp_bool(options->watch) };
-    lisp_value boot_result = lisp_nil();
-    if (policy_call(POLICY_HOOK_BOOT, 3, boot_args, &boot_result, error, sizeof(error)))
-        tomoe_log(LOG_ERROR, "tomoe: %s", error);
-    else if (lisp_stringp(boot_result)) {
-        size_t length = 0;
-        const char *message = lisp_get_string(boot_result, &length);
-        if (message) tomoe_log(LOG_ERROR, "tomoe: %.*s", (int)length, message);
+    {
+        struct policy_link_options link_options = {
+            .config = options->config, .bare = options->bare, .watch = options->watch,
+            .control_fd = control_fd, .json_fd = json_fd
+        };
+        policy = policy_link_start(server, &link_options);
+        if (!policy) {
+            tomoe_log(LOG_ERROR, "tomoe: cannot start tomoe-policy");
+            goto done;
+        }
     }
     while (!loop_state.quit) {
         int timeout = policy_events_pending(server) ? 0 : -1;
@@ -720,24 +527,16 @@ static int run_compositor(const struct cli_options *options) {
         }
         tomoe_test_gestures(server);
         timing_turn_mark(STAGE_GESTURES);
-        if (policy_events_pending(server)) {
-            lisp_set_limits(2000000, 25000000ULL);
-            policy_drain(server);
-        }
+        if (policy_events_pending(server)) policy_drain(server);
         timing_turn_mark(STAGE_POLICY);
         desktop_bus_service(bus);
         timing_turn_mark(STAGE_BUS);
         tomoe_log_tend();
         timing_turn_mark(STAGE_LOG);
-        control_serve(control);
         timing_turn_mark(STAGE_CONTROL);
-        ipc_serve(ipc);
         timing_turn_mark(STAGE_IPC);
-        lisp_end_turn();
         timing_turn_mark(STAGE_LISP_END);
     }
-    uint64_t deadline = loop_now_ms() + 100;
-    while (ipc_pending(ipc) && loop_now_ms() < deadline) ipc_drain(ipc, 1);
     status = loop_state.failed ? 1 : 0;
     if (loop_state.quit)
         stop_reason = loop_state.quit_reason[0] ? loop_state.quit_reason : "it was asked to quit";
@@ -747,12 +546,18 @@ done:
     tomoe_service_run_end();
     if (session) desktop_session_stop();
     desktop_bus_stop(bus);
-    ipc_stop(ipc);
-    control_stop(control);
+    policy_link_stop(policy);
+    if (control_fd >= 0) {
+        close(control_fd);
+        unlink(control_path);
+    }
+    if (json_fd >= 0) {
+        close(json_fd);
+        unlink(json_path);
+    }
     if (signal_watch) loop_remove(signal_watch);
     if (signal_fd >= 0) close(signal_fd);
     tomoe_destroy(server);
-    lisp_shutdown();
     return status;
 }
 

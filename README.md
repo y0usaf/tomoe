@@ -480,10 +480,18 @@ output baseline, while later explicit `configure-output` effects can override it
 
 ## How it fits together
 
-A Lisp runtime in Tomoe's C core runs the policy, and the same core speaks the
-Wayland wire protocol itself, renders with EGL and GLES2 on GBM, and drives
+The policy runs in `tomoe-policy`, a supervised sidecar holding the Lisp runtime,
+the control socket and the JSON socket; the C core holds no Lisp. The core speaks
+the Wayland wire protocol itself, renders with EGL and GLES2 on GBM, and drives
 DRM/KMS through the kernel's own ioctls, libinput and seatd; it can also run
-nested in another compositor or headless. Extensions never touch native state.
+nested in another compositor or headless. The two talk over a versioned binary
+protocol on a socket pair: the core sends batched events and answers the
+policy's primitive calls without ever waiting on it. When the policy dies or
+stops answering, the core keeps drawing its clients and last scene, runs the
+`close-window`, `focus-next-window`/`next` and `previous` bindings and VT
+switching itself, and restarts the policy with every window, layer and output
+plus each extension's saved state, so workspaces survive; timers, watches and
+launched processes live in the core and are never run twice. Extensions never touch native state.
 They return effects, the runtime settles every extension's effects into one
 transaction, and only then does the native side apply it. A broken extension
 therefore can't leave the screen half-updated: one whose update fails (it

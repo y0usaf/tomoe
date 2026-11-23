@@ -15,6 +15,7 @@ dir=$(mktemp -d "${base}/tomoe-e2e.XXXXXX")
 trap 'rm -rf "$dir"' EXIT
 mkdir -p "$dir/cap"
 cp "$root/bench/e2e-fault.py" "$dir/e2e-fault.py"
+cp "$root/examples/workspaces.lisp" "$dir/workspaces.lisp"
 
 env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u TOMOE_SOCKET \
 	"$root/tools/isolate" --check
@@ -29,6 +30,7 @@ env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u TOMOE_SOCKET \
 		cap_dir=$5
 		log=$6
 		fault_py=$7
+		workspaces=$8
 
 		"$tomoe_bin" --socket e2e --backend headless --bare --no-watch >"$log" 2>&1 &
 		tpid=$!
@@ -73,7 +75,7 @@ env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u TOMOE_SOCKET \
 		echo "$blur_out"
 		echo "$blur_out" | grep -Eq "frames=[3-9]" 
 
-		python3 "$fault_py" max-objects,flood,xwm,idle-flush,x11,x11-stale,x11-ownership,xwm-stall,xwm-hang "$XDG_RUNTIME_DIR/$wl_display" "$client_bin" "$tomoe_bin"
+		python3 "$fault_py" max-objects,flood,xwm,idle-flush,x11,x11-stale,x11-ownership,xwm-stall,xwm-hang,policy-kill,policy-stop,policy-snapshot,policy-effects,policy-effects-bugs "$XDG_RUNTIME_DIR/$wl_display" "$client_bin" "$tomoe_bin" "$workspaces"
 
 		trap - EXIT
 		kill -TERM "$tpid"
@@ -88,4 +90,4 @@ env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u TOMOE_SOCKET \
 			fi
 		done
 		echo "e2e: PASS"
-	' _ "$tomoe_bin" "$client_bin" "$capture_bin" "$layer_blur_bin" "$dir/cap" "$dir/tomoe.log" "$dir/e2e-fault.py"
+	' _ "$tomoe_bin" "$client_bin" "$capture_bin" "$layer_blur_bin" "$dir/cap" "$dir/tomoe.log" "$dir/e2e-fault.py" "$dir/workspaces.lisp"

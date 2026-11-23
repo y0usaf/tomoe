@@ -141,6 +141,10 @@ struct wl_event_source *loop_add_owned_fd(struct wl_event_loop *loop, int fd, ui
     return add_fd(loop, fd, true, mask, func, data);
 }
 
+int wl_event_source_get_fd(struct wl_event_source *source) {
+    return source->fd;
+}
+
 int wl_event_source_fd_update(struct wl_event_source *source, uint32_t mask) {
     struct epoll_event ep = { .events = epoll_events(mask), .data.ptr = source };
     return epoll_ctl(source->loop->epoll_fd, EPOLL_CTL_MOD, source->fd, &ep);

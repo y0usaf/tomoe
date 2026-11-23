@@ -12,7 +12,6 @@ struct budget {
     uint64_t limit, used, high_water, refused;
 };
 
-const size_t budget_lisp_region_bootstrap = (size_t)256 << 20;
 
 static struct budget budgets[BUDGET_COUNT] = {
     [BUDGET_LISP_HEAP_MB] = { "lisp-heap-mb" },
@@ -83,14 +82,14 @@ void budget_refuse(enum budget_kind kind) {
         (unsigned long long)b->limit, (unsigned long long)b->used);
 }
 
-lisp_value budget_report(void) {
-    lisp_value list = lisp_nil();
+pv budget_report(void) {
+    pv list = pv_nil();
     for (int i = BUDGET_COUNT - 1; i >= 0; i--) {
         struct budget *b = &budgets[i];
-        list = lisp_cons(lisp_list(10, lisp_keyword("NAME"), lisp_keyword(b->name),
-            lisp_keyword("LIMIT"), lisp_uint(b->limit), lisp_keyword("USED"), lisp_uint(b->used),
-            lisp_keyword("HIGH-WATER"), lisp_uint(b->high_water),
-            lisp_keyword("REFUSED"), lisp_uint(b->refused)), list);
+        list = pv_cons(pv_list(10, pv_keyword("NAME"), pv_keyword(b->name),
+            pv_keyword("LIMIT"), pv_uint(b->limit), pv_keyword("USED"), pv_uint(b->used),
+            pv_keyword("HIGH-WATER"), pv_uint(b->high_water),
+            pv_keyword("REFUSED"), pv_uint(b->refused)), list);
     }
     return list;
 }
