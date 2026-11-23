@@ -43,6 +43,7 @@ pkgs.testers.runNixOSTest {
         "compositors": "${compositors}",
         "cores": "4",
         "memory": "4096",
+        "lavapipe": "/run/opengl-driver/share/vulkan/icd.d/lvp_icd.${pkgs.stdenv.hostPlatform.uname.processor}.json",
         "closures": {
             "tomoe": "${closure tomoe}",
             "sway": "${closure pkgs.sway}",

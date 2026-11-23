@@ -6,6 +6,7 @@ let
   layerBlur = pkgs.callPackage ./e2e-layer-blur.nix { };
   pwPortal = pkgs.callPackage ./e2e-pw-portal.nix { };
   pyDbus = pkgs.python3.withPackages (ps: [ ps.dbus-python ]);
+  lavapipe = "/run/opengl-driver/share/vulkan/icd.d/lvp_icd.${pkgs.stdenv.hostPlatform.uname.processor}.json";
 in
 pkgs.testers.runNixOSTest {
   name = "tomoe-e2e";
@@ -93,6 +94,7 @@ pkgs.testers.runNixOSTest {
         "GALLIUM_DRIVER": "llvmpipe",
         "LP_NUM_THREADS": "4",
         "MESA_LOADER_DRIVER_OVERRIDE": "zink",
+        "VK_DRIVER_FILES": "${lavapipe}",
         "NO_AT_BRIDGE": "1",
     }
     unit_env = " ".join(f"--setenv={k}={v}" for k, v in env_vars.items())
@@ -116,6 +118,12 @@ pkgs.testers.runNixOSTest {
         f"drm cards and drivers: {machine.execute(drm_cards)[1]!r}"
     )
     assert not re.search(r":CONFIG-ERROR \(", inspect), f"tomoe config error: {inspect[:300]}"
+    _, render_libs = machine.execute(
+        "grep -oE '[^/]+\\.so[.0-9]*$' /proc/$(pgrep -xo tomoe)/maps | sort -u "
+        "| grep -E 'vulkan|gallium|zink|EGL|GLES|gbm'"
+    )
+    print(f"E2E_RENDER_LIBS {' '.join(render_libs.split())}")
+    assert "libvulkan_lvp.so" in render_libs, f"tomoe is not rendering on lavapipe: {render_libs!r}"
 
     machine.succeed("test -S /run/e2e/rt/e2e")
     wl_display = "e2e"
