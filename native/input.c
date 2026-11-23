@@ -1913,7 +1913,7 @@ static void input_key_body(struct input_device *device, uint32_t time_msec, uint
         return;
     }
     if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED && tracked && !lock_active(s) &&
-            !policy_link_up(s)) {
+            !shortcuts_inhibited(s) && !policy_link_up(s)) {
         struct binding *b = NULL;
         for (int i = 0; i < count; i++) {
             struct binding *candidate = binding_find(s, mods, syms[i], NULL);
