@@ -3106,8 +3106,16 @@ static VkDescriptorSet chunk_ubo(struct vk *v, struct chunk *c) {
         .pSetLayouts = &v->ubo_layout,
     };
     if (vkAllocateDescriptorSets(v->dev, &alloc, &c->ubo) != VK_SUCCESS) {
-        c->ubo = VK_NULL_HANDLE;
-        return VK_NULL_HANDLE;
+        for (struct chunk *spare = v->spare; spare; spare = spare->next) {
+            if (!spare->ubo) continue;
+            vkFreeDescriptorSets(v->dev, v->ubo_pool, 1, &spare->ubo);
+            spare->ubo = VK_NULL_HANDLE;
+        }
+        if (vkAllocateDescriptorSets(v->dev, &alloc, &c->ubo) != VK_SUCCESS) {
+            c->ubo = VK_NULL_HANDLE;
+            tomoe_log(LOG_ERROR, "tomoe: vulkan ran out of user shader uniform sets");
+            return VK_NULL_HANDLE;
+        }
     }
     VkDescriptorBufferInfo info = { c->buffer, 0, sizeof(struct user_uniforms) };
     VkWriteDescriptorSet write = {

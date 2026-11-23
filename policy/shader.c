@@ -285,12 +285,14 @@ static void job_tick(void *data) {
         return;
     }
     if (loop_now_ms() >= job->deadline) {
-        kill(job->pid, SIGKILL);
         if (!job->exited) {
+            kill(job->pid, SIGKILL);
             while (waitpid(job->pid, &job->status, 0) < 0 && errno == EINTR) {}
             job->exited = true;
+            job_done(job, true);
+        } else {
+            job_done(job, false);
         }
-        job_done(job, true);
         return;
     }
     uint64_t left = job->deadline - loop_now_ms();
