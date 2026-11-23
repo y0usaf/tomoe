@@ -83,8 +83,10 @@ struct upload *upload_create(void) {
     }
     for (int i = 0; i < UPLOAD_JOBS; i++) atomic_init(&u->jobs[i].state, UPLOAD_DONE);
     wl_shm_prepare_threads();
-    described = u;
-    if ((u->threadless = tomoe_test_flag("upload-no-worker"))) return u;
+    if ((u->threadless = tomoe_test_flag("upload-no-worker"))) {
+        described = u;
+        return u;
+    }
     sigset_t all, old;
     sigfillset(&all);
     pthread_sigmask(SIG_SETMASK, &all, &old);
