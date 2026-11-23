@@ -175,7 +175,7 @@ def check_idle_flush(tomoe_bin, client_bin):
         f.write(FLUSH_CONFIG)
     sock = "e2e-flush"
     tomoe = subprocess.Popen([tomoe_bin, "--socket", sock, "--backend", "headless", "--config", config,
-        "--no-watch"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        "--no-watch", "--test-gfx-software"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         for _ in range(200):
             if subprocess.run([tomoe_bin, "--socket", sock, "inspect"], stdout=subprocess.DEVNULL,
@@ -695,7 +695,7 @@ def wait_windows(tomoe_bin, sock, count, timeout=15.0):
 
 def start_tomoe(tomoe_bin, sock, config, extra=()):
     tomoe = subprocess.Popen([tomoe_bin, "--socket", sock, "--backend", "headless", "--config", config,
-        "--no-watch", *extra], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        "--no-watch", "--test-gfx-software", *extra], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     inspect(tomoe_bin, sock)
     return tomoe
 
@@ -896,7 +896,7 @@ class Effects:
         with open(config, "w") as f:
             f.write(EFFECTS_CONFIG.format(extra=extra.format(**self.files), **self.files))
         self.tomoe = subprocess.Popen([tomoe_bin, "--socket", self.sock, "--backend", "headless",
-            "--config", config, "--no-watch", *flags], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            "--config", config, "--no-watch", "--test-gfx-software", *flags], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.pid = None
 
     def policy(self, old=None):
@@ -1710,7 +1710,7 @@ def check_shm_pool_fds(tomoe_bin, client_bin):
     path = os.path.join(os.environ["XDG_RUNTIME_DIR"], sock)
     limit = 512
     pools = 600
-    tomoe = subprocess.Popen([tomoe_bin, "--socket", sock, "--backend", "headless", "--bare", "--no-watch"],
+    tomoe = subprocess.Popen([tomoe_bin, "--socket", sock, "--backend", "headless", "--bare", "--no-watch", "--test-gfx-software"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_NOFILE, (limit, limit)))
     try:
@@ -1769,7 +1769,7 @@ def check_shm_pool_fds(tomoe_bin, client_bin):
 def check_gfx_lost(tomoe_bin, client_bin):
     sock = "e2e-gfxlost"
     drm = os.environ.get("E2E_DRM_DEVICE")
-    args = [tomoe_bin, "--socket", sock, "--backend", "headless", "--bare", "--no-watch",
+    args = [tomoe_bin, "--socket", sock, "--backend", "headless", "--bare", "--no-watch", "--test-gfx-software",
         "--test-gfx-lose-device=60"]
     if drm:
         args += ["--drm_device", drm]

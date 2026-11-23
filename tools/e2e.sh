@@ -32,7 +32,7 @@ env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u TOMOE_SOCKET \
 		fault_py=$7
 		workspaces=$8
 
-		"$tomoe_bin" --socket e2e --backend headless --bare --no-watch >"$log" 2>&1 &
+		"$tomoe_bin" --socket e2e --backend headless --bare --no-watch --test-gfx-software >"$log" 2>&1 &
 		tpid=$!
 		cleanup() {
 			if kill -0 "$tpid" 2>/dev/null; then
