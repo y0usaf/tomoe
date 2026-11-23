@@ -15,6 +15,7 @@
 #include "shaders/down.frag.h"
 #include "shaders/up.frag.h"
 #include "shaders/lut.frag.h"
+#include "shaders/ext.frag.h"
 
 enum {
     BLENDS = 3,
@@ -25,6 +26,8 @@ enum {
     BATCH_WAITS = 16,
     BATCH_LIMIT = 16,
     LEVEL_POOL = 24,
+    YUV_FORMATS = 3,
+    YUV_POOL_SETS = 64,
 };
 
 struct vk;
@@ -44,7 +47,7 @@ struct vk_image {
     int width, height;
     bool foreign, target, owned, used;
     uint64_t batch, written;
-    int fd;
+    int fd, yuv;
 };
 
 struct vk_texture {
@@ -53,7 +56,7 @@ struct vk_texture {
     struct vk_image *image;
     struct buffer *buffer;
     uint32_t format;
-    bool alpha;
+    bool alpha, external;
     uint64_t bytes;
 };
 
@@ -107,6 +110,24 @@ struct scene {
     struct pass *owner;
 };
 
+struct ext_push {
+    float tint[4];
+    float size[2];
+    float alpha, opaque, clip, radius;
+};
+
+struct yuv_path {
+    bool supported, midpoint, linear;
+    VkSamplerYcbcrConversion conversion;
+    VkSampler sampler;
+    VkDescriptorSetLayout set_layout;
+    VkPipelineLayout layout;
+    VkDescriptorPool *pools;
+    size_t pool_count;
+    VkFormat targets[TARGET_FORMATS];
+    VkPipeline pipelines[TARGET_FORMATS];
+};
+
 struct blur_push {
     float half_pixel[2];
     float offset, grain, vibrancy;
@@ -146,7 +167,9 @@ struct vk {
     VkSampler samplers[2];
     VkDescriptorSet sampler_sets[2];
     VkPipelineLayout layout;
-    VkShaderModule vert, frag, blur_vert, down_frag, up_frag, lut_frag;
+    VkShaderModule vert, frag, blur_vert, down_frag, up_frag, lut_frag, ext_frag;
+    bool ycbcr;
+    struct yuv_path yuv[YUV_FORMATS];
     VkPipelineLayout blur_layout, lut_layout;
     VkPipeline down, up;
     struct target_pipelines targets[TARGET_FORMATS];
@@ -170,6 +193,11 @@ static struct vk *current_vk;
 
 static void level_pool_drain(struct vk *v);
 static bool wait_fd(struct vk *v, int fd);
+struct vk_texture;
+struct ext_push;
+static void external_quad(struct pass *pass, struct vk_texture *t, const float pos[8],
+    const float local[8], const float texcoords[8], const struct region *clip,
+    const struct ext_push *push);
 
 enum { LEVEL_FORMAT = VK_FORMAT_B8G8R8A8_UNORM };
 
@@ -194,6 +222,21 @@ static const struct pixel {
     { DRM_FORMAT_XBGR16161616F, VK_FORMAT_R16G16B16A16_SFLOAT, false },
     { DRM_FORMAT_RGB565, VK_FORMAT_R5G6B5_UNORM_PACK16, false },
 };
+
+static const struct yuv_format {
+    uint32_t drm;
+    VkFormat vk;
+} yuv_formats[YUV_FORMATS] = {
+    { DRM_FORMAT_NV12, VK_FORMAT_G8_B8R8_2PLANE_420_UNORM },
+    { DRM_FORMAT_P010, VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16 },
+    { DRM_FORMAT_YUV420, VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM },
+};
+
+static int yuv_for(uint32_t drm) {
+    for (int i = 0; i < YUV_FORMATS; i++)
+        if (yuv_formats[i].drm == drm) return i;
+    return -1;
+}
 
 static const struct pixel *pixel_for(uint32_t drm) {
     for (size_t i = 0; i < sizeof(pixels) / sizeof(pixels[0]); i++)
@@ -667,7 +710,73 @@ static VkDescriptorSet descriptor_new(struct vk *v, VkImageView view, VkDescript
     return set;
 }
 
+static bool yuv_view(struct vk *v, struct vk_image *image) {
+    struct yuv_path *y = &v->yuv[image->yuv];
+    VkSamplerYcbcrConversionInfo conversion = {
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO,
+        .conversion = y->conversion,
+    };
+    VkImageViewCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .pNext = &conversion,
+        .image = image->image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = image->format,
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+    };
+    if (vkCreateImageView(v->dev, &info, NULL, &image->view) != VK_SUCCESS) return false;
+    image->sample = image->view;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    for (size_t i = y->pool_count; i > 0 && !set; i--) {
+        VkDescriptorSetAllocateInfo alloc = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = y->pools[i - 1],
+            .descriptorSetCount = 1,
+            .pSetLayouts = &y->set_layout,
+        };
+        if (vkAllocateDescriptorSets(v->dev, &alloc, &set) == VK_SUCCESS) image->pool = y->pools[i - 1];
+        else set = VK_NULL_HANDLE;
+    }
+    if (!set) {
+        VkDescriptorPoolSize size = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, YUV_POOL_SETS * 3 };
+        VkDescriptorPoolCreateInfo pool_info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+            .maxSets = YUV_POOL_SETS,
+            .poolSizeCount = 1,
+            .pPoolSizes = &size,
+        };
+        VkDescriptorPool *grown = realloc(y->pools, (y->pool_count + 1) * sizeof(*grown));
+        if (!grown) return false;
+        y->pools = grown;
+        VkDescriptorPool pool;
+        if (vkCreateDescriptorPool(v->dev, &pool_info, NULL, &pool) != VK_SUCCESS) return false;
+        y->pools[y->pool_count++] = pool;
+        VkDescriptorSetAllocateInfo alloc = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = pool,
+            .descriptorSetCount = 1,
+            .pSetLayouts = &y->set_layout,
+        };
+        if (vkAllocateDescriptorSets(v->dev, &alloc, &set) != VK_SUCCESS) return false;
+        image->pool = pool;
+    }
+    VkDescriptorImageInfo described = { .imageView = image->view,
+        .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+    VkWriteDescriptorSet write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = set,
+        .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .pImageInfo = &described,
+    };
+    vkUpdateDescriptorSets(v->dev, 1, &write, 0, NULL);
+    image->set = set;
+    return true;
+}
+
 static bool image_view(struct vk *v, struct vk_image *image, bool opaque) {
+    if (image->yuv >= 0) return yuv_view(v, image);
     VkImageViewCreateInfo info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .image = image->image,
@@ -712,6 +821,7 @@ static struct vk_image *image_new(struct vk *v, VkFormat format, int width, int 
     image->width = width;
     image->height = height;
     image->fd = -1;
+    image->yuv = -1;
     wl_list_init(&image->link);
     VkImageCreateInfo info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -791,7 +901,9 @@ static struct vk_image *import(struct vk *v, struct buffer *buffer) {
     struct dmabuf_attributes d;
     if (!buffer_get_dmabuf(buffer, &d)) return NULL;
     const struct pixel *p = pixel_for(d.format);
-    if (!p || d.modifier == DRM_FORMAT_MOD_INVALID || d.n_planes < 1 ||
+    int yuv = yuv_for(d.format);
+    if (yuv >= 0 && !v->yuv[yuv].conversion) yuv = -1;
+    if ((!p && yuv < 0) || d.modifier == DRM_FORMAT_MOD_INVALID || d.n_planes < 1 ||
             d.n_planes > DMABUF_MAX_PLANES) {
         tomoe_log(LOG_ERROR, "tomoe: vulkan cannot import format 0x%08x modifier 0x%016llx",
             d.format, (unsigned long long)d.modifier);
@@ -805,13 +917,14 @@ static struct vk_image *import(struct vk *v, struct buffer *buffer) {
     struct vk_image *image = calloc(1, sizeof(*image));
     if (!image) return NULL;
     image->v = v;
-    image->format = p->vk;
+    image->format = yuv >= 0 ? yuv_formats[yuv].vk : p->vk;
+    image->yuv = yuv;
     image->drm_format = d.format;
     image->width = d.width;
     image->height = d.height;
     image->foreign = true;
     image->fd = -1;
-    image->usage = import_usage(v, d.format, d.modifier);
+    image->usage = yuv >= 0 ? VK_IMAGE_USAGE_SAMPLED_BIT : import_usage(v, d.format, d.modifier);
     image->target = image->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     image->owned = render_owns(buffer);
     VkSubresourceLayout layouts[DMABUF_MAX_PLANES] = {0};
@@ -834,7 +947,7 @@ static struct vk_image *import(struct vk *v, struct buffer *buffer) {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .pNext = &external,
         .imageType = VK_IMAGE_TYPE_2D,
-        .format = p->vk,
+        .format = image->format,
         .extent = { (uint32_t)d.width, (uint32_t)d.height, 1 },
         .mipLevels = 1,
         .arrayLayers = 1,
@@ -1194,6 +1307,7 @@ struct texture *texture_from_buffer(struct render *r, struct buffer *buffer) {
     t->image = image;
     t->format = dmabuf.format;
     t->alpha = format_alpha(dmabuf.format);
+    t->external = image->yuv >= 0;
     t->buffer = buffer_lock(buffer);
     return &t->base;
 }
@@ -1702,6 +1816,13 @@ void gfx_texture_draw(struct pass *pass, const struct texture_options *options,
     memcpy(quad.pos, pos, sizeof(quad.pos));
     memcpy(quad.tex, texcoords, sizeof(quad.tex));
     pass_flush(pass);
+    if (t->external) {
+        struct ext_push push = { .alpha = alpha, .opaque = t->alpha ? 0 : 1 };
+        memcpy(push.tint, quad.tint, sizeof(push.tint));
+        external_quad(pass, t, pos, NULL, texcoords, options->clip ? options->clip : pass->clip,
+            &push);
+        return;
+    }
     if (!options->lut) {
         pass_scene(pass, &quad);
         pass_flush(pass);
@@ -1843,8 +1964,22 @@ static bool device_init(struct vk *v) {
         .queueCount = 1,
         .pQueuePriorities = &priority,
     };
+    VkPhysicalDeviceVulkan11Features have11 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+    };
+    VkPhysicalDeviceFeatures2 have = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        .pNext = &have11,
+    };
+    vkGetPhysicalDeviceFeatures2(v->phys, &have);
+    v->ycbcr = have11.samplerYcbcrConversion;
+    VkPhysicalDeviceVulkan11Features features11 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+        .samplerYcbcrConversion = v->ycbcr,
+    };
     VkPhysicalDeviceVulkan13Features features13 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+        .pNext = &features11,
         .synchronization2 = VK_TRUE,
         .dynamicRendering = VK_TRUE,
     };
@@ -1959,6 +2094,39 @@ static bool formats_init(struct vk *v) {
                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT))
                 format_set_add(&r->render_formats, p->drm, modifier);
         }
+        free(mods);
+    }
+    for (int i = 0; v->ycbcr && i < YUV_FORMATS; i++) {
+        struct yuv_path *y = &v->yuv[i];
+        VkDrmFormatModifierPropertiesListEXT list = {
+            .sType = VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT,
+        };
+        VkFormatProperties2 props = {
+            .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
+            .pNext = &list,
+        };
+        vkGetPhysicalDeviceFormatProperties2(v->phys, yuv_formats[i].vk, &props);
+        if (!list.drmFormatModifierCount) continue;
+        VkDrmFormatModifierPropertiesEXT *mods = calloc(list.drmFormatModifierCount, sizeof(*mods));
+        if (!mods) return false;
+        list.pDrmFormatModifierProperties = mods;
+        vkGetPhysicalDeviceFormatProperties2(v->phys, yuv_formats[i].vk, &props);
+        bool all_midpoint = true, all_linear = true;
+        for (uint32_t j = 0; j < list.drmFormatModifierCount; j++) {
+            VkFormatFeatureFlags features = mods[j].drmFormatModifierTilingFeatures;
+            bool midpoint = features & VK_FORMAT_FEATURE_MIDPOINT_CHROMA_SAMPLES_BIT;
+            bool cosited = features & VK_FORMAT_FEATURE_COSITED_CHROMA_SAMPLES_BIT;
+            if (!(features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) || (!midpoint && !cosited) ||
+                    !modifier_usable(v, yuv_formats[i].vk, mods[j].drmFormatModifier,
+                    VK_IMAGE_USAGE_SAMPLED_BIT)) continue;
+            format_set_add(&r->texture_formats, yuv_formats[i].drm, mods[j].drmFormatModifier);
+            y->supported = true;
+            all_midpoint = all_midpoint && midpoint;
+            all_linear = all_linear &&
+                (features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_YCBCR_CONVERSION_LINEAR_FILTER_BIT);
+        }
+        y->midpoint = all_midpoint;
+        y->linear = all_linear;
         free(mods);
     }
     const uint32_t shm[] = { DRM_FORMAT_ARGB8888, DRM_FORMAT_XRGB8888, DRM_FORMAT_ABGR8888,
@@ -2085,6 +2253,144 @@ static bool layouts_init(struct vk *v) {
     return true;
 }
 
+static bool yuv_init(struct vk *v, int index) {
+    struct yuv_path *y = &v->yuv[index];
+    VkFilter filter = y->linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+    VkChromaLocation location = y->midpoint ? VK_CHROMA_LOCATION_MIDPOINT :
+        VK_CHROMA_LOCATION_COSITED_EVEN;
+    VkSamplerYcbcrConversionCreateInfo conversion = {
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_CREATE_INFO,
+        .format = yuv_formats[index].vk,
+        .ycbcrModel = VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_709,
+        .ycbcrRange = VK_SAMPLER_YCBCR_RANGE_ITU_NARROW,
+        .xChromaOffset = location,
+        .yChromaOffset = location,
+        .chromaFilter = filter,
+    };
+    if (vkCreateSamplerYcbcrConversion(v->dev, &conversion, NULL, &y->conversion) != VK_SUCCESS) {
+        y->conversion = VK_NULL_HANDLE;
+        return false;
+    }
+    VkSamplerYcbcrConversionInfo info = {
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO,
+        .conversion = y->conversion,
+    };
+    VkSamplerCreateInfo sampler = {
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .pNext = &info,
+        .magFilter = filter,
+        .minFilter = filter,
+        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+        .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+    };
+    VkDescriptorSetLayoutBinding binding = {
+        .binding = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = 1,
+        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        .pImmutableSamplers = &y->sampler,
+    };
+    VkDescriptorSetLayoutCreateInfo set = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 1,
+        .pBindings = &binding,
+    };
+    VkPushConstantRange push = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(struct ext_push) };
+    VkPipelineLayoutCreateInfo layout = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 1,
+        .pSetLayouts = &y->set_layout,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &push,
+    };
+    if (vkCreateSampler(v->dev, &sampler, NULL, &y->sampler) != VK_SUCCESS ||
+            vkCreateDescriptorSetLayout(v->dev, &set, NULL, &y->set_layout) != VK_SUCCESS ||
+            vkCreatePipelineLayout(v->dev, &layout, NULL, &y->layout) != VK_SUCCESS) {
+        tomoe_log(LOG_ERROR, "tomoe: vulkan cannot set up YUV sampling for 0x%08x",
+            yuv_formats[index].drm);
+        return false;
+    }
+    return true;
+}
+
+static void yuv_finish(struct vk *v) {
+    for (int i = 0; i < YUV_FORMATS; i++) {
+        struct yuv_path *y = &v->yuv[i];
+        for (int k = 0; k < TARGET_FORMATS; k++)
+            if (y->pipelines[k]) vkDestroyPipeline(v->dev, y->pipelines[k], NULL);
+        for (size_t k = 0; k < y->pool_count; k++) vkDestroyDescriptorPool(v->dev, y->pools[k], NULL);
+        free(y->pools);
+        if (y->layout) vkDestroyPipelineLayout(v->dev, y->layout, NULL);
+        if (y->set_layout) vkDestroyDescriptorSetLayout(v->dev, y->set_layout, NULL);
+        if (y->sampler) vkDestroySampler(v->dev, y->sampler, NULL);
+        if (y->conversion) vkDestroySamplerYcbcrConversion(v->dev, y->conversion, NULL);
+        *y = (struct yuv_path){0};
+    }
+}
+
+static VkPipeline yuv_pipeline(struct vk *v, int index, VkFormat format) {
+    struct yuv_path *y = &v->yuv[index];
+    for (int i = 0; i < TARGET_FORMATS; i++)
+        if (y->pipelines[i] && y->targets[i] == format) return y->pipelines[i];
+    for (int i = 0; i < TARGET_FORMATS; i++) {
+        if (y->pipelines[i]) continue;
+        y->pipelines[i] = pipeline_make(v, format, 1, v->vert, v->ext_frag, y->layout, true);
+        y->targets[i] = format;
+        return y->pipelines[i];
+    }
+    return VK_NULL_HANDLE;
+}
+
+static void external_quad(struct pass *pass, struct vk_texture *t, const float pos[8],
+        const float local[8], const float texcoords[8], const struct region *clip,
+        const struct ext_push *push) {
+    struct vk *v = V(pass->r);
+    struct render *r = pass->r;
+    pass_flush(pass);
+    struct vk_image *image = t->image;
+    if (!v->target || !image || image->yuv < 0 || !image->set) return;
+    VkPipeline pipeline = yuv_pipeline(v, image->yuv, v->target->format);
+    if (!pipeline || !image_use(v, image)) return;
+    VkBuffer buffer;
+    VkDeviceSize offset;
+    struct scene_instance *in = stage_alloc(v, sizeof(*in), &buffer, &offset);
+    if (!in || !rendering_begin(v, v->target)) return;
+    memset(in, 0, sizeof(*in));
+    memcpy(in->pos, pos, sizeof(in->pos));
+    if (local) memcpy(in->local, local, sizeof(in->local));
+    memcpy(in->tex, texcoords, sizeof(in->tex));
+    VkCommandBuffer cb = v->open->main;
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, v->yuv[image->yuv].layout, 0, 1,
+        &image->set, 0, NULL);
+    vkCmdPushConstants(cb, v->yuv[image->yuv].layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+        sizeof(*push), push);
+    vkCmdBindVertexBuffers(cb, 0, 1, &buffer, &offset);
+    r->gl_calls += 4;
+    int count = 1;
+    const struct rect *rects = clip ? region_rectangles((struct region *)clip, &count) : NULL;
+    for (int i = 0; i < count; i++) {
+        VkRect2D scissor = { { 0, 0 }, { (uint32_t)v->target->width, (uint32_t)v->target->height } };
+        if (rects) {
+            int32_t x1 = rects[i].x1 < 0 ? 0 : rects[i].x1, y1 = rects[i].y1 < 0 ? 0 : rects[i].y1;
+            int32_t x2 = rects[i].x2 > v->target->width ? v->target->width : rects[i].x2;
+            int32_t y2 = rects[i].y2 > v->target->height ? v->target->height : rects[i].y2;
+            if (x2 <= x1 || y2 <= y1) continue;
+            scissor = (VkRect2D){ { x1, y1 }, { (uint32_t)(x2 - x1), (uint32_t)(y2 - y1) } };
+            r->fragments += quad_pixels(pass, pos, &rects[i]);
+        } else {
+            r->fragments += quad_pixels(pass, pos, NULL);
+        }
+        vkCmdSetScissor(cb, 0, 1, &scissor);
+        vkCmdDraw(cb, 6, 1, 0, 0);
+        r->gl_calls += 2;
+        r->quads++;
+    }
+    r->runs++;
+}
+
 struct render *gfx_alloc(void) {
     struct vk *v = calloc(1, sizeof(*v));
     if (!v) return NULL;
@@ -2110,6 +2416,9 @@ bool gfx_ready(struct render *r) {
         tomoe_log(LOG_ERROR, "tomoe: vulkan pipeline setup failed");
         return false;
     }
+    v->ext_frag = shader_module(v, ext_frag, sizeof(ext_frag));
+    for (int i = 0; v->ext_frag && i < YUV_FORMATS; i++)
+        if (v->yuv[i].supported) yuv_init(v, i);
     v->dummy = image_new(v, VK_FORMAT_R8G8B8A8_UNORM, 1, 1,
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, false);
     if (!v->dummy) return false;
@@ -2176,6 +2485,8 @@ void gfx_close(struct render *r) {
             if (v->samplers[i]) vkDestroySampler(v->dev, v->samplers[i], NULL);
         for (int i = 0; i < TARGET_FORMATS; i++)
             if (v->targets[i].lut) vkDestroyPipeline(v->dev, v->targets[i].lut, NULL);
+        yuv_finish(v);
+        if (v->ext_frag) vkDestroyShaderModule(v->dev, v->ext_frag, NULL);
         if (v->lut_layout) vkDestroyPipelineLayout(v->dev, v->lut_layout, NULL);
         if (v->lut_frag) vkDestroyShaderModule(v->dev, v->lut_frag, NULL);
         if (v->down) vkDestroyPipeline(v->dev, v->down, NULL);
@@ -2276,19 +2587,22 @@ bool gfx_tex_alpha(const struct texture *texture) {
 }
 
 bool gfx_tex_external(const struct texture *texture) {
-    return false;
+    return texture_of((struct texture *)texture)->external;
 }
 
 bool gfx_tex_info(const struct texture *texture, bool *external, bool *alpha) {
     if (!texture) return false;
     const struct vk_texture *t = texture_of((struct texture *)texture);
     if (!t->image) return false;
-    if (external) *external = false;
+    if (external) *external = t->external;
     if (alpha) *alpha = t->alpha;
     return true;
 }
 
 bool gfx_external_ready(struct render *r) {
+    struct vk *v = V(r);
+    for (int i = 0; i < YUV_FORMATS; i++)
+        if (v->yuv[i].conversion) return true;
     return false;
 }
 
@@ -2528,6 +2842,12 @@ void gfx_glass_draw(struct pass *pass, struct gfx_prog *p, struct texture *map,
 void gfx_external_draw(struct pass *pass, const struct texture_options *options, bool alpha,
         struct fbox clip, double radius, const float pos[8], const float local[8],
         const float texcoords[8]) {
+    struct vk_texture *t = texture_of(options->texture);
+    if (!t->external) return;
+    struct ext_push push = { .alpha = options->alpha ? *options->alpha : 1, .opaque = alpha ? 0 : 1,
+        .clip = 1, .size = { (float)clip.width, (float)clip.height }, .radius = (float)radius };
+    if (options->tint) memcpy(push.tint, options->tint, sizeof(push.tint));
+    external_quad(pass, t, pos, local, texcoords, pass->clip, &push);
 }
 
 struct gfx_prog *render_shader_create(struct render *r, const char *source, bool *pending) {
