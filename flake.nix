@@ -290,8 +290,8 @@
         tomoe = package pkgs { };
         gfx-seam = pkgs.runCommand "tomoe-gfx-seam" { } ''
           cd ${./native}
-          if grep -nE 'GL[a-z]|gl[A-Z]|EGL|GLES' *.c *.h | grep -vE '^gfx_gles(\.h|\.c|_effects\.c):'; then
-            echo "GL outside the GLES backend"
+          if grep -nE 'vk[A-Z]|Vk[A-Z]|\bVK_|vulkan/' *.c *.h | grep -v '^gfx_vk\.c:'; then
+            echo "Vulkan outside the Vulkan backend"
             exit 1
           fi
           touch $out
