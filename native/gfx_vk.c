@@ -2440,19 +2440,21 @@ static void pipeline_cache_save(struct vk *v) {
     char *temporary = NULL;
     if (data && vkGetPipelineCacheData(v->dev, v->pipeline_cache, &length, data) == VK_SUCCESS &&
             pipeline_cache_matches(v, data, length) &&
-            asprintf(&temporary, "%s.%d", v->pipeline_cache_path, (int)getpid()) >= 0) {
-        int fd = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
-        size_t done = 0;
-        while (fd >= 0 && done < length) {
-            ssize_t n = write(fd, data + done, length - done);
-            if (n < 0 && errno == EINTR) continue;
-            if (n <= 0) break;
-            done += (size_t)n;
+            asprintf(&temporary, "%s.XXXXXX", v->pipeline_cache_path) >= 0) {
+        int fd = mkostemp(temporary, O_CLOEXEC);
+        if (fd >= 0) {
+            size_t done = 0;
+            while (done < length) {
+                ssize_t n = write(fd, data + done, length - done);
+                if (n < 0 && errno == EINTR) continue;
+                if (n <= 0) break;
+                done += (size_t)n;
+            }
+            if (close(fd) == 0 && done == length && rename(temporary, v->pipeline_cache_path) == 0)
+                v->pipeline_cache_bytes = length;
+            else
+                unlink(temporary);
         }
-        if (fd >= 0 && close(fd) == 0 && done == length && rename(temporary, v->pipeline_cache_path) == 0)
-            v->pipeline_cache_bytes = length;
-        else
-            unlink(temporary);
     }
     free(temporary);
     free(data);
