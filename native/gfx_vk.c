@@ -23,7 +23,6 @@ enum {
     POOL_SETS = 256,
     CHUNK_MIN = 4 << 20,
     SCENE_RESERVE = 4096,
-    BATCH_WAITS = 16,
     BATCH_LIMIT = 16,
     LEVEL_POOL = 24,
     YUV_FORMATS = 3,
@@ -82,7 +81,8 @@ struct batch {
     VkCommandBuffer pre, main;
     VkFence fence;
     VkSemaphore signal;
-    VkSemaphore waits[BATCH_WAITS];
+    VkSemaphore *waits;
+    VkSemaphoreSubmitInfo *wait_infos;
     int wait_count, wait_made;
     struct chunk *chunks;
     struct vk_image **acquired;
@@ -441,6 +441,8 @@ static void batch_finish(struct vk *v, struct batch *b) {
     vkDestroyFence(v->dev, b->fence, NULL);
     if (b->signal) vkDestroySemaphore(v->dev, b->signal, NULL);
     for (int i = 0; i < b->wait_made; i++) vkDestroySemaphore(v->dev, b->waits[i], NULL);
+    free(b->waits);
+    free(b->wait_infos);
     free(b->acquired);
 }
 
@@ -600,7 +602,7 @@ static int submit(struct vk *v, bool export) {
         batch_recycle(v, b);
         return -1;
     }
-    VkSemaphoreSubmitInfo waits[BATCH_WAITS];
+    VkSemaphoreSubmitInfo *waits = b->wait_infos;
     for (int i = 0; i < b->wait_count; i++)
         waits[i] = (VkSemaphoreSubmitInfo){
             .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
@@ -1438,13 +1440,16 @@ static bool wait_fd(struct vk *v, int fd) {
         close(fd);
         return false;
     }
-    if (b->wait_count == BATCH_WAITS) {
-        struct pollfd ready = { .fd = fd, .events = POLLIN };
-        poll(&ready, 1, -1);
-        close(fd);
-        return true;
-    }
     if (b->wait_count == b->wait_made) {
+        size_t cap = (size_t)b->wait_made + 1;
+        VkSemaphore *grown = realloc(b->waits, cap * sizeof(*grown));
+        if (grown) b->waits = grown;
+        VkSemaphoreSubmitInfo *infos = grown ? realloc(b->wait_infos, cap * sizeof(*infos)) : NULL;
+        if (infos) b->wait_infos = infos;
+        if (!grown || !infos) {
+            close(fd);
+            return false;
+        }
         VkSemaphoreCreateInfo info = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
         if (vkCreateSemaphore(v->dev, &info, NULL, &b->waits[b->wait_made]) != VK_SUCCESS) {
             close(fd);
