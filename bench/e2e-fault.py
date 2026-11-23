@@ -1460,6 +1460,262 @@ def check_policy_effects_bugs(tomoe_bin, client_bin):
         expect_failure("rng-reset", lambda: effects_random(tomoe_bin, ["--test-policy-rng-reset"])),
     ])
 
+class Wl:
+    def __init__(self, path):
+        self.sock = connect(path)
+        self.next_id = 2
+        self.buf = b""
+        self.events = []
+        self.error = None
+        self.closed = False
+        self.globals = {}
+        reg = self.new()
+        self.send(1, 1, struct.pack("<I", reg))
+        self.roundtrip()
+        for obj, op, body in self.take():
+            if obj == reg and op == 0:
+                name, = struct.unpack_from("<I", body)
+                n, = struct.unpack_from("<I", body, 4)
+                iface = body[8:8 + n - 1].decode()
+                self.globals[iface] = name
+        self.reg = reg
+
+    def new(self):
+        self.next_id += 1
+        return self.next_id - 1
+
+    def send(self, obj, op, body=b"", fds=()):
+        msg = struct.pack("<II", obj, ((8 + len(body)) << 16) | op) + body
+        if fds:
+            self.sock.sendmsg([msg], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("<%di" % len(fds), *fds))])
+        else:
+            self.sock.sendall(msg)
+
+    def bind(self, iface, version):
+        oid = self.new()
+        self.send(self.reg, 0, struct.pack("<I", self.globals[iface]) + wl_string(iface) + struct.pack("<II", version, oid))
+        return oid
+
+    def pump(self, timeout):
+        r, _, _ = select.select([self.sock], [], [], timeout)
+        if not r:
+            return
+        try:
+            data = self.sock.recv(1 << 20)
+        except (ConnectionResetError, BrokenPipeError):
+            data = b""
+        if not data:
+            self.closed = True
+            return
+        self.buf += data
+        while len(self.buf) >= 8:
+            obj, word = struct.unpack_from("<II", self.buf)
+            size = word >> 16
+            if size < 8 or len(self.buf) < size:
+                break
+            ev = (obj, word & 0xFFFF, self.buf[8:size])
+            self.buf = self.buf[size:]
+            if obj == 1 and ev[1] == 0:
+                self.error = struct.unpack_from("<II", ev[2])
+            self.events.append(ev)
+
+    def take(self):
+        out, self.events = self.events, []
+        return out
+
+    def wait(self, pred, timeout=10.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            for ev in self.events:
+                if pred(ev):
+                    return ev
+            if self.error or self.closed:
+                return None
+            self.pump(0.05)
+        return None
+
+    def roundtrip(self):
+        cb = self.new()
+        self.send(1, 0, struct.pack("<I", cb))
+        self.wait(lambda e: e[0] == cb and e[1] == 0)
+
+
+
+SHM_XRGB = 1
+
+
+def shm_pattern(w, h, flip=()):
+    data = bytearray(w * h * 4)
+    xr = bytes(x & 255 for x in range(w))
+    for y in range(h):
+        row = bytearray(w * 4)
+        row[0::4] = bytes((((x >> 8) << 4) | (y >> 8)) & 255 for x in range(w)) if y % 256 == 0 or y == 0 else row_b
+        row_b = bytes(row[0::4])
+        row[1::4] = bytes([y & 255]) * w
+        row[2::4] = xr
+        row[3::4] = b"\xff" * w
+        data[y * w * 4:(y + 1) * w * 4] = row
+    for x0, y0, x1, y1 in flip:
+        for y in range(y0, y1):
+            o = (y * w + x0) * 4
+            seg = data[o:o + (x1 - x0) * 4]
+            for c in range(3):
+                seg[c::4] = bytes(255 - v for v in seg[c::4])
+            data[o:o + (x1 - x0) * 4] = seg
+    return bytes(data)
+
+
+def shm_window(path, title):
+    wl = Wl(path)
+    comp = wl.bind("wl_compositor", 4)
+    shm = wl.bind("wl_shm", 1)
+    wm = wl.bind("xdg_wm_base", 1)
+    surf = wl.new()
+    wl.send(comp, 0, struct.pack("<I", surf))
+    xs = wl.new()
+    wl.send(wm, 2, struct.pack("<II", xs, surf))
+    top = wl.new()
+    wl.send(xs, 1, struct.pack("<I", top))
+    wl.send(top, 2, wl_string(title))
+    wl.send(top, 3, wl_string(title))
+    wl.send(surf, 6)
+    ev = wl.wait(lambda e: e[0] == xs and e[1] == 0)
+    if ev is None:
+        raise SystemExit(f"{title}: FAIL no xdg_surface.configure")
+    size = (0, 0)
+    for e in wl.take():
+        if e[0] == top and e[1] == 0:
+            size = struct.unpack_from("<ii", e[2])
+        if e[0] == wm and e[1] == 0:
+            wl.send(wm, 3, e[2][:4])
+    wl.send(xs, 3, ev[2][:4])
+    w, h = size if size[0] > 0 and size[1] > 0 else (640, 400)
+    return wl, shm, surf, w, h
+
+
+def shm_pool(wl, shm, data_list, w, h):
+    fd = os.memfd_create("e2e-shm", os.MFD_CLOEXEC)
+    blob = b"".join(data_list)
+    os.ftruncate(fd, len(blob))
+    os.pwrite(fd, blob, 0)
+    pool = wl.new()
+    wl.send(shm, 0, struct.pack("<Ii", pool, len(blob)), fds=(fd,))
+    bufs = []
+    for i in range(len(data_list)):
+        b = wl.new()
+        wl.send(pool, 0, struct.pack("<Iiiiii", b, i * w * h * 4, w, h, w * 4, SHM_XRGB))
+        bufs.append(b)
+    return fd, pool, bufs
+
+
+def shm_show(wl, surf, buf, rects):
+    wl.send(surf, 1, struct.pack("<Iii", buf, 0, 0))
+    for x0, y0, x1, y1 in rects:
+        wl.send(surf, 9, struct.pack("<iiii", x0, y0, x1 - x0, y1 - y0))
+    cb = wl.new()
+    wl.send(surf, 3, struct.pack("<I", cb))
+    wl.send(surf, 6)
+    return cb
+
+
+def tomoe_upload_stats(tomoe_bin, sock):
+    r = subprocess.run([tomoe_bin, "--socket", sock, "timings"], stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, text=True, timeout=10)
+    m = re.search(r":upload (\(.*?\)|nil)", r.stdout)
+    return m.group(1) if m else "?"
+
+
+def check_shm_truncate(path, client_bin, tomoe_bin):
+    sock = os.path.basename(path)
+    other = subprocess.Popen([client_bin, "--input", "virtual", "--phase", "frames", "--seconds", "4",
+        "--windows", "1", "--tag", "shm-other"], env=dict(os.environ, WAYLAND_DISPLAY=sock),
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    time.sleep(0.5)
+    wl, shm, surf, w, h = shm_window(path, "shm-truncate")
+    a = shm_pattern(w, h)
+    fd, pool, (ba, bb) = shm_pool(wl, shm, [a, a], w, h)
+    cb = shm_show(wl, surf, ba, [(0, 0, w, h)])
+    if wl.wait(lambda e: e[0] == cb and e[1] == 0) is None:
+        raise SystemExit(f"shm-truncate: FAIL first frame never shown (error {wl.error})")
+    wl.send(surf, 1, struct.pack("<Iii", bb, 0, 0))
+    wl.send(surf, 9, struct.pack("<iiii", 0, 0, w, h))
+    os.ftruncate(fd, 0)
+    wl.send(surf, 6)
+    wl.roundtrip()
+    deadline = time.monotonic() + 5
+    while wl.error is None and not wl.closed and time.monotonic() < deadline:
+        wl.pump(0.05)
+    os.close(fd)
+    err = wl.error
+    wl.sock.close()
+    if not err or err[0] != bb or err[1] != 2:
+        raise SystemExit(f"shm-truncate: FAIL expected wl_shm INVALID_FD on buffer {bb}, got {err}")
+    inspect(tomoe_bin, sock)
+    out, _ = other.communicate(timeout=20)
+    frames = re.search(r"^frames (\d+)$", out, re.M)
+    lost = re.search(r"^lost (\d+)$", out, re.M)
+    if other.returncode != 0 or not frames or int(frames.group(1)) == 0 or not lost or lost.group(1) != "0":
+        raise SystemExit(f"shm-truncate: FAIL the other client stopped rendering: rc={other.returncode} {out[-200:]!r}")
+    return f"shm-truncate=ok(frames={frames.group(1)} upload={tomoe_upload_stats(tomoe_bin, sock)})"
+
+
+def check_shm_pixels(path, tomoe_bin, capture_bin):
+    sock = os.path.basename(path)
+    wl, shm, surf, w, h = shm_window(path, "shm-pixels")
+    flips = [(w // 8, h // 8, w // 8 + 97, h // 8 + 61), (w // 2 + 3, h // 2 + 5, w - 9, h - 7)]
+    a = shm_pattern(w, h)
+    b = shm_pattern(w, h, flips)
+    fd, pool, (ba, bb) = shm_pool(wl, shm, [a, b], w, h)
+    os.close(fd)
+    cb = shm_show(wl, surf, ba, [(0, 0, w, h)])
+    if wl.wait(lambda e: e[0] == cb and e[1] == 0) is None:
+        raise SystemExit(f"shm-pixels: FAIL first frame never shown (error {wl.error})")
+    cb = shm_show(wl, surf, bb, flips)
+    if wl.wait(lambda e: e[0] == cb and e[1] == 0) is None:
+        raise SystemExit(f"shm-pixels: FAIL second frame never shown (error {wl.error})")
+    sc = scene(inspect(tomoe_bin, sock))
+    if "shm-pixels" not in sc["layout"]:
+        raise SystemExit(f"shm-pixels: FAIL window not in layout {sc['layout']}")
+    wx, wy, ww, wh, _ = sc["layout"]["shm-pixels"]
+    cap = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "shm-pixels-cap")
+    os.makedirs(cap, exist_ok=True)
+    proc = subprocess.Popen([capture_bin, "--output", "HEADLESS-1", "--dump-dir", cap, "--dump", "1"],
+        env=dict(os.environ, WAYLAND_DISPLAY=sock), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    frame = os.path.join(cap, "frame-000001.ppm")
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not (os.path.exists(frame) and os.path.getsize(frame) > 0):
+        time.sleep(0.1)
+    time.sleep(0.2)
+    proc.kill()
+    proc.wait()
+    with open(frame, "rb") as f:
+        raw = f.read()
+    m = re.match(rb"P6\n(\d+) (\d+)\n255\n", raw)
+    if not m:
+        raise SystemExit("shm-pixels: FAIL no capture")
+    cw, ch = int(m.group(1)), int(m.group(2))
+    px = raw[m.end():]
+    checked = bad = 0
+    first = None
+    for Y in range((wy + 3) // 4, min(ch, (wy + min(wh, h)) // 4)):
+        for X in range((wx + 3) // 4, min(cw, (wx + min(ww, w)) // 4)):
+            x, y = 4 * X - wx, 4 * Y - wy
+            o = (y * w + x) * 4
+            want = (b[o + 2], b[o + 1], b[o])
+            got = tuple(px[(Y * cw + X) * 3:(Y * cw + X) * 3 + 3])
+            checked += 1
+            if got != want:
+                bad += 1
+                first = first or (x, y, want, got)
+    wl.sock.close()
+    for name in os.listdir(cap):
+        os.unlink(os.path.join(cap, name))
+    os.rmdir(cap)
+    if checked < 1000 or bad:
+        raise SystemExit(f"shm-pixels: FAIL {bad}/{checked} sampled pixels differ (window {wx},{wy} {ww}x{wh} buffer {w}x{h}; first {first})")
+    return f"shm-pixels=ok({checked} px, upload={tomoe_upload_stats(tomoe_bin, sock)})"
+
+
 def main():
     args = sys.argv[1:]
     checks = args[0].split(",")
@@ -1494,6 +1750,10 @@ def main():
             results.append(check_policy_snapshot(args[3], client_bin, args[4]))
         elif check == "policy-effects":
             results.append(check_policy_effects(args[3], client_bin))
+        elif check == "shm-truncate":
+            results.append(check_shm_truncate(path, client_bin, args[3]))
+        elif check == "shm-pixels":
+            results.append(check_shm_pixels(path, args[3], args[5]))
         elif check == "policy-effects-bugs":
             results.append(check_policy_effects_bugs(args[3], client_bin))
         else:

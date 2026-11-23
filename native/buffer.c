@@ -115,6 +115,24 @@ static const struct buffer_impl shm_buffer_impl = {
     .end_access = shm_buffer_end,
 };
 
+struct wl_shm_view *buffer_shm_view(struct buffer *base, size_t *offset, uint32_t *format,
+        size_t *stride) {
+    if (!base || base->impl != &shm_buffer_impl) return NULL;
+    struct shm_buffer *b = wl_container_of(base, b, base);
+    if (!b->shm) return NULL;
+    struct wl_shm_view *view = wl_shm_buffer_view(b->shm, offset);
+    if (!view) return NULL;
+    *format = b->format;
+    *stride = b->stride;
+    return view;
+}
+
+void buffer_shm_fault(struct buffer *base) {
+    if (!base || base->impl != &shm_buffer_impl) return;
+    struct shm_buffer *b = wl_container_of(base, b, base);
+    if (b->shm) wl_shm_buffer_post_access_error(b->shm);
+}
+
 static void shm_resource_destroyed(struct wl_listener *listener, void *data) {
     struct shm_buffer *b = wl_container_of(listener, b, resource_destroy);
     detach(&b->resource_destroy);

@@ -916,13 +916,168 @@ static void upload(struct gl_texture *t, const void *data, size_t stride,
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
-bool texture_update(struct texture *base, struct buffer *buffer,
-        const struct region *damage) {
-    struct gl_texture *t = texture_of(base);
+static void staging_poll(struct render *r, bool wait) {
+    struct gfx *g = G(r);
+    while (g->staging.fences > 0) {
+        GLenum status = glClientWaitSync(g->staging.fence[0], wait ? GL_SYNC_FLUSH_COMMANDS_BIT : 0,
+            wait ? (GLuint64)1000000000 : 0);
+        if (status == GL_TIMEOUT_EXPIRED) break;
+        wait = false;
+        r->upload->gpu_done = g->staging.limit[0];
+        glDeleteSync(g->staging.fence[0]);
+        g->staging.fences--;
+        memmove(g->staging.fence, g->staging.fence + 1, sizeof(GLsync) * (size_t)g->staging.fences);
+        memmove(g->staging.limit, g->staging.limit + 1, sizeof(uint64_t) * (size_t)g->staging.fences);
+    }
+}
+
+static void staging_free(struct render *r) {
+    struct gfx *g = G(r);
+    while (g->staging.fences > 0) staging_poll(r, true);
+    if (!g->staging.pbo) return;
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, g->staging.pbo);
+    glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    glDeleteBuffers(1, &g->staging.pbo);
+    g->staging.pbo = 0;
+    if (r->upload) upload_set_staging(r->upload, NULL, 0);
+}
+
+static bool staging_alloc(struct render *r, uint64_t size) {
+    struct gfx *g = G(r);
+    GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT_EXT | GL_MAP_COHERENT_BIT_EXT;
+    while (glGetError() != GL_NO_ERROR) {}
+    glGenBuffers(1, &g->staging.pbo);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, g->staging.pbo);
+    g->buffer_storage(GL_PIXEL_UNPACK_BUFFER, (GLsizeiptr)size, NULL, flags);
+    void *base = glGetError() == GL_NO_ERROR ?
+        glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, (GLsizeiptr)size, flags) : NULL;
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    if (!base) {
+        glDeleteBuffers(1, &g->staging.pbo);
+        g->staging.pbo = 0;
+        tomoe_log(LOG_ERROR, "tomoe: cannot map a %llu MiB upload staging buffer",
+            (unsigned long long)(size >> 20));
+        return false;
+    }
+    upload_set_staging(r->upload, base, size);
+    return true;
+}
+
+static void staging_init(struct render *r) {
+    const char *version = (const char *)glGetString(GL_VERSION);
+    const char *extensions = (const char *)glGetString(GL_EXTENSIONS);
+    int major = 0;
+    if (!version || sscanf(version, "OpenGL ES %d", &major) != 1 || major < 3 ||
+            !has(extensions, "GL_EXT_buffer_storage")) return;
+    G(r)->buffer_storage = (PFNGLBUFFERSTORAGEEXTPROC)eglGetProcAddress("glBufferStorageEXT");
+    if (G(r)->buffer_storage) r->upload = upload_create();
+}
+
+static struct upload *staging(struct render *r) {
+    if (!r->upload) return NULL;
+    current(r);
+    if (!G(r)->staging.pbo && !G(r)->staging.failed &&
+            !staging_alloc(r, upload_wanted(r->upload)))
+        G(r)->staging.failed = true;
+    staging_poll(r, false);
+    return r->upload;
+}
+
+static bool direct(struct gl_texture *t, struct buffer *buffer, const struct rect *rects, int count) {
     void *data;
     uint32_t format;
     size_t stride;
-    if (t->buffer || !buffer_begin_access(buffer, BUFFER_READ,
+    if (!buffer_begin_access(buffer, BUFFER_READ, &data, &format, &stride)) return false;
+    bool ok = format == t->format && stride % 4 == 0 && buffer->width == (int)t->base.width &&
+        buffer->height == (int)t->base.height;
+    if (ok) upload(t, data, stride, rects, count);
+    buffer_end_access(buffer);
+    return ok;
+}
+
+static void latch(struct render *r) {
+    struct upload *u = r->upload;
+    if (!upload_pending(u)) return;
+    struct gfx *g = G(r);
+    uint64_t start = timing_enabled ? timing_now() : 0;
+    current(r);
+    staging_poll(r, false);
+    bool bound = false, used = false;
+    enum upload_take take;
+    struct upload_job *job;
+    while ((job = upload_latch_next(u, &take))) {
+        struct gl_texture *t = texture_of(job->texture);
+        if (take == UPLOAD_DIRECT) {
+            if (bound) glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+            bound = false;
+            direct(t, job->buffer, job->rects, job->count);
+            continue;
+        }
+        if (!bound) glBindBuffer(GL_PIXEL_UNPACK_BUFFER, g->staging.pbo);
+        bound = used = true;
+        glBindTexture(GL_TEXTURE_2D, t->tex);
+        uintptr_t at = (uintptr_t)(job->dst - u->base);
+        for (int i = 0; i < job->count; i++) {
+            const struct rect *rect = &job->rects[i];
+            int width = rect->x2 - rect->x1, height = rect->y2 - rect->y1;
+            glTexSubImage2D(GL_TEXTURE_2D, 0, rect->x1, rect->y1, width, height, t->gl,
+                GL_UNSIGNED_BYTE, (const void *)at);
+            at += (uintptr_t)width * (uintptr_t)height * 4;
+        }
+    }
+    if (bound) glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    if (used) {
+        if (g->staging.fences == UPLOAD_FENCES) staging_poll(r, true);
+        g->staging.fence[g->staging.fences] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        g->staging.limit[g->staging.fences++] = u->alloc;
+    }
+    upload_latch_end(u);
+    uint64_t want = upload_wanted(u);
+    if (want && upload_idle(u)) {
+        staging_free(r);
+        u->stats.grows++;
+        staging_alloc(r, want);
+    }
+    if (timing_enabled) {
+        if (!g->staging.channel) g->staging.channel = tomoe_timing_channel("upload-latch") + 1;
+        if (g->staging.channel > 0) tomoe_timing_sample(g->staging.channel - 1, timing_now() - start);
+    }
+}
+
+static bool stage(struct gl_texture *t, struct buffer *buffer, const struct region *damage) {
+    struct upload *u = staging(t->r);
+    int count = 0;
+    region_rectangles(damage, &count);
+    if (!u || count <= 0) return false;
+    size_t offset, stride;
+    uint32_t format;
+    struct wl_shm_view *view = buffer_shm_view(buffer, &offset, &format, &stride);
+    if (view) {
+        bool ok = format == t->format && stride % 4 == 0 && buffer->width == (int)t->base.width &&
+            buffer->height == (int)t->base.height;
+        if (ok && upload_full(u)) latch(t->r);
+        if (ok && upload_stage(u, &t->base, buffer, view, offset, stride, damage)) return true;
+        wl_shm_view_unref(view);
+    }
+    u->stats.sync++;
+    latch(t->r);
+    return false;
+}
+
+bool texture_update(struct texture *base, struct buffer *buffer,
+        const struct region *damage) {
+    struct gl_texture *t = texture_of(base);
+    if (t->buffer) return false;
+    if (stage(t, buffer, damage)) {
+        base->serial = ++serials;
+        return true;
+    }
+    void *data;
+    uint32_t format;
+    size_t stride;
+    if (!buffer_begin_access(buffer, BUFFER_READ,
             &data, &format, &stride)) return false;
     bool ok = format == t->format && stride % 4 == 0 && buffer->width == (int)base->width &&
         buffer->height == (int)base->height;
@@ -954,6 +1109,7 @@ bool texture_read_pixels(struct texture *base, const struct read_options *option
     if (!pixel_format(options->format, &gl, &alpha) || (gl == GL_BGRA_EXT && !t->r->read_bgra))
         return false;
     current(t->r);
+    latch(t->r);
     while (glGetError() != GL_NO_ERROR) {}
     GLuint fbo = texture_fbo(t);
     if (!fbo) return false;
@@ -977,6 +1133,7 @@ bool texture_read_pixels(struct texture *base, const struct read_options *option
 void texture_destroy(struct texture *base) {
     if (!base) return;
     struct gl_texture *t = texture_of(base);
+    upload_cancel(t->r->upload, base);
     if (t->buffer) {
         buffer_unlock(t->buffer);
     } else {
@@ -1063,6 +1220,20 @@ struct texture *texture_from_buffer(struct render *r, struct buffer *buffer) {
         void *data;
         uint32_t format;
         size_t stride;
+        size_t offset;
+        struct wl_shm_view *view = r->upload ? buffer_shm_view(buffer, &offset, &format, &stride) : NULL;
+        if (view) {
+            wl_shm_view_unref(view);
+            struct texture *texture = texture_new(r, format, (uint32_t)buffer->width,
+                (uint32_t)buffer->height);
+            if (!texture) return NULL;
+            struct region full;
+            region_init_rect(&full, 0, 0, (uint32_t)buffer->width, (uint32_t)buffer->height);
+            bool staged = stage(texture_of(texture), buffer, &full);
+            region_fini(&full);
+            if (staged) return texture;
+            texture_destroy(texture);
+        }
         if (!buffer_begin_access(buffer, BUFFER_READ, &data, &format, &stride)) return NULL;
         struct texture *texture = texture_from_pixels(r, format, (uint32_t)stride,
             (uint32_t)buffer->width, (uint32_t)buffer->height, data);
@@ -2025,6 +2196,7 @@ bool gfx_ready(struct render *r) {
     warm(r);
     if (!programs_ready(r)) return false;
     scene_reserve(&G(r)->scene);
+    staging_init(r);
     return true;
 }
 
@@ -2034,6 +2206,11 @@ bool gfx_fences(struct render *r) {
 
 void gfx_stop(struct render *r) {
     jobs_stop(r);
+    if (r->upload) {
+        upload_report(r->upload);
+        upload_destroy(r->upload);
+        r->upload = NULL;
+    }
 }
 
 void gfx_drop_images(struct render *r) {
@@ -2054,6 +2231,7 @@ void gfx_close(struct render *r) {
         }
         g->shader_count = 0;
         for (int i = 0; i < PROGRAM_COUNT; i++) glDeleteProgram(g->programs[i].id);
+        staging_free(r);
         if (g->scene.vbo) glDeleteBuffers(1, &g->scene.vbo);
         if (g->scene.dummy) glDeleteTextures(1, &g->scene.dummy);
         if (g->trail.vbo) glDeleteBuffers(1, &g->trail.vbo);
@@ -2098,6 +2276,7 @@ bool gfx_target_begin(struct render *r, struct buffer *buffer) {
     GLuint fbo = render_buffer_fbo(r, buffer);
     if (!fbo) return false;
     current(r);
+    latch(r);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glViewport(0, 0, buffer->width, buffer->height);
     glEnable(GL_BLEND);

@@ -7,6 +7,7 @@
 #include <EGL/eglext.h>
 #include <GLES2/gl2ext.h>
 #include <GLES3/gl3.h>
+#include "upload.h"
 
 enum { PROGRAM_SCENE, PROGRAM_SDF, PROGRAM_EXTERNAL, PROGRAM_TEXTURE_LUT, PROGRAM_EXTERNAL_LUT,
     PROGRAM_DOWN, PROGRAM_UP, PROGRAM_TRAIL, PROGRAM_COUNT };
@@ -62,6 +63,15 @@ struct gfx {
     char *exe, *warm_dir, *driver;
     bool binaries;
     struct shader_job *jobs;
+    PFNGLBUFFERSTORAGEEXTPROC buffer_storage;
+    struct {
+        GLuint pbo;
+        GLsync fence[UPLOAD_FENCES];
+        uint64_t limit[UPLOAD_FENCES];
+        int fences;
+        int channel;
+        bool failed;
+    } staging;
 };
 
 static inline struct gfx *G(struct render *r) {

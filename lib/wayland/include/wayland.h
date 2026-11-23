@@ -262,6 +262,13 @@ uint32_t wl_shm_buffer_get_format(const struct wl_shm_buffer *buffer);
 int32_t wl_shm_buffer_get_width(const struct wl_shm_buffer *buffer);
 int32_t wl_shm_buffer_get_height(const struct wl_shm_buffer *buffer);
 struct wl_shm_pool *wl_shm_buffer_ref_pool(struct wl_shm_buffer *buffer);
+struct wl_shm_view;
+void wl_shm_prepare_threads(void);
+struct wl_shm_view *wl_shm_buffer_view(struct wl_shm_buffer *buffer, size_t *offset);
+void wl_shm_view_unref(struct wl_shm_view *view);
+bool wl_shm_view_copy(const struct wl_shm_view *view, size_t offset, size_t stride, size_t row,
+    int rows, void *dst);
+void wl_shm_buffer_post_access_error(struct wl_shm_buffer *buffer);
 void wl_shm_pool_unref(struct wl_shm_pool *pool);
 
 void wl_log_set_handler_server(wl_log_func_t handler);

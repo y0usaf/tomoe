@@ -46,6 +46,7 @@ struct render {
     bool pass_used[PASS_POOL];
     uint64_t gl_calls, quads, runs, fragments, uploads, upload_bytes;
     char *node;
+    struct upload *upload;
 };
 
 static inline struct rect pixel_bounds(const struct pass *pass, double x0, double y0,

@@ -1,4 +1,6 @@
 #include <errno.h>
+#include <setjmp.h>
+#include <stdatomic.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
@@ -19,6 +21,14 @@ struct wl_shm_pool {
     ssize_t size;
     ssize_t new_size;
     bool sigbus_is_impossible;
+    int fd;
+    struct wl_shm_view *view;
+};
+
+struct wl_shm_view {
+    char *data;
+    size_t size;
+    int refs;
 };
 
 struct wl_shm_buffer {
@@ -37,6 +47,11 @@ static _Thread_local struct {
     int count;
     bool fallback;
 } sigbus;
+static _Thread_local struct {
+    sigjmp_buf env;
+    const char *low, *high;
+    volatile bool on;
+} guard;
 static struct sigaction previous_sigbus;
 static bool sigbus_installed;
 
@@ -60,6 +75,8 @@ static void pool_unref(struct wl_shm_pool *pool, bool external) {
     }
     if (pool->internal_refcount + pool->external_refcount > 0) return;
     munmap(pool->data, (size_t)pool->size);
+    wl_shm_view_unref(pool->view);
+    if (pool->fd >= 0) close(pool->fd);
     free(pool);
 }
 
@@ -176,6 +193,7 @@ static void shm_create_pool(struct wl_client *client, struct wl_resource *resour
     struct stat st;
     pool->sigbus_is_impossible = (seals & F_SEAL_SHRINK) && fstat(fd, &st) >= 0 && st.st_size >= size;
     pool->internal_refcount = 1;
+    pool->fd = -1;
     pool->size = pool->new_size = size;
     pool->data = mmap(NULL, (size_t)size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (pool->data == MAP_FAILED) {
@@ -184,11 +202,12 @@ static void shm_create_pool(struct wl_client *client, struct wl_resource *resour
         close(fd);
         return;
     }
-    close(fd);
+    pool->fd = fd;
     pool->resource = wl_resource_create(client, &wl_shm_pool_interface, wl_resource_get_version(resource), id);
     if (!pool->resource) {
         wl_client_post_no_memory(client);
         munmap(pool->data, (size_t)pool->size);
+        close(fd);
         free(pool);
         return;
     }
@@ -252,6 +271,10 @@ static void reraise_sigbus(void) {
 static void sigbus_handler(int signum, siginfo_t *info, void *context) {
     (void)signum;
     (void)context;
+    if (guard.on && (const char *)info->si_addr >= guard.low && (const char *)info->si_addr < guard.high) {
+        guard.on = false;
+        siglongjmp(guard.env, 1);
+    }
     struct wl_shm_pool *pool = sigbus.pool;
     if (!pool || (char *)info->si_addr < pool->data || (char *)info->si_addr >= pool->data + pool->size) {
         reraise_sigbus();
@@ -262,15 +285,80 @@ static void sigbus_handler(int signum, siginfo_t *info, void *context) {
             -1, 0) == MAP_FAILED) reraise_sigbus();
 }
 
+static void install_sigbus(void) {
+    if (sigbus_installed) return;
+    struct sigaction action = { .sa_sigaction = sigbus_handler, .sa_flags = SA_SIGINFO | SA_NODEFER };
+    sigemptyset(&action.sa_mask);
+    sigaction(SIGBUS, &action, &previous_sigbus);
+    sigbus_installed = true;
+}
+
+void wl_shm_prepare_threads(void) {
+    install_sigbus();
+}
+
+void wl_shm_view_unref(struct wl_shm_view *view) {
+    if (!view || --view->refs > 0) return;
+    munmap(view->data, view->size);
+    free(view);
+}
+
+struct wl_shm_view *wl_shm_buffer_view(struct wl_shm_buffer *buffer, size_t *offset) {
+    struct wl_shm_pool *pool = buffer->pool;
+    size_t end = (size_t)buffer->offset + (size_t)buffer->stride * (size_t)buffer->height;
+    if (pool->fd < 0) return NULL;
+    if (!pool->view || pool->view->size < end) {
+        struct wl_shm_view *view = calloc(1, sizeof(*view));
+        if (!view) return NULL;
+        view->size = (size_t)(pool->new_size > pool->size ? pool->new_size : pool->size);
+        if (view->size < end) {
+            free(view);
+            return NULL;
+        }
+        view->data = mmap(NULL, view->size, PROT_READ, MAP_SHARED, pool->fd, 0);
+        if (view->data == MAP_FAILED) {
+            free(view);
+            return NULL;
+        }
+        view->refs = 1;
+        wl_shm_view_unref(pool->view);
+        pool->view = view;
+    }
+    pool->view->refs++;
+    *offset = (size_t)buffer->offset;
+    return pool->view;
+}
+
+bool wl_shm_view_copy(const struct wl_shm_view *view, size_t offset, size_t stride, size_t row,
+        int rows, void *dst) {
+    if (rows <= 0) return true;
+    if (offset > view->size || stride * (size_t)(rows - 1) + row > view->size - offset) return false;
+    guard.low = view->data;
+    guard.high = view->data + view->size;
+    if (sigsetjmp(guard.env, 0)) return false;
+    guard.on = true;
+    atomic_signal_fence(memory_order_seq_cst);
+    const char *src = view->data + offset;
+    char *out = dst;
+    for (int y = 0; y < rows; y++)
+        memcpy(out + (size_t)y * row, src + (size_t)y * stride, row);
+    atomic_signal_fence(memory_order_seq_cst);
+    guard.on = false;
+    return true;
+}
+
+void wl_shm_buffer_post_access_error(struct wl_shm_buffer *buffer) {
+    if (buffer->resource)
+        wl_resource_post_error(buffer->resource, WL_SHM_ERROR_INVALID_FD, "error accessing SHM buffer");
+    else if (buffer->client)
+        wl_client_post_implementation_error(buffer->client,
+            "Error accessing SHM buffer of a wl_buffer resource which has already been destroyed");
+}
+
 void wl_shm_buffer_begin_access(struct wl_shm_buffer *buffer) {
     struct wl_shm_pool *pool = buffer->pool;
     if (pool->sigbus_is_impossible) return;
-    if (!sigbus_installed) {
-        struct sigaction action = { .sa_sigaction = sigbus_handler, .sa_flags = SA_SIGINFO | SA_NODEFER };
-        sigemptyset(&action.sa_mask);
-        sigaction(SIGBUS, &action, &previous_sigbus);
-        sigbus_installed = true;
-    }
+    install_sigbus();
     if (sigbus.pool && sigbus.pool != pool) abort();
     sigbus.pool = pool;
     sigbus.count++;

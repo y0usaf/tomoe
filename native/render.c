@@ -1,4 +1,5 @@
 #include "gfx.h"
+#include "upload.h"
 #include "drm.h"
 #include "ui.h"
 #include <fcntl.h>
@@ -1049,6 +1050,14 @@ struct render *render_open(char *node) {
 failed:
     render_free(r);
     return NULL;
+}
+
+int render_upload_fd(struct render *r) {
+    return r && r->upload ? r->upload->fd : -1;
+}
+
+void render_upload_drain(struct render *r) {
+    if (r && r->upload) upload_drain(r->upload);
 }
 
 struct render *render_create(int drm_fd) {

@@ -1,5 +1,6 @@
 #include "internal.h"
 #include "timing.h"
+#include "upload.h"
 
 #define TIMING_SAMPLES 8192
 #define TIMING_STALLS 256
@@ -368,7 +369,9 @@ static const char *timing_report(void) {
         struct stall *stall = &stalls[(first + i) % TIMING_STALLS];
         fprintf(out, "%s(%" PRIu64 " %" PRIu64 ")", i ? " " : "", stall->start, stall->duration);
     }
-    fputs("))\n", out);
+    fputs(") :upload ", out);
+    upload_describe(out);
+    fputs(")\n", out);
     bool success = !ferror(out);
     if (fclose(out) != 0 || !success) {
         free(result);

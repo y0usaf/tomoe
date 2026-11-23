@@ -98,6 +98,9 @@ bool buffer_get_dmabuf(struct buffer *buffer, struct dmabuf_attributes *attribut
 bool buffer_begin_access(struct buffer *buffer, uint32_t flags, void **data, uint32_t *format,
     size_t *stride);
 void buffer_end_access(struct buffer *buffer);
+struct wl_shm_view *buffer_shm_view(struct buffer *buffer, size_t *offset, uint32_t *format,
+    size_t *stride);
+void buffer_shm_fault(struct buffer *buffer);
 struct buffer *buffer_from_resource(struct wl_resource *resource);
 
 struct format {
@@ -383,6 +386,8 @@ struct ring {
     struct format_set format;
 };
 struct render *render_create(int drm_fd);
+int render_upload_fd(struct render *renderer);
+void render_upload_drain(struct render *renderer);
 uint32_t render_read_format(struct render *renderer);
 const struct format_set *render_formats(struct render *renderer);
 bool render_wait(struct render *renderer, struct timeline *timeline,
@@ -1109,6 +1114,7 @@ struct tomoe {
     struct kms *kms;
     enum screen_kind backend;
     struct render *renderer;
+    struct wl_event_source *upload_source;
     struct node *scene;
     struct node *window_tree, *layer_tree[4], *fullscreen_tree, *popup_tree;
     struct cursor_image cursor_image;
