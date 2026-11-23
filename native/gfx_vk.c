@@ -14,6 +14,7 @@
 #include "shaders/blur.vert.h"
 #include "shaders/down.frag.h"
 #include "shaders/up.frag.h"
+#include "shaders/lut.frag.h"
 
 enum {
     BLENDS = 3,
@@ -114,6 +115,7 @@ struct blur_push {
 struct target_pipelines {
     VkFormat format;
     VkPipeline blend[BLENDS];
+    VkPipeline lut;
 };
 
 struct vk {
@@ -144,8 +146,8 @@ struct vk {
     VkSampler samplers[2];
     VkDescriptorSet sampler_sets[2];
     VkPipelineLayout layout;
-    VkShaderModule vert, frag, blur_vert, down_frag, up_frag;
-    VkPipelineLayout blur_layout;
+    VkShaderModule vert, frag, blur_vert, down_frag, up_frag, lut_frag;
+    VkPipelineLayout blur_layout, lut_layout;
     VkPipeline down, up;
     struct target_pipelines targets[TARGET_FORMATS];
     struct wl_list images;
@@ -1459,6 +1461,8 @@ static struct target_pipelines *pipelines_for(struct vk *v, VkFormat format) {
             *t = (struct target_pipelines){0};
             return NULL;
         }
+        if (v->lut_layout)
+            t->lut = pipeline_make(v, format, 1, v->vert, v->lut_frag, v->lut_layout, true);
         return t;
     }
     return NULL;
@@ -1698,8 +1702,52 @@ void gfx_texture_draw(struct pass *pass, const struct texture_options *options,
     memcpy(quad.pos, pos, sizeof(quad.pos));
     memcpy(quad.tex, texcoords, sizeof(quad.tex));
     pass_flush(pass);
-    pass_scene(pass, &quad);
-    pass_flush(pass);
+    if (!options->lut) {
+        pass_scene(pass, &quad);
+        pass_flush(pass);
+        return;
+    }
+    struct vk *v = V(pass->r);
+    struct render *r = pass->r;
+    struct vk_texture *lut = texture_of(options->lut);
+    struct target_pipelines *pipes = v->target ? pipelines_for(v, v->target->format) : NULL;
+    if (!pipes || !pipes->lut || !t->image->set || !lut->image->set ||
+            !image_use(v, t->image) || !image_use(v, lut->image)) return;
+    VkBuffer buffer;
+    VkDeviceSize offset;
+    struct scene_instance *in = stage_alloc(v, sizeof(*in), &buffer, &offset);
+    if (!in || !rendering_begin(v, v->target)) return;
+    memset(in, 0, sizeof(*in));
+    memcpy(in->pos, pos, sizeof(in->pos));
+    memcpy(in->tex, texcoords, sizeof(in->tex));
+    memcpy(in->tint, quad.tint, sizeof(in->tint));
+    in->params[0] = alpha;
+    in->params[1] = t->alpha ? 0 : 1;
+    VkCommandBuffer cb = v->open->main;
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipes->lut);
+    VkDescriptorSet sets[4] = { t->image->set, v->sampler_sets[quad.filter == SCENE_FILTER_NEAREST],
+        lut->image->set, v->sampler_sets[1] };
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, v->lut_layout, 0, 4, sets, 0, NULL);
+    vkCmdBindVertexBuffers(cb, 0, 1, &buffer, &offset);
+    r->gl_calls += 3;
+    const struct region *clip = options->clip ? options->clip : pass->clip;
+    int count = 1;
+    const struct rect *rects = clip ? region_rectangles((struct region *)clip, &count) : NULL;
+    for (int i = 0; i < count; i++) {
+        VkRect2D scissor = { { 0, 0 }, { (uint32_t)v->target->width, (uint32_t)v->target->height } };
+        if (rects) {
+            int32_t x1 = rects[i].x1 < 0 ? 0 : rects[i].x1, y1 = rects[i].y1 < 0 ? 0 : rects[i].y1;
+            int32_t x2 = rects[i].x2 > v->target->width ? v->target->width : rects[i].x2;
+            int32_t y2 = rects[i].y2 > v->target->height ? v->target->height : rects[i].y2;
+            if (x2 <= x1 || y2 <= y1) continue;
+            scissor = (VkRect2D){ { x1, y1 }, { (uint32_t)(x2 - x1), (uint32_t)(y2 - y1) } };
+        }
+        vkCmdSetScissor(cb, 0, 1, &scissor);
+        vkCmdDraw(cb, 6, 1, 0, 0);
+        r->gl_calls += 2;
+        r->quads++;
+    }
+    r->runs++;
 }
 
 static bool has_extension(const VkExtensionProperties *list, uint32_t count, const char *name) {
@@ -2019,6 +2067,16 @@ static bool layouts_init(struct vk *v) {
     if (!v->vert || !v->frag || !v->blur_vert || !v->down_frag || !v->up_frag ||
             vkCreatePipelineLayout(v->dev, &blur, NULL, &v->blur_layout) != VK_SUCCESS)
         return false;
+    v->lut_frag = shader_module(v, lut_frag, sizeof(lut_frag));
+    VkDescriptorSetLayout lut_sets[4] = { v->image_layout, v->sampler_layout, v->image_layout,
+        v->sampler_layout };
+    VkPipelineLayoutCreateInfo lut_info = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 4,
+        .pSetLayouts = lut_sets,
+    };
+    if (!v->lut_frag || vkCreatePipelineLayout(v->dev, &lut_info, NULL, &v->lut_layout) != VK_SUCCESS)
+        v->lut_layout = VK_NULL_HANDLE;
     v->down = pipeline_make(v, (VkFormat)LEVEL_FORMAT, 0, v->blur_vert, v->down_frag,
         v->blur_layout, false);
     v->up = pipeline_make(v, (VkFormat)LEVEL_FORMAT, 0, v->blur_vert, v->up_frag,
@@ -2116,6 +2174,10 @@ void gfx_close(struct render *r) {
         if (v->sampler_pool) vkDestroyDescriptorPool(v->dev, v->sampler_pool, NULL);
         for (int i = 0; i < 2; i++)
             if (v->samplers[i]) vkDestroySampler(v->dev, v->samplers[i], NULL);
+        for (int i = 0; i < TARGET_FORMATS; i++)
+            if (v->targets[i].lut) vkDestroyPipeline(v->dev, v->targets[i].lut, NULL);
+        if (v->lut_layout) vkDestroyPipelineLayout(v->dev, v->lut_layout, NULL);
+        if (v->lut_frag) vkDestroyShaderModule(v->dev, v->lut_frag, NULL);
         if (v->down) vkDestroyPipeline(v->dev, v->down, NULL);
         if (v->up) vkDestroyPipeline(v->dev, v->up, NULL);
         if (v->blur_layout) vkDestroyPipelineLayout(v->dev, v->blur_layout, NULL);
