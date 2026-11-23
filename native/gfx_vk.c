@@ -2065,7 +2065,7 @@ static const char *const device_extensions[] = {
     VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME,
 };
 
-static bool device_matches(VkPhysicalDevice phys, dev_t node) {
+static bool device_usable(VkPhysicalDevice phys, bool drm) {
     uint32_t count = 0;
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(phys, &props);
@@ -2074,11 +2074,21 @@ static bool device_matches(VkPhysicalDevice phys, dev_t node) {
     VkExtensionProperties *list = calloc(count ? count : 1, sizeof(*list));
     if (!list) return false;
     vkEnumerateDeviceExtensionProperties(phys, NULL, &count, list);
-    bool ok = has_extension(list, count, VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME);
+    bool ok = !drm || has_extension(list, count, VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME);
     for (size_t i = 0; ok && i < sizeof(device_extensions) / sizeof(device_extensions[0]); i++)
         ok = has_extension(list, count, device_extensions[i]);
     free(list);
-    if (!ok) return false;
+    return ok;
+}
+
+static bool device_software(VkPhysicalDevice phys) {
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(phys, &props);
+    return props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU && device_usable(phys, false);
+}
+
+static bool device_matches(VkPhysicalDevice phys, dev_t node) {
+    if (!device_usable(phys, true)) return false;
     VkPhysicalDeviceDrmPropertiesEXT drm = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT,
     };
@@ -2117,6 +2127,8 @@ static bool device_init(struct vk *v) {
     vkEnumeratePhysicalDevices(v->instance, &count, devices);
     for (uint32_t i = 0; i < count && !v->phys; i++)
         if (device_matches(devices[i], st.st_rdev)) v->phys = devices[i];
+    for (uint32_t i = 0; i < count && !v->phys; i++)
+        if (device_software(devices[i])) v->phys = devices[i];
     free(devices);
     if (!v->phys) {
         tomoe_log(LOG_ERROR, "tomoe: no Vulkan 1.3 device with dmabuf support matches %s",
