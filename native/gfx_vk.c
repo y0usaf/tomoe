@@ -3486,6 +3486,15 @@ static void blit(VkCommandBuffer cb, struct vk_image *from, struct vk_image *to,
         1, &region, filter);
 }
 
+static void blit_barrier(struct vk *v, VkCommandBuffer cb) {
+    memory_barrier(v, cb, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT |
+            VK_ACCESS_2_TRANSFER_WRITE_BIT);
+}
+
 static VkCommandBuffer transfer_begin(struct vk *v) {
     struct batch *b = batch(v);
     if (!b) return VK_NULL_HANDLE;
@@ -3570,7 +3579,7 @@ void gfx_level_blit(const struct gfx_level *from, const struct gfx_level *to,
         blit(cb, a, b, x0, y0, x0 + w, y0 + h, x1, y1, x1 + w, y1 + h, VK_FILTER_NEAREST);
         copied = true;
     }
-    if (copied) full_barrier(v, cb);
+    if (copied) blit_barrier(v, cb);
 }
 
 bool gfx_level_spill(const struct gfx_level *from, struct gfx_level *to, int width, int height,
@@ -3607,7 +3616,7 @@ void gfx_blur_copy_in(struct render *r, struct buffer *buffer, struct gfx_level 
             VK_FILTER_NEAREST);
         copied = true;
     }
-    if (copied) full_barrier(v, cb);
+    if (copied) blit_barrier(v, cb);
 }
 
 static void sample_pass(struct vk *v, VkPipeline pipeline, struct vk_image *from,
@@ -3720,8 +3729,7 @@ void gfx_backdrop_grab(struct render *r, struct buffer *buffer, const struct gfx
         int w = shown->width, h = shown->height;
         if (cb && clip_copy(&sx, &sy, &dx, &dy, &w, &h, source, dest)) {
             blit(cb, source, dest, sx, sy, sx + w, sy + h, dx, dy, dx + w, dy + h, VK_FILTER_NEAREST);
-            stage_barrier(cb, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            blit_barrier(v, cb);
         }
     }
     rendering_end(v);
