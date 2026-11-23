@@ -677,8 +677,19 @@ static void rendering_close(struct vk *v) {
 
 static void rendering_end(struct vk *v) {
     if (!v->rendering) return;
+    VkCommandBuffer cb = v->open->main;
     rendering_close(v);
-    full_barrier(v, v->open->main);
+    memory_barrier(v, cb,
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
+            VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT |
+            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT |
+            VK_ACCESS_2_TRANSFER_WRITE_BIT);
 }
 
 static bool image_use(struct vk *v, struct vk_image *image) {
