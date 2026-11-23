@@ -241,10 +241,14 @@ static bool main_copy(struct upload *u, struct upload_job *job, int state) {
     return !job->fault;
 }
 
-struct upload_job *upload_latch_next(struct upload *u) {
+struct upload_job *upload_latch_next(struct upload *u, bool ready) {
     uint32_t head = atomic_load(&u->head);
     while (u->latch != head) {
-        struct upload_job *job = slot(u, u->latch++);
+        struct upload_job *job = slot(u, u->latch);
+        if (ready && job->texture &&
+                atomic_load_explicit(&job->state, memory_order_acquire) != UPLOAD_DONE)
+            return NULL;
+        u->latch++;
         job->latched = true;
         int state = UPLOAD_QUEUED;
         if (atomic_compare_exchange_strong(&job->state, &state, UPLOAD_MAIN)) state = UPLOAD_MAIN;
@@ -264,7 +268,11 @@ struct upload_job *upload_latch_next(struct upload *u) {
     return NULL;
 }
 
-void upload_latch_end(struct upload *u) {
+void upload_latch_end(struct upload *u, bool frame) {
+    if (!frame) {
+        release_jobs(u);
+        return;
+    }
     if (u->frame_bytes > u->peak) u->peak = u->frame_bytes;
     if (u->frame_bytes > u->window_max) u->window_max = u->frame_bytes;
     u->frame_bytes = 0;

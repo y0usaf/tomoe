@@ -51,8 +51,8 @@ bool upload_stage(struct upload *u, struct texture *texture, struct buffer *buff
     struct wl_shm_view *view, size_t offset, size_t stride, const struct region *damage,
     void (*reclaim)(void *data), void *data);
 bool upload_pending(const struct upload *u);
-struct upload_job *upload_latch_next(struct upload *u);
-void upload_latch_end(struct upload *u);
+struct upload_job *upload_latch_next(struct upload *u, bool ready);
+void upload_latch_end(struct upload *u, bool frame);
 void upload_cancel(struct upload *u, const struct texture *texture);
 void upload_drain(struct upload *u);
 bool upload_idle(const struct upload *u);

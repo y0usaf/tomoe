@@ -1006,7 +1006,7 @@ static void reclaim(void *data) {
     staging_poll(r, false);
 }
 
-static void latch(struct render *r) {
+static void latch_jobs(struct render *r, bool ready) {
     struct upload *u = r->upload;
     if (!upload_pending(u)) return;
     struct gfx *g = G(r);
@@ -1015,7 +1015,7 @@ static void latch(struct render *r) {
     staging_poll(r, false);
     bool used = false;
     struct upload_job *job;
-    while ((job = upload_latch_next(u))) {
+    while ((job = upload_latch_next(u, ready))) {
         struct gl_texture *t = texture_of(job->texture);
         if (!used) glBindBuffer(GL_PIXEL_UNPACK_BUFFER, g->staging.pbo);
         used = true;
@@ -1049,7 +1049,7 @@ static void latch(struct render *r) {
     } else {
         u->gpu_done = u->alloc;
     }
-    upload_latch_end(u);
+    upload_latch_end(u, !ready);
     uint64_t want = upload_wanted(u);
     if (want && upload_idle(u)) {
         staging_free(r);
@@ -1057,6 +1057,14 @@ static void latch(struct render *r) {
         staging_alloc(r, want);
     }
     if (timing_enabled) timing_add(TIMING_UPLOAD_LATCH, timing_now() - start);
+}
+
+static void latch(struct render *r) {
+    latch_jobs(r, false);
+}
+
+void gfx_upload_latch(struct render *r) {
+    latch_jobs(r, true);
 }
 
 static bool stage(struct gl_texture *t, struct buffer *buffer, const struct region *damage) {
