@@ -126,6 +126,13 @@ void loop_request_quit(struct tomoe *server) {
     loop_state.quit = true;
 }
 
+void loop_request_fail(const char *reason) {
+    if (loop_state.quit && loop_state.failed) return;
+    loop_state.quit = true;
+    loop_state.failed = true;
+    snprintf(loop_state.quit_reason, sizeof(loop_state.quit_reason), "%s", reason);
+}
+
 static pv primitive_quit(int count, pv *arguments) {
     (void)count;
     (void)arguments;

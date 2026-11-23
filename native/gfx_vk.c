@@ -218,6 +218,8 @@ struct vk {
     VkDescriptorPool ubo_pool;
     VkDeviceSize ubo_align;
     struct gfx_prog *user_progs;
+    bool lost;
+    uint64_t submits, lose_at;
     struct gfx_prog glass_program;
     VkPipeline down, up;
     struct target_pipelines targets[TARGET_FORMATS];
@@ -441,12 +443,37 @@ static void batch_recycle(struct vk *v, struct batch *b) {
     b->staged = 0;
 }
 
+static void device_lost(struct vk *v, const char *where) {
+    if (v->lost) return;
+    v->lost = true;
+    tomoe_log(LOG_ERROR, "tomoe: the Vulkan device was lost (%s); Tomoe exits so its supervisor "
+        "can start it on a fresh device", where);
+    loop_request_fail("the Vulkan device was lost");
+}
+
+static VkResult fence_wait(struct vk *v, VkFence fence) {
+    if (v->lost) return VK_ERROR_DEVICE_LOST;
+    VkResult result = vkWaitForFences(v->dev, 1, &fence, VK_TRUE, UINT64_MAX);
+    if (result == VK_ERROR_DEVICE_LOST) device_lost(v, "a fence wait");
+    return result;
+}
+
 static void retire(struct vk *v, bool wait) {
     for (size_t i = 0; i < v->batch_count; i++) {
         struct batch *b = &v->batches[i];
         if (!b->busy) continue;
-        if (wait) vkWaitForFences(v->dev, 1, &b->fence, VK_TRUE, UINT64_MAX);
-        if (vkGetFenceStatus(v->dev, b->fence) != VK_SUCCESS) continue;
+        if (v->lost) {
+            b->busy = false;
+            continue;
+        }
+        if (wait) fence_wait(v, b->fence);
+        VkResult status = v->lost ? VK_ERROR_DEVICE_LOST : vkGetFenceStatus(v->dev, b->fence);
+        if (status == VK_ERROR_DEVICE_LOST) {
+            device_lost(v, "a fence status");
+            b->busy = false;
+            continue;
+        }
+        if (status != VK_SUCCESS) continue;
         vkResetFences(v->dev, 1, &b->fence);
         b->busy = false;
         if (b->serial > v->done) v->done = b->serial;
@@ -517,7 +544,7 @@ static struct batch *batch_free(struct vk *v) {
             pick = &v->batches[i];
         }
     }
-    vkWaitForFences(v->dev, 1, &pick->fence, VK_TRUE, UINT64_MAX);
+    fence_wait(v, pick->fence);
     v->fence_waits++;
     retire(v, false);
     return pick->busy ? NULL : pick;
@@ -692,7 +719,16 @@ static int submit(struct vk *v, bool export) {
         .signalSemaphoreInfoCount = signal ? 1 : 0,
         .pSignalSemaphoreInfos = &signals,
     };
-    VkResult result = vkQueueSubmit2(v->queue, 1, &info, b->fence);
+    VkResult result = v->lost ? VK_ERROR_DEVICE_LOST : vkQueueSubmit2(v->queue, 1, &info, b->fence);
+    if (result == VK_SUCCESS && v->lose_at && ++v->submits >= v->lose_at) {
+        vkQueueWaitIdle(v->queue);
+        result = VK_ERROR_DEVICE_LOST;
+    }
+    if (result == VK_ERROR_DEVICE_LOST) {
+        device_lost(v, "a queue submit");
+        batch_recycle(v, b);
+        return -1;
+    }
     if (result != VK_SUCCESS) {
         tomoe_log(LOG_ERROR, "tomoe: vulkan submit failed (%d)", (int)result);
         vkDeviceWaitIdle(v->dev);
@@ -2599,6 +2635,8 @@ struct render *gfx_alloc(void) {
 bool gfx_open(struct render *r) {
     struct vk *v = V(r);
     current_vk = v;
+    const char *lose = tomoe_test_flag_value("gfx-lose-device");
+    if (lose) v->lose_at = strtoull(lose, NULL, 10);
     if (!device_init(v)) return false;
     if (!formats_init(v)) {
         tomoe_log(LOG_ERROR, "tomoe: vulkan reports no renderable dmabuf formats");

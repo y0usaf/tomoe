@@ -188,5 +188,6 @@ pv tomoe_memory_report(struct tomoe *server);
 pv resources_describe(struct tomoe *server, const char *kind);
 
 void loop_request_quit(struct tomoe *server);
+void loop_request_fail(const char *reason);
 
 #endif
