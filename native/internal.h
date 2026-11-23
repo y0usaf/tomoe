@@ -370,9 +370,6 @@ struct trail_cell {
 void pass_scene(struct pass *pass, const struct scene_quad *quad);
 void pass_trail(struct pass *pass, const struct trail_cell *cells, size_t count, uint64_t pixels);
 void pass_flush(struct pass *pass);
-struct gfx_prog *render_shader_create(struct render *r, const char *source, bool *pending);
-bool render_shader_reap(struct render *r);
-struct gfx_prog *render_shader_compile(struct render *r, const char *source);
 struct gfx_prog *gfx_glass_program(struct render *r);
 void render_shader_destroy(struct gfx_prog *program);
 bool gfx_spirv_shaders(struct render *r);

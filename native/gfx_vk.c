@@ -3410,11 +3410,6 @@ void gfx_external_draw(struct pass *pass, const struct texture_options *options,
     external_quad(pass, t, pos, local, texcoords, pass->clip, &push);
 }
 
-struct gfx_prog *render_shader_create(struct render *r, const char *source, bool *pending) {
-    if (pending) *pending = false;
-    return NULL;
-}
-
 bool gfx_spirv_shaders(struct render *r) {
     return r && V(r)->user_layout;
 }
@@ -3559,14 +3554,6 @@ struct gfx_prog *gfx_user_shader(struct render *r, const void *bytes, size_t len
     p->next = v->user_progs;
     v->user_progs = p;
     return p;
-}
-
-bool render_shader_reap(struct render *r) {
-    return false;
-}
-
-struct gfx_prog *render_shader_compile(struct render *r, const char *source) {
-    return NULL;
 }
 
 void render_shader_destroy(struct gfx_prog *program) {
