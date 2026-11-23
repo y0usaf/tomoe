@@ -16,14 +16,7 @@
         pkgs:
         let
           libdrm = pkgs.libdrm.override { withIntel = false; };
-          libglvnd = pkgs.libglvnd.overrideAttrs (old: {
-            buildInputs = [ pkgs.xorgproto ];
-            configureFlags = (old.configureFlags or [ ]) ++ [
-              "--disable-x11"
-              "--disable-glx"
-            ];
-          });
-          libgbm = (pkgs.libgbm.override { inherit libdrm libglvnd; }).overrideAttrs (old: {
+          libgbm = (pkgs.libgbm.override { inherit libdrm; }).overrideAttrs (old: {
             propagatedBuildInputs = [ ];
             buildInputs = [ libdrm ];
             patches = (old.patches or [ ]) ++ [ ./support/patches/gbm-drm-version.patch ];
@@ -42,7 +35,6 @@
           inherit
             libdrm
             libgbm
-            libglvnd
             ;
         };
       packageFrom =
@@ -52,7 +44,6 @@
           opt ? "-O2",
           lto ? false,
           portal ? true,
-          gfx ? "vk",
         }:
         let
           glslangValidator =
@@ -212,30 +203,23 @@
           nativeBuildInputs = [
             pkgs.pkg-config
             pkgs.wayland-scanner
-          ]
-          ++ pkgs.lib.optional (gfx == "vk") pkgs.glslang;
+            pkgs.glslang
+          ];
           buildInputs = [
             libinput
             libs.libgbm
             pkgs.wayland-protocols
             pkgs.wlr-protocols
             freetype
-          ]
-          ++ (
-            if gfx == "vk" then
-              [
-                pkgs.vulkan-headers
-                pkgs.vulkan-loader
-              ]
-            else
-              [ libs.libglvnd ]
-          );
+            pkgs.vulkan-headers
+            pkgs.vulkan-loader
+          ];
           strictDeps = true;
           dontStrip = true;
           buildPhase = ''
             runHook preBuild
-            make -j"$NIX_BUILD_CORES" VERSION=${version} GFX=${gfx} \
-              ${pkgs.lib.optionalString (gfx == "vk") "GLSLANG=${glslangValidator}/bin/glslangValidator"} \
+            make -j"$NIX_BUILD_CORES" VERSION=${version} \
+              GLSLANG=${glslangValidator}/bin/glslangValidator \
               PATH_PREFIX=$out/bin \
               FONT_DIR=${pkgs.dejavu_fonts.minimal} \
               XKB_CONFIG_ROOT=${pkgs.xkeyboard_config}/etc/X11/xkb \
