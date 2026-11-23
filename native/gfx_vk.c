@@ -1192,9 +1192,14 @@ static void latch_jobs(struct vk *v, bool ready) {
         used = true;
     }
     if (used && v->open) full_barrier(v, v->open->main);
-    if (ready && used && !v->target && v->open && v->staging.fences < UPLOAD_FENCES) {
-        v->staging.serial[v->staging.fences] = v->open->serial;
-        v->staging.limit[v->staging.fences++] = u->alloc;
+    if (ready && used && !v->target && v->open) {
+        uint64_t limit = upload_pending(u) ? u->jobs[u->latch % UPLOAD_JOBS].start : u->alloc;
+        bool merged = v->staging.fences == UPLOAD_FENCES;
+        int at = merged ? UPLOAD_FENCES - 1 : v->staging.fences++;
+        if (at > 0 && v->staging.limit[at - 1] > limit) limit = v->staging.limit[at - 1];
+        if (merged && v->staging.limit[at] > limit) limit = v->staging.limit[at];
+        v->staging.serial[at] = v->open->serial;
+        v->staging.limit[at] = limit;
         used = false;
     }
     if (ready) {
