@@ -45,7 +45,7 @@ struct vk_image {
     uint32_t drm_format;
     int width, height;
     bool foreign, target, owned, used;
-    uint64_t batch, written;
+    uint64_t batch, written, copied;
     int fd, yuv;
 };
 
@@ -157,6 +157,7 @@ struct vk {
     size_t batch_count;
     struct batch *open;
     uint64_t serial, done;
+    uint64_t latches;
     uint64_t chunks_made, chunk_bytes, images_made, fence_waits, levels_made, imports_made;
     struct grave *graves;
     struct chunk *spare;
@@ -1122,6 +1123,7 @@ static void latch_jobs(struct vk *v, bool ready) {
     uint64_t start = timing_enabled ? timing_now() : 0;
     staging_poll(v, false);
     bool used = false;
+    uint64_t seq = ++v->latches;
     struct upload_job *job;
     while ((job = upload_latch_next(u, ready))) {
         struct vk_texture *t = wl_container_of(job->texture, t, base);
@@ -1145,6 +1147,8 @@ static void latch_jobs(struct vk *v, bool ready) {
             at += (VkDeviceSize)width * (VkDeviceSize)height * 4;
         }
         if (!n) continue;
+        if (t->image->copied == seq) full_barrier(v, b->main);
+        t->image->copied = seq;
         vkCmdCopyBufferToImage(b->main, v->staging.chunk->buffer, t->image->image,
             VK_IMAGE_LAYOUT_GENERAL, n, copies);
         r->gl_calls++;
