@@ -262,6 +262,7 @@ bool pass_record_blur(struct pass *pass, struct box box, struct box reach, struc
     const double *seed, size_t seeds);
 void blur_need(const struct op *op, struct region *need);
 void pass_clip(struct pass *pass, const struct region *clip);
+bool pass_copy_buffer(struct pass *pass, struct buffer *src, const struct region *region);
 bool pass_touches(struct pass *pass, struct box box);
 void pass_ops(struct pass *pass, const struct oplist *ops);
 const struct oplist *pass_oplist(const struct pass *pass);

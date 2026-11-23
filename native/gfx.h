@@ -124,6 +124,7 @@ bool gfx_external_ready(struct render *r);
 void gfx_state_dirty(struct pass *pass);
 void gfx_target_viewport(struct render *r, struct buffer *buffer);
 void gfx_target_rebind(struct render *r, struct buffer *buffer);
+bool gfx_buffer_copy(struct pass *pass, struct buffer *src, const struct region *region);
 
 enum { SHADER_DATA = 192, SHADER_WINDOWS = 8 };
 

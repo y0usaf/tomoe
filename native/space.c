@@ -673,6 +673,22 @@ static int64_t region_area(const struct region *region) {
         area += (int64_t)(rects[i].x2 - rects[i].x1) * (rects[i].y2 - rects[i].y1);
     return area;
 }
+static void scene_expand_clip(const struct output *o, const struct buffer *buffer,
+        struct region *clip) {
+    for (int64_t area = -1; area != region_area(clip);) {
+        area = region_area(clip);
+        oplist_expand(&o->ops, clip);
+        oplist_expand(&o->cursor_ops, clip);
+    }
+    region_intersect_rect(clip, clip, 0, 0, buffer->width, buffer->height);
+    int count = 0;
+    region_rectangles(clip, &count);
+    if (count > 16) {
+        struct rect e = *region_extents(clip);
+        region_fini(clip);
+        region_init_rect(clip, e.x1, e.y1, e.x2 - e.x1, e.y2 - e.y1);
+    }
+}
 static bool scene_commit_damage(struct output *o, const struct buffer *buffer,
         const struct region *changed, struct region *clip, bool complete, size_t ops_len) {
     size_t history = sizeof(o->damage) / sizeof(o->damage[0]);
@@ -693,19 +709,7 @@ static bool scene_commit_damage(struct output *o, const struct buffer *buffer,
     if (!complete || !rendered || seq - rendered > history) return false;
     for (uint64_t f = rendered + 1; f <= seq; f++)
         region_union(clip, clip, &o->damage[f % history]);
-    for (int64_t area = -1; area != region_area(clip);) {
-        area = region_area(clip);
-        oplist_expand(&o->ops, clip);
-        oplist_expand(&o->cursor_ops, clip);
-    }
-    region_intersect_rect(clip, clip, 0, 0, buffer->width, buffer->height);
-    int count = 0;
-    region_rectangles(clip, &count);
-    if (count > 16) {
-        struct rect e = *region_extents(clip);
-        region_fini(clip);
-        region_init_rect(clip, e.x1, e.y1, e.x2 - e.x1, e.y2 - e.y1);
-    }
+    scene_expand_clip(o, buffer, clip);
     return true;
 }
 static bool scene_damage(struct output *o, const struct frame *data, bool locked,
@@ -777,6 +781,37 @@ static bool render_scene_prepared(struct output *o, struct buffer *buffer,
     if (planes && planes->count) {
         for (size_t i = 0; i < planes->count; i++)
             if (!planes->item[i].underlay) skipped = true;
+    }
+    if (track && recorded && !highlight && !o->planes.changed && !(planes && planes->count)) {
+        struct buffer *prev = o->presented[0];
+        size_t prev_slot = prev ? ring_slot(&o->ring, prev) : RING_SLOTS;
+        if (prev && prev != buffer && prev->width == buffer->width &&
+                prev->height == buffer->height && prev_slot < RING_SLOTS &&
+                o->damage_seq > 1 && o->ring.frames[prev_slot] == o->damage_seq - 1) {
+            struct region latest;
+            region_init(&latest);
+            region_copy(&latest, &changed);
+            scene_expand_clip(o, buffer, &latest);
+            int64_t age_area = partial ? region_area(&clip) :
+                (int64_t)buffer->width * buffer->height;
+            int64_t latest_area = region_area(&latest);
+            if (latest_area * 2 < age_area && age_area - latest_area >= 65536) {
+                struct region copy;
+                if (partial) {
+                    region_init(&copy);
+                    region_subtract(&copy, &clip, &latest);
+                } else {
+                    region_init_rect(&copy, 0, 0, buffer->width, buffer->height);
+                    region_subtract(&copy, &copy, &latest);
+                }
+                if (!region_not_empty(&copy) || pass_copy_buffer(pass, prev, &copy)) {
+                    region_copy(&clip, &latest);
+                    partial = true;
+                }
+                region_fini(&copy);
+            }
+            region_fini(&latest);
+        }
     }
     if (skipped) {
         struct region skip;

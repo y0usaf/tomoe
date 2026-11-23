@@ -466,6 +466,11 @@ void pass_clip(struct pass *pass, const struct region *clip) {
     pass->clip = clip;
 }
 
+bool pass_copy_buffer(struct pass *pass, struct buffer *src, const struct region *region) {
+    if (!pass || pass->record) return false;
+    return gfx_buffer_copy(pass, src, region);
+}
+
 void pass_ops(struct pass *pass, const struct oplist *ops) {
     pass->ops = ops;
 }

@@ -3060,6 +3060,63 @@ static VkCommandBuffer transfer_begin(struct vk *v) {
     return b->main;
 }
 
+bool gfx_buffer_copy(struct pass *pass, struct buffer *src, const struct region *region) {
+    struct vk *v = pass ? V(pass->r) : NULL;
+    if (!v || !src || !pass->buffer || src == pass->buffer || !region) return false;
+    struct vk_image *from = import(v, src), *to = import(v, pass->buffer);
+    if (!from || !to || from == to || from->width != to->width || from->height != to->height ||
+            from->format != to->format) return false;
+    if (!(from->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ||
+            !(to->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT)) return false;
+    pass_flush(pass);
+    if (!image_use(v, from) || !image_use(v, to)) return false;
+    struct batch *b = batch(v);
+    if (!b) return false;
+    if (!to->owned && to->fd >= 0 && v->sync_fd && to->written != b->serial) {
+        struct dma_buf_export_sync_file exported = { .flags = DMA_BUF_SYNC_RW, .fd = -1 };
+        if (ioctl(to->fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &exported) == 0 && exported.fd >= 0)
+            wait_fd(v, exported.fd);
+    }
+    VkCommandBuffer cb = transfer_begin(v);
+    if (!cb) return false;
+    if (!from->foreign) full_barrier(v, cb);
+    int count = 0;
+    const struct rect *rects = region_rectangles((struct region *)region, &count);
+    VkImageCopy copies[32];
+    uint32_t queued = 0;
+    bool copied = false;
+    for (int i = 0; i < count; i++) {
+        int x1 = rects[i].x1 < 0 ? 0 : rects[i].x1;
+        int y1 = rects[i].y1 < 0 ? 0 : rects[i].y1;
+        int x2 = rects[i].x2 > to->width ? to->width : rects[i].x2;
+        int y2 = rects[i].y2 > to->height ? to->height : rects[i].y2;
+        if (x2 <= x1 || y2 <= y1) continue;
+        copies[queued++] = (VkImageCopy){
+            .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+            .srcOffset = { x1, y1, 0 },
+            .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+            .dstOffset = { x1, y1, 0 },
+            .extent = { (uint32_t)(x2 - x1), (uint32_t)(y2 - y1), 1 },
+        };
+        if (queued == 32) {
+            vkCmdCopyImage(cb, from->image, VK_IMAGE_LAYOUT_GENERAL,
+                to->image, VK_IMAGE_LAYOUT_GENERAL, queued, copies);
+            queued = 0;
+            copied = true;
+        }
+    }
+    if (queued) {
+        vkCmdCopyImage(cb, from->image, VK_IMAGE_LAYOUT_GENERAL,
+            to->image, VK_IMAGE_LAYOUT_GENERAL, queued, copies);
+        copied = true;
+    }
+    if (copied) {
+        to->written = b->serial;
+        full_barrier(v, cb);
+    }
+    return true;
+}
+
 void gfx_level_blit(const struct gfx_level *from, const struct gfx_level *to,
         const struct box *samples, int count, int sx, int sy, int dx, int dy) {
     struct vk *v = current_vk;
