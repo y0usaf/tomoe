@@ -1196,6 +1196,14 @@ static struct vk_texture *texture_of(struct texture *base) {
     return t;
 }
 
+static void copy_barrier(struct vk *v, VkCommandBuffer cb) {
+    memory_barrier(v, cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COPY_BIT |
+            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT |
+            VK_ACCESS_2_TRANSFER_WRITE_BIT);
+}
+
 static bool upload_rects(struct vk_texture *t, const void *data, size_t stride,
         const struct rect *rects, int count) {
     struct vk *v = t->v;
@@ -1227,7 +1235,7 @@ static bool upload_rects(struct vk_texture *t, const void *data, size_t stride,
         t->v->base.upload_bytes += row * rows;
         copied = true;
     }
-    if (copied) full_barrier(v, b->main);
+    if (copied) copy_barrier(v, b->main);
     return true;
 }
 
@@ -1324,18 +1332,16 @@ static void latch_jobs(struct vk *v, bool ready) {
         }
         if (!n) continue;
         if (t->image->copied == seq)
-            stage_barrier(b->main, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+            memory_barrier(v, b->main, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT);
         t->image->copied = seq;
         vkCmdCopyBufferToImage(b->main, v->staging.chunk->buffer, t->image->image,
             VK_IMAGE_LAYOUT_GENERAL, n, copies);
         r->gl_calls++;
         used = true;
     }
-    if (used && v->open)
-        stage_barrier(v->open->main, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    if (used && v->open) copy_barrier(v, v->open->main);
     if (ready && used && !v->target && v->open) {
         uint64_t limit = upload_pending(u) ? u->jobs[u->latch % UPLOAD_JOBS].start : u->alloc;
         bool merged = v->staging.fences == UPLOAD_FENCES;
