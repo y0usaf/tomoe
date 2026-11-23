@@ -253,6 +253,33 @@ void gfx_shader_draw(struct pass *pass, struct gfx_prog *p, const struct gfx_sha
     glActiveTexture(GL_TEXTURE0);
 }
 
+static const char glass_source[] =
+    "uniform sampler2D tomoe_glass;\n"
+    "void mainImage(out vec4 color, in vec2 coord) {\n"
+    "    vec4 lens = texture(tomoe_glass, v_local / iResolution.xy);\n"
+    "    vec2 normal = lens.rg * 2.0 - 1.0;\n"
+    "    vec2 bend = normal * iData[0].x;\n"
+    "    vec2 at = gl_FragCoord.xy;\n"
+    "    vec3 seen = vec3(beneath(at + bend * 1.12).r, beneath(at + bend).g,\n"
+    "        beneath(at + bend * 0.88).b);\n"
+    "    vec3 behind = beneath(at - v_local + iResolution.xy * 0.5).rgb;\n"
+    "    float luma = dot(behind, vec3(0.2126, 0.7152, 0.0722));\n"
+    "    float dark = 1.0 - smoothstep(0.42, 0.50, luma);\n"
+    "    vec3 smoked = seen * vec3(0.54, 0.56, 0.66);\n"
+    "    vec3 frost = mix(seen, vec3(0.94, 0.95, 0.99), 0.85);\n"
+    "    vec3 body = mix(smoked, frost, dark);\n"
+    "    body += vec3(max(dot(normal, vec2(-0.55, -0.83)), 0.0) * 0.12);\n"
+    "    float ink = lens.b * 2.0 - 1.0;\n"
+    "    float edge = abs(ink);\n"
+    "    vec3 rim = ink < 0.0 ? vec3(0.0) : vec3(1.0);\n"
+    "    float gain = mix(0.45, 1.0, ink < 0.0 ? 1.0 - dark : dark);\n"
+    "    color = vec4(body * lens.a + rim * edge * gain, lens.a + edge * gain);\n"
+    "}\n";
+
+struct gfx_prog *gfx_glass_program(struct render *r) {
+    return render_shader_compile(r, glass_source);
+}
+
 void gfx_glass_draw(struct pass *pass, struct gfx_prog *p, struct texture *map,
         const struct gfx_level *glass, struct box grown, struct fbox box, double bend,
         const float pos[8], const float local[8]) {

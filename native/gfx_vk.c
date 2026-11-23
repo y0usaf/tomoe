@@ -16,6 +16,7 @@
 #include "shaders/up.frag.h"
 #include "shaders/lut.frag.h"
 #include "shaders/ext.frag.h"
+#include "shaders/glass.frag.h"
 
 enum {
     BLENDS = 3,
@@ -136,10 +137,20 @@ struct blur_push {
     float offset, grain, vibrancy;
 };
 
+struct glass_push {
+    float box[4];
+    float resolution[2];
+    float bend;
+};
+
+struct gfx_prog {
+    int builtin;
+};
+
 struct target_pipelines {
     VkFormat format;
     VkPipeline blend[BLENDS];
-    VkPipeline lut;
+    VkPipeline lut, glass;
 };
 
 struct vk {
@@ -172,10 +183,11 @@ struct vk {
     VkSampler samplers[2];
     VkDescriptorSet sampler_sets[2];
     VkPipelineLayout layout;
-    VkShaderModule vert, frag, blur_vert, down_frag, up_frag, lut_frag, ext_frag;
+    VkShaderModule vert, frag, blur_vert, down_frag, up_frag, lut_frag, ext_frag, glass_frag;
     bool ycbcr;
     struct yuv_path yuv[YUV_FORMATS];
-    VkPipelineLayout blur_layout, lut_layout;
+    VkPipelineLayout blur_layout, lut_layout, glass_layout;
+    struct gfx_prog glass_program;
     VkPipeline down, up;
     struct target_pipelines targets[TARGET_FORMATS];
     struct wl_list images;
@@ -1652,6 +1664,8 @@ static struct target_pipelines *pipelines_find(struct vk *v, VkFormat format) {
         }
         if (v->lut_layout)
             t->lut = pipeline_make(v, format, 1, v->vert, v->lut_frag, v->lut_layout, true);
+        if (v->glass_layout)
+            t->glass = pipeline_make(v, format, 1, v->vert, v->glass_frag, v->glass_layout, true);
         return t;
     }
     return NULL;
@@ -2326,6 +2340,18 @@ static bool layouts_init(struct vk *v) {
     };
     if (!v->lut_frag || vkCreatePipelineLayout(v->dev, &lut_info, NULL, &v->lut_layout) != VK_SUCCESS)
         v->lut_layout = VK_NULL_HANDLE;
+    v->glass_frag = shader_module(v, glass_frag, sizeof(glass_frag));
+    VkPushConstantRange glass_push = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(struct glass_push) };
+    VkPipelineLayoutCreateInfo glass_info = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 4,
+        .pSetLayouts = lut_sets,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &glass_push,
+    };
+    if (!v->glass_frag ||
+            vkCreatePipelineLayout(v->dev, &glass_info, NULL, &v->glass_layout) != VK_SUCCESS)
+        v->glass_layout = VK_NULL_HANDLE;
     v->down = pipeline_make(v, (VkFormat)LEVEL_FORMAT, 0, v->blur_vert, v->down_frag,
         v->blur_layout, false);
     v->up = pipeline_make(v, (VkFormat)LEVEL_FORMAT, 0, v->blur_vert, v->up_frag,
@@ -2567,12 +2593,16 @@ void gfx_close(struct render *r) {
         if (v->sampler_pool) vkDestroyDescriptorPool(v->dev, v->sampler_pool, NULL);
         for (int i = 0; i < 2; i++)
             if (v->samplers[i]) vkDestroySampler(v->dev, v->samplers[i], NULL);
-        for (int i = 0; i < TARGET_FORMATS; i++)
+        for (int i = 0; i < TARGET_FORMATS; i++) {
             if (v->targets[i].lut) vkDestroyPipeline(v->dev, v->targets[i].lut, NULL);
+            if (v->targets[i].glass) vkDestroyPipeline(v->dev, v->targets[i].glass, NULL);
+        }
         yuv_finish(v);
         if (v->ext_frag) vkDestroyShaderModule(v->dev, v->ext_frag, NULL);
         if (v->lut_layout) vkDestroyPipelineLayout(v->dev, v->lut_layout, NULL);
         if (v->lut_frag) vkDestroyShaderModule(v->dev, v->lut_frag, NULL);
+        if (v->glass_layout) vkDestroyPipelineLayout(v->dev, v->glass_layout, NULL);
+        if (v->glass_frag) vkDestroyShaderModule(v->dev, v->glass_frag, NULL);
         if (v->down) vkDestroyPipeline(v->dev, v->down, NULL);
         if (v->up) vkDestroyPipeline(v->dev, v->up, NULL);
         if (v->blur_layout) vkDestroyPipelineLayout(v->dev, v->blur_layout, NULL);
@@ -2921,6 +2951,62 @@ void gfx_shader_draw(struct pass *pass, struct gfx_prog *p, const struct gfx_sha
 void gfx_glass_draw(struct pass *pass, struct gfx_prog *p, struct texture *map,
         const struct gfx_level *glass, struct box grown, struct fbox box, double bend,
         const float pos[8], const float local[8]) {
+    struct vk *v = V(pass->r);
+    struct render *r = pass->r;
+    struct vk_texture *lens = texture_of(map);
+    struct vk_image *beneath = level_image(glass);
+    struct target_pipelines *pipes = v->target ? pipelines_for(v, v->target->format) : NULL;
+    if (!p || !pipes || !pipes->glass || !lens->image || !lens->image->set || !beneath ||
+            !beneath->set || grown.width < 1 || grown.height < 1 ||
+            !image_use(v, lens->image)) return;
+    pass_flush(pass);
+    VkBuffer buffer;
+    VkDeviceSize offset;
+    struct scene_instance *in = stage_alloc(v, sizeof(*in), &buffer, &offset);
+    if (!in || !rendering_begin(v, v->target)) return;
+    memset(in, 0, sizeof(*in));
+    memcpy(in->pos, pos, sizeof(in->pos));
+    memcpy(in->local, local, sizeof(in->local));
+    struct glass_push push = {
+        { (float)grown.x, (float)grown.y, 1.0f / (float)grown.width, 1.0f / (float)grown.height },
+        { (float)box.width, (float)box.height }, (float)bend };
+    VkCommandBuffer cb = v->open->main;
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipes->glass);
+    VkDescriptorSet sets[4] = { lens->image->set, v->sampler_sets[0], beneath->set,
+        v->sampler_sets[0] };
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, v->glass_layout, 0, 4, sets, 0,
+        NULL);
+    vkCmdPushConstants(cb, v->glass_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+    vkCmdBindVertexBuffers(cb, 0, 1, &buffer, &offset);
+    r->gl_calls += 4;
+    int count = 1;
+    const struct rect *rects = pass->clip ? region_rectangles((struct region *)pass->clip, &count) :
+        NULL;
+    for (int i = 0; i < count; i++) {
+        VkRect2D scissor = { { 0, 0 }, { (uint32_t)v->target->width, (uint32_t)v->target->height } };
+        if (rects) {
+            int32_t x1 = rects[i].x1 < 0 ? 0 : rects[i].x1, y1 = rects[i].y1 < 0 ? 0 : rects[i].y1;
+            int32_t x2 = rects[i].x2 > v->target->width ? v->target->width : rects[i].x2;
+            int32_t y2 = rects[i].y2 > v->target->height ? v->target->height : rects[i].y2;
+            if (x2 <= x1 || y2 <= y1) continue;
+            scissor = (VkRect2D){ { x1, y1 }, { (uint32_t)(x2 - x1), (uint32_t)(y2 - y1) } };
+            r->fragments += quad_pixels(pass, pos, &rects[i]);
+        } else {
+            r->fragments += quad_pixels(pass, pos, NULL);
+        }
+        vkCmdSetScissor(cb, 0, 1, &scissor);
+        vkCmdDraw(cb, 6, 1, 0, 0);
+        r->gl_calls += 2;
+        r->quads++;
+    }
+    r->runs++;
+}
+
+struct gfx_prog *gfx_glass_program(struct render *r) {
+    struct vk *v = V(r);
+    if (!v->glass_layout) return NULL;
+    v->glass_program.builtin = 1;
+    return &v->glass_program;
 }
 
 void gfx_external_draw(struct pass *pass, const struct texture_options *options, bool alpha,
