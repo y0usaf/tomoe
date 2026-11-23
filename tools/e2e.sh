@@ -76,7 +76,7 @@ env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u TOMOE_SOCKET \
 		echo "$blur_out" | grep -Eq "frames=[3-9]" 
 
 		python3 "$fault_py" max-objects,flood,xwm,idle-flush,x11,x11-stale,x11-ownership,xwm-stall,xwm-hang,policy-kill,policy-stop,policy-snapshot,policy-effects,policy-effects-bugs "$XDG_RUNTIME_DIR/$wl_display" "$client_bin" "$tomoe_bin" "$workspaces"
-		python3 "$fault_py" shm-pixels,shm-truncate,shm-destroyed "$XDG_RUNTIME_DIR/$wl_display" "$client_bin" "$tomoe_bin" "$workspaces" "$capture_bin"
+		python3 "$fault_py" shm-pixels,shm-truncate,shm-destroyed,shm-pool-fds "$XDG_RUNTIME_DIR/$wl_display" "$client_bin" "$tomoe_bin" "$workspaces" "$capture_bin"
 
 		trap - EXIT
 		kill -TERM "$tpid"

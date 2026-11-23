@@ -1,5 +1,6 @@
 import os
 import re
+import resource
 import select
 import signal
 import socket
@@ -1700,6 +1701,71 @@ def check_shm_destroyed(path, client_bin, tomoe_bin):
     return f"shm-destroyed=ok(frames={frames.group(1)} upload={tomoe_upload_stats(tomoe_bin, sock)})"
 
 
+def fd_count(pid):
+    return len(os.listdir(f"/proc/{pid}/fd"))
+
+
+def check_shm_pool_fds(tomoe_bin, client_bin):
+    sock = "e2e-shmfd"
+    path = os.path.join(os.environ["XDG_RUNTIME_DIR"], sock)
+    limit = 512
+    pools = 600
+    tomoe = subprocess.Popen([tomoe_bin, "--socket", sock, "--backend", "headless", "--bare", "--no-watch"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_NOFILE, (limit, limit)))
+    try:
+        inspect(tomoe_bin, sock)
+        wl, shm, surf, w, h = shm_window(path, "shm-pool-fds")
+        base = fd_count(tomoe.pid)
+        a = shm_pattern(w, h)
+        held = []
+        for i in range(pools):
+            fd = os.memfd_create("e2e-shmfd", os.MFD_CLOEXEC)
+            os.ftruncate(fd, 4096)
+            pool = wl.new()
+            wl.send(shm, 0, struct.pack("<Ii", pool, 4096), fds=(fd,))
+            os.close(fd)
+            held.append(pool)
+            if i % 64 == 63:
+                wl.roundtrip()
+        wl.roundtrip()
+        grown = fd_count(tomoe.pid) - base
+        if wl.error or wl.closed:
+            raise SystemExit(f"shm-pool-fds: FAIL client dropped after {pools} pools (error {wl.error}, fds +{grown})")
+        if grown > 32:
+            raise SystemExit(f"shm-pool-fds: FAIL {pools} live pools kept {grown} compositor fds open (limit {limit})")
+        fd = os.memfd_create("e2e-shmfd", os.MFD_CLOEXEC)
+        os.ftruncate(fd, 4096)
+        pool = wl.new()
+        wl.send(shm, 0, struct.pack("<Ii", pool, 4096), fds=(fd,))
+        os.ftruncate(fd, 2 * w * h * 4)
+        os.pwrite(fd, a, w * h * 4)
+        wl.send(pool, 2, struct.pack("<i", 2 * w * h * 4))
+        buf = wl.new()
+        wl.send(pool, 0, struct.pack("<Iiiiii", buf, w * h * 4, w, h, w * 4, SHM_XRGB))
+        os.close(fd)
+        cb = shm_show(wl, surf, buf, [(0, 0, w, h)])
+        if wl.wait(lambda e: e[0] == cb and e[1] == 0) is None:
+            raise SystemExit(f"shm-pool-fds: FAIL resized pool buffer never shown (error {wl.error})")
+        other = subprocess.run([client_bin, "--input", "virtual", "--phase", "frames", "--seconds", "1",
+            "--windows", "1", "--tag", "shmfd-other"], env=dict(os.environ, WAYLAND_DISPLAY=sock),
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=20)
+        frames = re.search(r"^frames (\d+)$", other.stdout, re.M)
+        if other.returncode != 0 or not frames or int(frames.group(1)) == 0:
+            raise SystemExit(f"shm-pool-fds: FAIL a new client could not render: rc={other.returncode} {other.stdout[-160:]!r}")
+        if wl.error or wl.closed:
+            raise SystemExit(f"shm-pool-fds: FAIL hostile client dropped (error {wl.error})")
+        wl.sock.close()
+        return f"shm-pool-fds=ok(pools={pools} fds+{grown} frames={frames.group(1)})"
+    finally:
+        tomoe.terminate()
+        try:
+            tomoe.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            tomoe.kill()
+            tomoe.wait()
+
+
 def check_shm_pixels(path, tomoe_bin, capture_bin):
     sock = os.path.basename(path)
     wl, shm, surf, w, h = shm_window(path, "shm-pixels")
@@ -1806,6 +1872,8 @@ def main():
             results.append(check_shm_truncate(path, client_bin, args[3]))
         elif check == "shm-destroyed":
             results.append(check_shm_destroyed(path, client_bin, args[3]))
+        elif check == "shm-pool-fds":
+            results.append(check_shm_pool_fds(args[3], client_bin))
         elif check == "shm-pixels":
             results.append(check_shm_pixels(path, args[3], args[5]))
         elif check == "policy-effects-bugs":
