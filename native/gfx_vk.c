@@ -8,6 +8,9 @@
 #include <vulkan/vulkan.h>
 #include "shaders/scene.vert.h"
 #include "shaders/scene.frag.h"
+#include "shaders/blur.vert.h"
+#include "shaders/down.frag.h"
+#include "shaders/up.frag.h"
 
 enum {
     BLENDS = 3,
@@ -27,7 +30,7 @@ struct vk_image {
     struct vk *v;
     VkImage image;
     VkDeviceMemory memory;
-    VkImageView view;
+    VkImageView view, sample;
     VkDescriptorSet set;
     VkDescriptorPool pool;
     VkFormat format;
@@ -53,7 +56,7 @@ struct grave {
     uint64_t serial;
     VkImage image;
     VkDeviceMemory memory;
-    VkImageView view;
+    VkImageView view, sample;
     VkDescriptorSet set;
     VkDescriptorPool pool;
 };
@@ -98,6 +101,11 @@ struct scene {
     struct pass *owner;
 };
 
+struct blur_push {
+    float half_pixel[2];
+    float offset, grain, vibrancy;
+};
+
 struct target_pipelines {
     VkFormat format;
     VkPipeline blend[BLENDS];
@@ -130,16 +138,21 @@ struct vk {
     VkSampler samplers[2];
     VkDescriptorSet sampler_sets[2];
     VkPipelineLayout layout;
-    VkShaderModule vert, frag;
+    VkShaderModule vert, frag, blur_vert, down_frag, up_frag;
+    VkPipelineLayout blur_layout;
+    VkPipeline down, up;
     struct target_pipelines targets[TARGET_FORMATS];
     struct wl_list images;
     struct vk_image *dummy;
-    struct vk_image *target;
+    struct vk_image *target, *bound;
     bool rendering;
     struct scene scene;
 };
 
 static uint64_t serials;
+static struct vk *current_vk;
+
+enum { LEVEL_FORMAT = VK_FORMAT_B8G8R8A8_UNORM };
 
 static inline struct vk *V(struct render *r) {
     return (struct vk *)r;
@@ -279,6 +292,7 @@ static struct chunk *chunk_new(struct vk *v, VkDeviceSize size, VkBufferUsageFla
 
 static void bury_now(struct vk *v, struct grave *g) {
     if (g->set) vkFreeDescriptorSets(v->dev, g->pool, 1, &g->set);
+    if (g->sample && g->sample != g->view) vkDestroyImageView(v->dev, g->sample, NULL);
     if (g->view) vkDestroyImageView(v->dev, g->view, NULL);
     if (g->image) vkDestroyImage(v->dev, g->image, NULL);
     if (g->memory) vkFreeMemory(v->dev, g->memory, NULL);
@@ -470,6 +484,7 @@ static void rendering_end(struct vk *v) {
     vkCmdEndRendering(v->open->main);
     full_barrier(v, v->open->main);
     v->rendering = false;
+    v->bound = NULL;
 }
 
 static bool image_use(struct vk *v, struct vk_image *image) {
@@ -615,7 +630,7 @@ static VkDescriptorSet descriptor_new(struct vk *v, VkImageView view, VkDescript
     return set;
 }
 
-static bool image_view(struct vk *v, struct vk_image *image) {
+static bool image_view(struct vk *v, struct vk_image *image, bool opaque) {
     VkImageViewCreateInfo info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .image = image->image,
@@ -624,26 +639,32 @@ static bool image_view(struct vk *v, struct vk_image *image) {
         .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
     };
     if (vkCreateImageView(v->dev, &info, NULL, &image->view) != VK_SUCCESS) return false;
+    image->sample = image->view;
+    if (opaque) {
+        info.components.a = VK_COMPONENT_SWIZZLE_ONE;
+        if (vkCreateImageView(v->dev, &info, NULL, &image->sample) != VK_SUCCESS) {
+            image->sample = image->view;
+            return false;
+        }
+    }
     if (!(image->usage & VK_IMAGE_USAGE_SAMPLED_BIT)) return true;
-    image->set = descriptor_new(v, image->view, &image->pool);
+    image->set = descriptor_new(v, image->sample, &image->pool);
     return image->set != VK_NULL_HANDLE;
 }
 
 static void image_free(struct vk_image *image) {
     struct vk *v = image->v;
+    if (v->bound == image) rendering_end(v);
     bury(v, (struct grave){ .image = image->image, .memory = image->memory, .view = image->view,
-        .set = image->set, .pool = image->pool });
-    if (v->target == image) {
-        rendering_end(v);
-        v->target = NULL;
-    }
+        .sample = image->sample, .set = image->set, .pool = image->pool });
+    if (v->target == image) v->target = NULL;
     for (size_t i = 0; v->open && i < v->open->acquired_len; i++)
         if (v->open->acquired[i] == image) v->open->acquired[i] = NULL;
     free(image);
 }
 
 static struct vk_image *image_new(struct vk *v, VkFormat format, int width, int height,
-        VkImageUsageFlags usage) {
+        VkImageUsageFlags usage, bool opaque) {
     struct batch *b = batch(v);
     struct vk_image *image = b ? calloc(1, sizeof(*image)) : NULL;
     if (!image) return NULL;
@@ -681,7 +702,7 @@ static struct vk_image *image_new(struct vk *v, VkFormat format, int width, int 
     };
     if (type < 0 || vkAllocateMemory(v->dev, &alloc, NULL, &image->memory) != VK_SUCCESS ||
             vkBindImageMemory(v->dev, image->image, image->memory, 0) != VK_SUCCESS ||
-            !image_view(v, image)) {
+            !image_view(v, image, opaque)) {
         tomoe_log(LOG_ERROR, "tomoe: vulkan cannot create a %dx%d image", width, height);
         image_free(image);
         return NULL;
@@ -823,10 +844,10 @@ static struct vk_image *import(struct vk *v, struct buffer *buffer) {
         return NULL;
     }
     if (vkBindImageMemory(v->dev, image->image, image->memory, 0) != VK_SUCCESS ||
-            !image_view(v, image)) {
+            !image_view(v, image, false)) {
         tomoe_log(LOG_ERROR, "tomoe: vulkan cannot bind a dmabuf image");
         bury_now(v, &(struct grave){ .image = image->image, .memory = image->memory,
-            .view = image->view, .set = image->set, .pool = image->pool });
+            .view = image->view, .sample = image->sample, .set = image->set, .pool = image->pool });
         free(image);
         return NULL;
     }
@@ -885,7 +906,7 @@ struct texture *texture_new(struct render *r, uint32_t format, uint32_t width, u
     struct vk_texture *t = calloc(1, sizeof(*t));
     if (!t) return NULL;
     t->image = image_new(v, p->vk, (int)width, (int)height, VK_IMAGE_USAGE_SAMPLED_BIT |
-        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, false);
     if (!t->image) {
         free(t);
         return NULL;
@@ -1105,12 +1126,13 @@ bool render_wait(struct render *r, struct timeline *timeline, uint64_t point) {
     return true;
 }
 
-static VkPipeline pipeline_make(struct vk *v, VkFormat format, int blend) {
+static VkPipeline pipeline_make(struct vk *v, VkFormat format, int blend, VkShaderModule vert,
+        VkShaderModule frag, VkPipelineLayout layout, bool instanced) {
     VkPipelineShaderStageCreateInfo stages[2] = {
         { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-            .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = v->vert, .pName = "main" },
+            .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vert, .pName = "main" },
         { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-            .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = v->frag, .pName = "main" },
+            .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = frag, .pName = "main" },
     };
     VkVertexInputBindingDescription binding = {
         .binding = 0,
@@ -1124,14 +1146,15 @@ static VkPipeline pipeline_make(struct vk *v, VkFormat format, int blend) {
             .offset = i * 16 };
     VkPipelineVertexInputStateCreateInfo input = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-        .vertexBindingDescriptionCount = 1,
+        .vertexBindingDescriptionCount = instanced ? 1 : 0,
         .pVertexBindingDescriptions = &binding,
-        .vertexAttributeDescriptionCount = 11,
+        .vertexAttributeDescriptionCount = instanced ? 11 : 0,
         .pVertexAttributeDescriptions = attributes,
     };
     VkPipelineInputAssemblyStateCreateInfo assembly = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        .topology = instanced ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST :
+            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
     };
     VkPipelineViewportStateCreateInfo viewport = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
@@ -1188,7 +1211,7 @@ static VkPipeline pipeline_make(struct vk *v, VkFormat format, int blend) {
         .pMultisampleState = &multisample,
         .pColorBlendState = &blending,
         .pDynamicState = &dynamic,
-        .layout = v->layout,
+        .layout = layout,
     };
     VkPipeline pipeline = VK_NULL_HANDLE;
     if (vkCreateGraphicsPipelines(v->dev, VK_NULL_HANDLE, 1, &info, NULL, &pipeline) != VK_SUCCESS)
@@ -1204,7 +1227,7 @@ static struct target_pipelines *pipelines_for(struct vk *v, VkFormat format) {
         if (t->blend[0]) continue;
         t->format = format;
         for (int b = 0; b < BLENDS; b++) {
-            t->blend[b] = pipeline_make(v, format, b);
+            t->blend[b] = pipeline_make(v, format, b, v->vert, v->frag, v->layout, true);
             if (t->blend[b]) continue;
             tomoe_log(LOG_ERROR, "tomoe: vulkan cannot build the scene pipeline");
             for (int k = 0; k < b; k++) vkDestroyPipeline(v->dev, t->blend[k], NULL);
@@ -1216,10 +1239,10 @@ static struct target_pipelines *pipelines_for(struct vk *v, VkFormat format) {
     return NULL;
 }
 
-static bool rendering_begin(struct vk *v) {
-    if (v->rendering) return true;
-    struct vk_image *target = v->target;
+static bool rendering_begin(struct vk *v, struct vk_image *target) {
+    if (v->rendering && v->bound == target) return true;
     if (!target) return false;
+    rendering_end(v);
     struct batch *b = batch(v);
     if (!b || !image_use(v, target)) return false;
     VkRenderingAttachmentInfo color = {
@@ -1240,8 +1263,13 @@ static bool rendering_begin(struct vk *v) {
     VkViewport viewport = { 0, 0, (float)target->width, (float)target->height, 0, 1 };
     vkCmdSetViewport(b->main, 0, 1, &viewport);
     v->rendering = true;
+    v->bound = target;
     v->base.gl_calls += 2;
     return true;
+}
+
+static struct vk_image *level_image(const struct gfx_level *level) {
+    return level ? (struct vk_image *)(uintptr_t)level->token : NULL;
 }
 
 static void scene_emit(struct pass *pass, const struct scene_quad *quad,
@@ -1285,7 +1313,7 @@ static void scene_emit(struct pass *pass, const struct scene_quad *quad,
         item->scissor[2] = scissor->x2;
         item->scissor[3] = scissor->y2;
     }
-    item->image = quad->texture ? texture_of(quad->texture)->image : NULL;
+    item->image = quad->texture ? texture_of(quad->texture)->image : level_image(quad->level);
     item->filter = quad->filter == SCENE_FILTER_NEAREST ? 1 : 0;
     item->blend = quad->blend;
     s->count++;
@@ -1293,7 +1321,7 @@ static void scene_emit(struct pass *pass, const struct scene_quad *quad,
 }
 
 void pass_scene(struct pass *pass, const struct scene_quad *quad) {
-    if (quad->kind == SCENE_TEXTURE && !quad->texture) return;
+    if (quad->kind == SCENE_TEXTURE && !quad->texture && !level_image(quad->level)) return;
     const struct region *clip = quad->clip ? quad->clip : pass->clip;
     if (!V(pass->r)->scene.count) V(pass->r)->scene.owner = pass;
     struct region both;
@@ -1332,6 +1360,7 @@ static void run_draw(struct vk *v, VkCommandBuffer cb, struct target_pipelines *
         r->gl_calls++;
     }
     VkDescriptorSet want = run->image ? run->image->set : v->dummy->set;
+    if (!want) return;
     if (*set != want) {
         vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, v->layout, 0, 1, &want, 0, NULL);
         *set = want;
@@ -1379,7 +1408,7 @@ void pass_flush(struct pass *pass) {
     for (size_t i = 0; i < count; i++) out[i] = s->items[i].in;
     r->uploads++;
     r->upload_bytes += count * sizeof(*out);
-    if (!rendering_begin(v)) return;
+    if (!rendering_begin(v, v->target)) return;
     VkCommandBuffer cb = v->open->main;
     vkCmdBindVertexBuffers(cb, 0, 1, &buffer, &offset);
     r->gl_calls++;
@@ -1646,7 +1675,8 @@ static bool formats_init(struct vk *v) {
             bool render = (features & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) &&
                 (features & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT) &&
                 (features & VK_FORMAT_FEATURE_TRANSFER_SRC_BIT) &&
-                (features & VK_FORMAT_FEATURE_TRANSFER_DST_BIT);
+                (features & VK_FORMAT_FEATURE_TRANSFER_DST_BIT) &&
+                (features & VK_FORMAT_FEATURE_BLIT_SRC_BIT);
             if (sample && modifier_usable(v, p->vk, modifier,
                     VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT))
                 format_set_add(&r->texture_formats, p->drm, modifier);
@@ -1749,7 +1779,26 @@ static bool layouts_init(struct vk *v) {
     }
     v->vert = shader_module(v, scene_vert, sizeof(scene_vert));
     v->frag = shader_module(v, scene_frag, sizeof(scene_frag));
-    return v->vert && v->frag;
+    v->blur_vert = shader_module(v, blur_vert, sizeof(blur_vert));
+    v->down_frag = shader_module(v, down_frag, sizeof(down_frag));
+    v->up_frag = shader_module(v, up_frag, sizeof(up_frag));
+    VkPushConstantRange push = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(struct blur_push) };
+    VkPipelineLayoutCreateInfo blur = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 2,
+        .pSetLayouts = sets,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &push,
+    };
+    if (!v->vert || !v->frag || !v->blur_vert || !v->down_frag || !v->up_frag ||
+            vkCreatePipelineLayout(v->dev, &blur, NULL, &v->blur_layout) != VK_SUCCESS)
+        return false;
+    v->down = pipeline_make(v, (VkFormat)LEVEL_FORMAT, 0, v->blur_vert, v->down_frag,
+        v->blur_layout, false);
+    v->up = pipeline_make(v, (VkFormat)LEVEL_FORMAT, 0, v->blur_vert, v->up_frag,
+        v->blur_layout, false);
+    if (!v->down || !v->up) tomoe_log(LOG_ERROR, "tomoe: vulkan blur pipelines failed");
+    return true;
 }
 
 struct render *gfx_alloc(void) {
@@ -1761,6 +1810,7 @@ struct render *gfx_alloc(void) {
 
 bool gfx_open(struct render *r) {
     struct vk *v = V(r);
+    current_vk = v;
     if (!device_init(v)) return false;
     if (!formats_init(v)) {
         tomoe_log(LOG_ERROR, "tomoe: vulkan reports no renderable dmabuf formats");
@@ -1777,7 +1827,7 @@ bool gfx_ready(struct render *r) {
         return false;
     }
     v->dummy = image_new(v, VK_FORMAT_R8G8B8A8_UNORM, 1, 1,
-        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, false);
     if (!v->dummy) return false;
     struct scene *s = &v->scene;
     s->items = malloc(SCENE_RESERVE * sizeof(*s->items));
@@ -1827,6 +1877,12 @@ void gfx_close(struct render *r) {
         if (v->sampler_pool) vkDestroyDescriptorPool(v->dev, v->sampler_pool, NULL);
         for (int i = 0; i < 2; i++)
             if (v->samplers[i]) vkDestroySampler(v->dev, v->samplers[i], NULL);
+        if (v->down) vkDestroyPipeline(v->dev, v->down, NULL);
+        if (v->up) vkDestroyPipeline(v->dev, v->up, NULL);
+        if (v->blur_layout) vkDestroyPipelineLayout(v->dev, v->blur_layout, NULL);
+        if (v->blur_vert) vkDestroyShaderModule(v->dev, v->blur_vert, NULL);
+        if (v->down_frag) vkDestroyShaderModule(v->dev, v->down_frag, NULL);
+        if (v->up_frag) vkDestroyShaderModule(v->dev, v->up_frag, NULL);
         if (v->vert) vkDestroyShaderModule(v->dev, v->vert, NULL);
         if (v->frag) vkDestroyShaderModule(v->dev, v->frag, NULL);
         if (v->layout) vkDestroyPipelineLayout(v->dev, v->layout, NULL);
@@ -1836,6 +1892,7 @@ void gfx_close(struct render *r) {
         vkDestroyDevice(v->dev, NULL);
     }
     if (v->instance) vkDestroyInstance(v->instance, NULL);
+    if (current_vk == v) current_vk = NULL;
     free(v->batches);
     free(v->pools);
     free(v->scene.items);
@@ -1880,7 +1937,7 @@ bool gfx_target_begin(struct render *r, struct buffer *buffer) {
     struct vk *v = V(r);
     struct vk_image *image = import(v, buffer);
     if (!image || !image->target) return false;
-    if (v->target != image) rendering_end(v);
+    if (v->bound && v->bound != image) rendering_end(v);
     v->target = image;
     return true;
 }
@@ -1928,34 +1985,197 @@ bool gfx_prog_reads(const struct gfx_prog *p, enum gfx_input input) {
 }
 
 bool gfx_level_ensure(struct gfx_level *level, int width, int height) {
-    return false;
+    struct vk *v = current_vk;
+    if (!v || width < 1 || height < 1) return false;
+    struct vk_image *image = level_image(level);
+    if (image && level->width == width && level->height == height) return true;
+    if (image) image_free(image);
+    level->token = 0;
+    image = image_new(v, (VkFormat)LEVEL_FORMAT, width, height, VK_IMAGE_USAGE_SAMPLED_BIT |
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT, true);
+    if (!image) {
+        *level = (struct gfx_level){0};
+        return false;
+    }
+    level->token = (uint64_t)(uintptr_t)image;
+    level->width = width;
+    level->height = height;
+    return true;
 }
 
 void gfx_level_release(struct gfx_level *level) {
+    struct vk_image *image = level_image(level);
+    if (image) image_free(image);
     *level = (struct gfx_level){0};
+}
+
+static bool clip_copy(int *sx, int *sy, int *dx, int *dy, int *w, int *h,
+        const struct vk_image *from, const struct vk_image *to) {
+    if (*sx < 0) { *dx -= *sx; *w += *sx; *sx = 0; }
+    if (*sy < 0) { *dy -= *sy; *h += *sy; *sy = 0; }
+    if (*dx < 0) { *sx -= *dx; *w += *dx; *dx = 0; }
+    if (*dy < 0) { *sy -= *dy; *h += *dy; *dy = 0; }
+    if (*sx + *w > from->width) *w = from->width - *sx;
+    if (*sy + *h > from->height) *h = from->height - *sy;
+    if (*dx + *w > to->width) *w = to->width - *dx;
+    if (*dy + *h > to->height) *h = to->height - *dy;
+    return *w > 0 && *h > 0;
+}
+
+static void blit(VkCommandBuffer cb, struct vk_image *from, struct vk_image *to,
+        int sx0, int sy0, int sx1, int sy1, int dx0, int dy0, int dx1, int dy1, VkFilter filter) {
+    VkImageBlit region = {
+        .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+        .srcOffsets = { { sx0, sy0, 0 }, { sx1, sy1, 1 } },
+        .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+        .dstOffsets = { { dx0, dy0, 0 }, { dx1, dy1, 1 } },
+    };
+    vkCmdBlitImage(cb, from->image, VK_IMAGE_LAYOUT_GENERAL, to->image, VK_IMAGE_LAYOUT_GENERAL,
+        1, &region, filter);
+}
+
+static VkCommandBuffer transfer_begin(struct vk *v) {
+    struct batch *b = batch(v);
+    if (!b) return VK_NULL_HANDLE;
+    rendering_end(v);
+    return b->main;
 }
 
 void gfx_level_blit(const struct gfx_level *from, const struct gfx_level *to,
         const struct box *samples, int count, int sx, int sy, int dx, int dy) {
+    struct vk *v = current_vk;
+    struct vk_image *a = level_image(from), *b = level_image(to);
+    if (!v || !a || !b || count <= 0) return;
+    VkCommandBuffer cb = transfer_begin(v);
+    if (!cb) return;
+    bool copied = false;
+    for (int i = 0; i < count; i++) {
+        int x0 = samples[i].x - sx, y0 = samples[i].y - sy;
+        int x1 = samples[i].x - dx, y1 = samples[i].y - dy;
+        int w = samples[i].width, h = samples[i].height;
+        if (!clip_copy(&x0, &y0, &x1, &y1, &w, &h, a, b)) continue;
+        blit(cb, a, b, x0, y0, x0 + w, y0 + h, x1, y1, x1 + w, y1 + h, VK_FILTER_NEAREST);
+        copied = true;
+    }
+    if (copied) full_barrier(v, cb);
 }
 
 bool gfx_level_spill(const struct gfx_level *from, struct gfx_level *to, int width, int height,
         const struct box *samples, int count, int dx, int dy) {
-    gfx_level_release(to);
-    return false;
+    bool ok = gfx_level_ensure(to, width, height);
+    if (ok) gfx_level_blit(from, to, samples, count, 0, 0, dx, dy);
+    else gfx_level_release(to);
+    return ok;
 }
 
 void gfx_blur_copy_in(struct render *r, struct buffer *buffer, struct gfx_level *level,
         struct box grown, const struct rect *copy, int copies, int shrink) {
+    struct vk *v = V(r);
+    struct vk_image *source = import(v, buffer), *dest = level_image(level);
+    if (!source || !dest || !image_use(v, source)) return;
+    VkCommandBuffer cb = transfer_begin(v);
+    if (!cb) return;
+    bool copied = false;
+    for (int i = 0; i < copies; i++) {
+        int dx0 = copy[i].x1, dy0 = copy[i].y1, dx1 = copy[i].x2, dy1 = copy[i].y2;
+        int sx0 = grown.x + (dx0 << shrink), sy0 = grown.y + (dy0 << shrink);
+        int sx1 = grown.x + (dx1 << shrink), sy1 = grown.y + (dy1 << shrink);
+        if (shrink) {
+            if (sx0 < 0 || sy0 < 0 || sx1 > source->width || sy1 > source->height ||
+                    dx0 < 0 || dy0 < 0 || dx1 > dest->width || dy1 > dest->height ||
+                    dx1 <= dx0 || dy1 <= dy0) continue;
+            blit(cb, source, dest, sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, VK_FILTER_LINEAR);
+            copied = true;
+            continue;
+        }
+        int w = dx1 - dx0, h = dy1 - dy0;
+        if (!clip_copy(&sx0, &sy0, &dx0, &dy0, &w, &h, source, dest)) continue;
+        blit(cb, source, dest, sx0, sy0, sx0 + w, sy0 + h, dx0, dy0, dx0 + w, dy0 + h,
+            VK_FILTER_NEAREST);
+        copied = true;
+    }
+    if (copied) full_barrier(v, cb);
+}
+
+static void sample_pass(struct vk *v, VkPipeline pipeline, struct vk_image *from,
+        struct vk_image *to, double offset, const struct region *where, float grain,
+        float vibrancy) {
+    int count = 0;
+    const struct rect *rects = region_rectangles(where, &count);
+    if (!count || !from->set || !rendering_begin(v, to)) return;
+    VkCommandBuffer cb = v->open->main;
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    VkDescriptorSet sets[2] = { from->set, v->sampler_sets[0] };
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, v->blur_layout, 0, 2, sets, 0, NULL);
+    struct blur_push push = { { 0.5f / (float)to->width, 0.5f / (float)to->height },
+        (float)offset, grain, vibrancy };
+    vkCmdPushConstants(cb, v->blur_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+    v->base.gl_calls += 3;
+    for (int i = 0; i < count; i++) {
+        int32_t x1 = rects[i].x1 < 0 ? 0 : rects[i].x1, y1 = rects[i].y1 < 0 ? 0 : rects[i].y1;
+        int32_t x2 = rects[i].x2 > to->width ? to->width : rects[i].x2;
+        int32_t y2 = rects[i].y2 > to->height ? to->height : rects[i].y2;
+        if (x2 <= x1 || y2 <= y1) continue;
+        VkRect2D scissor = { { x1, y1 }, { (uint32_t)(x2 - x1), (uint32_t)(y2 - y1) } };
+        vkCmdSetScissor(cb, 0, 1, &scissor);
+        vkCmdDraw(cb, 4, 1, 0, 0);
+        v->base.gl_calls += 2;
+    }
+    rendering_end(v);
 }
 
 void gfx_blur_passes(struct render *r, struct gfx_level *const *levels, int passes,
         double offset, const struct region *down, const struct region *up, float noise,
         float vibrancy) {
+    struct vk *v = V(r);
+    if (!v->down || !v->up) return;
+    for (int i = 1; i <= passes; i++) {
+        struct vk_image *from = level_image(levels[i - 1]), *to = level_image(levels[i]);
+        if (from && to) sample_pass(v, v->down, from, to, offset, &down[i], 0, 1);
+    }
+    for (int i = passes - 1; i >= 0; i--) {
+        struct vk_image *from = level_image(levels[i + 1]), *to = level_image(levels[i]);
+        if (from && to) sample_pass(v, v->up, from, to, offset, &up[i], i ? 0 : noise,
+            i ? 1 : vibrancy);
+    }
 }
 
 void gfx_backdrop_grab(struct render *r, struct buffer *buffer, const struct gfx_level *level,
         struct box need, const struct box *shown, const struct box *clear, int count) {
+    struct vk *v = V(r);
+    struct vk_image *source = import(v, buffer), *dest = level_image(level);
+    if (!source || !dest || !image_use(v, source)) return;
+    bool any = false;
+    for (int i = 0; i < count; i++) any = any || !box_empty(&clear[i]);
+    if (any && rendering_begin(v, dest)) {
+        for (int i = 0; i < count; i++) {
+            if (box_empty(&clear[i])) continue;
+            int x = clear[i].x, y = clear[i].y, w = clear[i].width, h = clear[i].height;
+            if (x < 0) { w += x; x = 0; }
+            if (y < 0) { h += y; y = 0; }
+            if (x + w > dest->width) w = dest->width - x;
+            if (y + h > dest->height) h = dest->height - y;
+            if (w <= 0 || h <= 0) continue;
+            VkClearAttachment attachment = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .colorAttachment = 0,
+                .clearValue = { .color = {{ 0, 0, 0, 1 }} },
+            };
+            VkClearRect rect = { { { x, y }, { (uint32_t)w, (uint32_t)h } }, 0, 1 };
+            vkCmdClearAttachments(v->open->main, 1, &attachment, 1, &rect);
+        }
+    }
+    if (shown) {
+        VkCommandBuffer cb = transfer_begin(v);
+        int sx = shown->x, sy = shown->y, dx = shown->x - need.x, dy = shown->y - need.y;
+        int w = shown->width, h = shown->height;
+        if (cb && clip_copy(&sx, &sy, &dx, &dy, &w, &h, source, dest)) {
+            blit(cb, source, dest, sx, sy, sx + w, sy + h, dx, dy, dx + w, dy + h, VK_FILTER_NEAREST);
+            full_barrier(v, cb);
+        }
+    }
+    rendering_end(v);
 }
 
 void gfx_shader_draw(struct pass *pass, struct gfx_prog *p, const struct gfx_shader_params *sp,
