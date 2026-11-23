@@ -53,9 +53,10 @@ static void *worker(void *data) {
         struct upload_job *job = slot(u, next++);
         int expect = UPLOAD_QUEUED;
         if (!atomic_compare_exchange_strong(&job->state, &expect, UPLOAD_WORKER)) continue;
-        uint64_t start = now_ns();
+        uint64_t start = timing_enabled ? now_ns() : 0;
         copy_job(job);
-        atomic_fetch_add_explicit(&u->stats.worker_ns, now_ns() - start, memory_order_relaxed);
+        if (timing_enabled)
+            atomic_fetch_add_explicit(&u->stats.worker_ns, now_ns() - start, memory_order_relaxed);
         atomic_fetch_add_explicit(&u->stats.worker_jobs, 1, memory_order_relaxed);
         atomic_store_explicit(&job->state, UPLOAD_DONE, memory_order_release);
         if (!atomic_exchange(&u->signaled, 1)) {

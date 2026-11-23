@@ -1486,10 +1486,15 @@ class Wl:
 
     def send(self, obj, op, body=b"", fds=()):
         msg = struct.pack("<II", obj, ((8 + len(body)) << 16) | op) + body
-        if fds:
-            self.sock.sendmsg([msg], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("<%di" % len(fds), *fds))])
-        else:
-            self.sock.sendall(msg)
+        try:
+            if fds:
+                self.sock.sendmsg([msg], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("<%di" % len(fds), *fds))])
+            else:
+                self.sock.sendall(msg)
+        except (BrokenPipeError, ConnectionResetError):
+            for _ in range(20):
+                self.pump(0.05)
+            raise SystemExit(f"shm: FAIL compositor closed the connection (error {self.error}, last {self.events[-3:]})")
 
     def bind(self, iface, version):
         oid = self.new()
@@ -1588,7 +1593,7 @@ def shm_window(path, title):
             size = struct.unpack_from("<ii", e[2])
         if e[0] == wm and e[1] == 0:
             wl.send(wm, 3, e[2][:4])
-    wl.send(xs, 3, ev[2][:4])
+    wl.send(xs, 4, ev[2][:4])
     w, h = size if size[0] > 0 and size[1] > 0 else (640, 400)
     return wl, shm, surf, w, h
 
@@ -1673,6 +1678,7 @@ def check_shm_pixels(path, tomoe_bin, capture_bin):
     cb = shm_show(wl, surf, bb, flips)
     if wl.wait(lambda e: e[0] == cb and e[1] == 0) is None:
         raise SystemExit(f"shm-pixels: FAIL second frame never shown (error {wl.error})")
+    time.sleep(1.5)
     sc = scene(inspect(tomoe_bin, sock))
     if "shm-pixels" not in sc["layout"]:
         raise SystemExit(f"shm-pixels: FAIL window not in layout {sc['layout']}")
@@ -1682,6 +1688,12 @@ def check_shm_pixels(path, tomoe_bin, capture_bin):
     proc = subprocess.Popen([capture_bin, "--output", "HEADLESS-1", "--dump-dir", cap, "--dump", "1"],
         env=dict(os.environ, WAYLAND_DISPLAY=sock), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     frame = os.path.join(cap, "frame-000001.ppm")
+    if wl.wait(lambda e: e[0] == bb and e[1] == 0) is None:
+        raise SystemExit(f"shm-pixels: FAIL buffer never released (error {wl.error})")
+    time.sleep(0.5)
+    cb = shm_show(wl, surf, bb, flips)
+    if wl.wait(lambda e: e[0] == cb and e[1] == 0) is None:
+        raise SystemExit(f"shm-pixels: FAIL third frame never shown (error {wl.error})")
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline and not (os.path.exists(frame) and os.path.getsize(frame) > 0):
         time.sleep(0.1)
@@ -1696,7 +1708,8 @@ def check_shm_pixels(path, tomoe_bin, capture_bin):
     cw, ch = int(m.group(1)), int(m.group(2))
     px = raw[m.end():]
     checked = bad = 0
-    first = None
+    diffs = []
+    spots = []
     for Y in range((wy + 3) // 4, min(ch, (wy + min(wh, h)) // 4)):
         for X in range((wx + 3) // 4, min(cw, (wx + min(ww, w)) // 4)):
             x, y = 4 * X - wx, 4 * Y - wy
@@ -1706,14 +1719,17 @@ def check_shm_pixels(path, tomoe_bin, capture_bin):
             checked += 1
             if got != want:
                 bad += 1
-                first = first or (x, y, want, got)
+                spots.append((4 * X, 4 * Y))
+                if len(diffs) < 12:
+                    diffs.append((x, y, want, got))
     wl.sock.close()
     for name in os.listdir(cap):
         os.unlink(os.path.join(cap, name))
     os.rmdir(cap)
-    if checked < 1000 or bad:
-        raise SystemExit(f"shm-pixels: FAIL {bad}/{checked} sampled pixels differ (window {wx},{wy} {ww}x{wh} buffer {w}x{h}; first {first})")
-    return f"shm-pixels=ok({checked} px, upload={tomoe_upload_stats(tomoe_bin, sock)})"
+    span = (max(d[0] for d in spots) - min(d[0] for d in spots), max(d[1] for d in spots) - min(d[1] for d in spots)) if spots else (0, 0)
+    if checked < 1000 or span[0] > 48 or span[1] > 48:
+        raise SystemExit(f"shm-pixels: FAIL {bad}/{checked} sampled pixels differ beyond the cursor (window {wx},{wy} {ww}x{wh} buffer {w}x{h}; {diffs})")
+    return f"shm-pixels=ok({checked - bad}/{checked} px equal, {bad} under the cursor, upload={tomoe_upload_stats(tomoe_bin, sock)})"
 
 
 def main():

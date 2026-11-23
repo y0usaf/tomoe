@@ -31,7 +31,7 @@ static const char *const channel_names[TIMING_CHANNELS] = {
     "frame-wait-render",
     "cursor-newest", "cursor-oldest", "loop-tick", "loop-tick-cpu", "loop-tick-frame",
     "loop-tick-idle", "loop-tick-commit", "loop-tick-noncommit", "loop-tick-noncommit-frame",
-    "loop-tick-noncommit-idle", "commit-request", "upload",
+    "loop-tick-noncommit-idle", "loop-tick-commit-frame", "loop-tick-commit-idle", "commit-request", "upload",
     "upload-bytes", "stage-dispatch", "stage-step-post", "stage-gestures", "stage-policy",
     "stage-bus", "stage-log", "stage-control", "stage-ipc", "stage-lisp-end", "stage-retire",
     "stage-outputs", "stage-scene", "stage-frame", "stage-flush", "stage-idle-frames",
@@ -139,6 +139,9 @@ void timing_turn_boundary(void *data, uint64_t sleep_ns, uint64_t wake_ns, uint6
             timing_add(current_turn.frame ? TIMING_LOOP_TICK_NONCOMMIT_FRAME :
                 TIMING_LOOP_TICK_NONCOMMIT_IDLE, current_turn.total);
             keep_worst(worst_noncommit, &worst_noncommit_count, &current_turn);
+        } else {
+            timing_add(current_turn.frame ? TIMING_LOOP_TICK_COMMIT_FRAME :
+                TIMING_LOOP_TICK_COMMIT_IDLE, current_turn.total);
         }
         for (int i = 0; i < STAGE_COUNT; i++)
             timing_add((enum timing_channel)(TIMING_STAGE_FIRST + i), current_turn.stages[i]);

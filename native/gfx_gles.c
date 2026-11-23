@@ -923,7 +923,7 @@ static void staging_poll(struct render *r, bool wait) {
             wait ? (GLuint64)1000000000 : 0);
         if (status == GL_TIMEOUT_EXPIRED) break;
         wait = false;
-        r->upload->gpu_done = g->staging.limit[0];
+        if (r->upload) r->upload->gpu_done = g->staging.limit[0];
         glDeleteSync(g->staging.fence[0]);
         g->staging.fences--;
         memmove(g->staging.fence, g->staging.fence + 1, sizeof(GLsync) * (size_t)g->staging.fences);
@@ -1032,6 +1032,10 @@ static void latch(struct render *r) {
         if (g->staging.fences == UPLOAD_FENCES) staging_poll(r, true);
         g->staging.fence[g->staging.fences] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
         g->staging.limit[g->staging.fences++] = u->alloc;
+    } else if (g->staging.fences) {
+        g->staging.limit[g->staging.fences - 1] = u->alloc;
+    } else {
+        u->gpu_done = u->alloc;
     }
     upload_latch_end(u);
     uint64_t want = upload_wanted(u);
