@@ -182,7 +182,7 @@ struct vk {
         struct chunk *chunk;
         uint64_t serial[UPLOAD_FENCES], limit[UPLOAD_FENCES];
         int fences;
-        bool failed;
+        bool failed, unfenced;
     } staging;
     bool rendering;
     struct scene scene;
@@ -1073,16 +1073,18 @@ static void staging_poll(struct vk *v, bool wait) {
     }
 }
 
+static void staging_settle(struct vk *v) {
+    submit(v, false);
+    vkDeviceWaitIdle(v->dev);
+    retire(v, true);
+    v->staging.fences = 0;
+    v->staging.unfenced = false;
+    if (v->base.upload) v->base.upload->gpu_done = v->base.upload->alloc;
+}
+
 static void staging_free(struct vk *v) {
-    while (v->staging.fences > 0) {
-        int before = v->staging.fences;
-        staging_poll(v, true);
-        if (v->staging.fences == before) {
-            vkDeviceWaitIdle(v->dev);
-            retire(v, true);
-            v->staging.fences = 0;
-        }
-    }
+    staging_poll(v, true);
+    if (v->staging.fences || v->staging.unfenced) staging_settle(v);
     if (!v->staging.chunk) return;
     chunk_free(v, v->staging.chunk);
     v->staging.chunk = NULL;
@@ -1113,40 +1115,20 @@ static void reclaim(void *data) {
     if (v->staging.fences) staging_poll(v, false);
 }
 
-static bool upload_rects(struct vk_texture *t, const void *data, size_t stride,
-        const struct rect *rects, int count);
-
-static bool direct(struct vk_texture *t, struct buffer *buffer, const struct rect *rects, int count) {
-    void *data;
-    uint32_t format;
-    size_t stride;
-    if (!buffer_begin_access(buffer, BUFFER_READ, &data, &format, &stride)) return false;
-    bool ok = format == t->format && stride % 4 == 0 && buffer->width == (int)t->base.width &&
-        buffer->height == (int)t->base.height;
-    if (ok) ok = upload_rects(t, data, stride, rects, count);
-    buffer_end_access(buffer);
-    return ok;
-}
-
-static void latch(struct vk *v) {
+static void latch_jobs(struct vk *v, bool ready) {
     struct render *r = &v->base;
     struct upload *u = r->upload;
-    if (!u || !upload_pending(u)) return;
+    if (!u || (!upload_pending(u) && (ready || !v->staging.unfenced))) return;
     uint64_t start = timing_enabled ? timing_now() : 0;
     staging_poll(v, false);
-    struct batch *b = batch(v);
-    if (!b) return;
-    rendering_end(v);
     bool used = false;
-    enum upload_take take;
     struct upload_job *job;
-    while ((job = upload_latch_next(u, &take))) {
+    while ((job = upload_latch_next(u, ready))) {
         struct vk_texture *t = wl_container_of(job->texture, t, base);
-        if (take == UPLOAD_DIRECT) {
-            direct(t, job->buffer, job->rects, job->count);
-            continue;
-        }
-        VkDeviceSize at = (VkDeviceSize)(job->dst - u->base);
+        struct batch *b = v->staging.chunk ? batch(v) : NULL;
+        if (!b) continue;
+        rendering_end(v);
+        VkDeviceSize at = (VkDeviceSize)(job->src - u->base);
         VkBufferImageCopy copies[UPLOAD_RECTS];
         uint32_t n = 0;
         for (int i = 0; i < job->count && i < UPLOAD_RECTS; i++) {
@@ -1168,18 +1150,32 @@ static void latch(struct vk *v) {
         r->gl_calls++;
         used = true;
     }
+    if (used && v->open) full_barrier(v, v->open->main);
+    if (ready) {
+        v->staging.unfenced |= used;
+        upload_latch_end(u, false);
+        if (timing_enabled) timing_add(TIMING_UPLOAD_LATCH, timing_now() - start);
+        return;
+    }
+    used |= v->staging.unfenced;
+    v->staging.unfenced = false;
     if (used) {
-        full_barrier(v, b->main);
-        if (v->staging.fences == UPLOAD_FENCES) staging_poll(v, true);
-        b = batch(v);
-        v->staging.serial[v->staging.fences] = b ? b->serial : v->serial;
-        v->staging.limit[v->staging.fences++] = u->alloc;
+        if (v->staging.fences == UPLOAD_FENCES) staging_poll(v, false);
+        struct batch *b = batch(v);
+        uint64_t serial = b ? b->serial : v->serial;
+        if (v->staging.fences == UPLOAD_FENCES) {
+            v->staging.serial[UPLOAD_FENCES - 1] = serial;
+            v->staging.limit[UPLOAD_FENCES - 1] = u->alloc;
+        } else {
+            v->staging.serial[v->staging.fences] = serial;
+            v->staging.limit[v->staging.fences++] = u->alloc;
+        }
     } else if (v->staging.fences) {
         v->staging.limit[v->staging.fences - 1] = u->alloc;
     } else {
         u->gpu_done = u->alloc;
     }
-    upload_latch_end(u);
+    upload_latch_end(u, true);
     uint64_t want = upload_wanted(u);
     if (want && upload_idle(u)) {
         staging_free(v);
@@ -1187,6 +1183,14 @@ static void latch(struct vk *v) {
         staging_alloc(v, want);
     }
     if (timing_enabled) timing_add(TIMING_UPLOAD_LATCH, timing_now() - start);
+}
+
+static void latch(struct vk *v) {
+    latch_jobs(v, false);
+}
+
+void gfx_upload_latch(struct render *r) {
+    latch_jobs(V(r), true);
 }
 
 static bool stage(struct vk_texture *t, struct buffer *buffer, const struct region *damage) {
@@ -2538,10 +2542,6 @@ void gfx_upload_trim(struct render *r) {
         v->spare = c->next;
         chunk_free(v, c);
     }
-}
-
-void gfx_upload_latch(struct render *r) {
-    (void)r;
 }
 
 void gfx_finish(struct render *r) {
