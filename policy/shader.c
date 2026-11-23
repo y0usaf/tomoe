@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -340,6 +341,7 @@ static bool job_start(struct shader_job *job) {
         return false;
     }
     if (pid == 0) {
+        prctl(PR_SET_PDEATHSIG, SIGKILL);
         struct rlimit cpu = { SHADER_CPU_SECONDS, SHADER_CPU_SECONDS + 1 };
         struct rlimit memory = { SHADER_MEMORY, SHADER_MEMORY };
         setrlimit(RLIMIT_CPU, &cpu);
