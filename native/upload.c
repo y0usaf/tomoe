@@ -248,7 +248,14 @@ struct upload_job *upload_latch_next(struct upload *u, enum upload_take *take) {
 
 void upload_latch_end(struct upload *u) {
     if (u->frame_bytes > u->peak) u->peak = u->frame_bytes;
+    if (u->frame_bytes > u->window_max) u->window_max = u->frame_bytes;
     u->frame_bytes = 0;
+    if (++u->window_latches == UPLOAD_WINDOW) {
+        u->window_peak = u->window_max;
+        u->calm = u->window_max <= u->size / 4;
+        u->window_max = 0;
+        u->window_latches = 0;
+    }
     release_jobs(u);
 }
 
@@ -277,12 +284,17 @@ void upload_set_staging(struct upload *u, unsigned char *base, uint64_t size) {
     u->base = base;
     u->size = size;
     u->alloc = u->gpu_done = 0;
+    u->peak = u->window_max = u->window_peak = 0;
+    u->window_latches = 0;
+    u->calm = false;
 }
 
 uint64_t upload_wanted(const struct upload *u) {
-    uint64_t want = (uint64_t)16 << 20;
-    while (want < 2 * u->peak) want <<= 1;
-    return want > u->size ? want : 0;
+    uint64_t need = u->size && u->peak > u->size ? u->peak : u->calm ? u->window_peak : 0;
+    uint64_t want = UPLOAD_MIN_STAGING;
+    while (want < need && want < UPLOAD_MAX_STAGING) want <<= 1;
+    if (!u->size || want > u->size || (u->calm && want < u->size)) return want;
+    return 0;
 }
 
 void upload_describe(FILE *out) {
@@ -292,22 +304,22 @@ void upload_describe(FILE *out) {
         return;
     }
     fprintf(out, "(:jobs %llu :staged-bytes %llu :stolen %llu :raced %llu :direct %llu :sync %llu "
-        ":faults %llu :grows %llu :worker-jobs %llu :worker-ns %llu :staging-bytes %llu)",
+        ":faults %llu :resizes %llu :worker-jobs %llu :worker-ns %llu :staging-bytes %llu)",
         (unsigned long long)u->stats.jobs, (unsigned long long)u->stats.staged_bytes,
         (unsigned long long)u->stats.stolen, (unsigned long long)u->stats.raced,
         (unsigned long long)u->stats.direct, (unsigned long long)u->stats.sync,
-        (unsigned long long)u->stats.faults, (unsigned long long)u->stats.grows,
+        (unsigned long long)u->stats.faults, (unsigned long long)u->stats.resizes,
         (unsigned long long)atomic_load(&u->stats.worker_jobs),
         (unsigned long long)atomic_load(&u->stats.worker_ns), (unsigned long long)u->size);
 }
 
 void upload_report(const struct upload *u) {
     tomoe_log(LOG_INFO, "tomoe: shm upload jobs %llu staged-mib %.1f stolen %llu raced %llu direct %llu "
-        "sync %llu faults %llu grows %llu worker-jobs %llu worker-ms %.1f staging-mib %llu",
+        "sync %llu faults %llu resizes %llu worker-jobs %llu worker-ms %.1f staging-mib %llu",
         (unsigned long long)u->stats.jobs, (double)u->stats.staged_bytes / 1048576.0,
         (unsigned long long)u->stats.stolen, (unsigned long long)u->stats.raced,
         (unsigned long long)u->stats.direct, (unsigned long long)u->stats.sync,
-        (unsigned long long)u->stats.faults, (unsigned long long)u->stats.grows,
+        (unsigned long long)u->stats.faults, (unsigned long long)u->stats.resizes,
         (unsigned long long)atomic_load(&u->stats.worker_jobs),
         (double)atomic_load(&u->stats.worker_ns) / 1e6, (unsigned long long)(u->size >> 20));
 }

@@ -1041,7 +1041,7 @@ static void latch(struct render *r) {
     uint64_t want = upload_wanted(u);
     if (want && upload_idle(u)) {
         staging_free(r);
-        u->stats.grows++;
+        u->stats.resizes++;
         staging_alloc(r, want);
     }
     if (timing_enabled) {

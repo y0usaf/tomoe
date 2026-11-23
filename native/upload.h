@@ -5,7 +5,10 @@
 #include <pthread.h>
 #include <stdatomic.h>
 
-enum { UPLOAD_JOBS = 256, UPLOAD_RECTS = 4, UPLOAD_FENCES = 8 };
+enum { UPLOAD_JOBS = 256, UPLOAD_RECTS = 4, UPLOAD_FENCES = 8, UPLOAD_WINDOW = 256 };
+
+#define UPLOAD_MIN_STAGING ((uint64_t)4 << 20)
+#define UPLOAD_MAX_STAGING ((uint64_t)32 << 20)
 
 enum upload_state { UPLOAD_QUEUED, UPLOAD_WORKER, UPLOAD_MAIN, UPLOAD_DONE };
 
@@ -25,7 +28,7 @@ struct upload_job {
 };
 
 struct upload_stats {
-    uint64_t jobs, staged_bytes, stolen, raced, direct, sync, faults, grows;
+    uint64_t jobs, staged_bytes, stolen, raced, direct, sync, faults, resizes;
     _Atomic uint64_t worker_ns, worker_jobs;
 };
 
@@ -36,7 +39,9 @@ struct upload {
     int fd;
     pthread_t thread;
     unsigned char *base;
-    uint64_t size, alloc, gpu_done, frame_bytes, peak;
+    uint64_t size, alloc, gpu_done, frame_bytes, peak, window_max, window_peak;
+    uint32_t window_latches;
+    bool calm;
     struct upload_stats stats;
 };
 
