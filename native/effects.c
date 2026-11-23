@@ -830,6 +830,17 @@ static void shader_marks_op(struct frame *f, struct op *op, struct box covered,
 
 void effect_shader(struct frame *f, struct gfx_prog *p, struct fbox area, double time, int frame,
         const struct shader_inputs *inputs) {
+    static int pinned = -1;
+    static double pinned_time;
+    if (pinned < 0) {
+        const char *text = tomoe_test_flag_value("shader-time");
+        pinned = text != NULL;
+        if (text) pinned_time = strtod(text, NULL);
+    }
+    if (pinned) {
+        time = pinned_time;
+        frame = 0;
+    }
     struct fbox box = local_box(f, area);
     struct fbox drawn = inputs && inputs->part ? local_box(f, *inputs->part) : box;
     double mouse_x = !gfx_prog_reads(p, GFX_IN_MOUSE) ? 0 : f->server->pointer_x - f->x - box.x;
