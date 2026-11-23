@@ -911,11 +911,47 @@ static double surface_clock(const struct tomoe *s, const struct ui_surface *surf
     return shader_clock_now(s, now);
 }
 
+static struct ui_asset *shown_backdrop(const struct ui_surface *surface);
+static bool surface_matches_output(const struct ui_surface *surface,
+    const struct output *output, const struct presentation *plan);
+static void schedule_step(struct output *o, double due, double now);
+
+static bool shader_occluded_on(const struct output *o, const struct ui_surface *surface) {
+    if (!o || !o->server || !surface) return false;
+    const struct oplist *ops = &o->ops;
+    if (!ops->valid || ops->lost || ops->ui_epoch != o->server->ui_epoch) return false;
+    bool seen = false;
+    for (size_t i = 0; i < ops->len; i++) {
+        const struct op *op = &ops->ops[i];
+        if (op->kind != OP_SHADER || op->ui != surface) continue;
+        seen = true;
+        if (!op->hidden) return false;
+    }
+    return seen;
+}
+
+static bool output_needs_shader_resume(const struct output *o) {
+    if (!o || !o->server || !output_is_active(o)) return false;
+    const struct tomoe *s = o->server;
+    if (!s->ui) return false;
+    for (size_t i = 0; i < s->ui->count; i++) {
+        const struct ui_surface *surface = s->ui->surfaces[i];
+        if (surface->shader_clocked || !surface_matches_output(surface, o, NULL)) continue;
+        if (surface->layer == UI_LAYER_SCREENSHOT && !screenshot_on(o)) continue;
+        if (!surface->trail_on) {
+            struct ui_asset *shown = shown_backdrop(surface);
+            if (!shown || !ui_asset_shader(shown, NULL)) continue;
+        }
+        if (s->scene_dirty || !shader_occluded_on(o, surface)) return true;
+    }
+    return false;
+}
+
 void ui_hold_resume(struct tomoe *s) {
     if (!s || !s->shader_holding) return;
     struct output *o;
     wl_list_for_each(o, &s->outputs, link)
-        if (output_is_active(o)) screen_schedule_animation(o->screen);
+        if (output_needs_shader_resume(o)) screen_schedule_animation(o->screen);
 }
 
 static void shader_hold_advance(struct tomoe *s, double now) {
@@ -1671,10 +1707,10 @@ static bool background_moving(struct tomoe *s, const struct ui_surface *surface,
     return last && now - last->t <= surface->idle;
 }
 
-bool ui_animate(struct tomoe *s, double now) {
+bool ui_animate_step(struct tomoe *s, double now) {
     if (!s || !s->ui) return false;
     shader_hold_advance(s, now);
-    bool active = false;
+    bool moved = false;
     for (size_t i = 0; i < s->ui->count; i++) {
         struct ui_surface *surface = s->ui->surfaces[i];
         bool pending = surface->move.active;
@@ -1687,10 +1723,50 @@ bool ui_animate(struct tomoe *s, double now) {
         if (!(surface->attach_axes & 2)) attached_y = 0;
         surface->offset_x = (int)lround(surface->slide_x + attached_x);
         surface->offset_y = (int)lround(surface->slide_y + attached_y);
-        active |= pending || surface->move.active || attached_x != 0 || attached_y != 0;
-        if (surface->fps <= 0 && background_moving(s, surface, now)) active = true;
+        moved |= pending || surface->move.active || attached_x != 0 || attached_y != 0;
     }
-    if (s->shader_lifting) active = true;
+    return moved;
+}
+
+bool ui_animate_active(struct output *o, double now, bool moved, bool track, bool recorded) {
+    struct tomoe *s = o ? o->server : NULL;
+    if (!s || !s->ui) return false;
+    bool active = moved;
+    bool lifting_needed = false;
+    for (size_t i = 0; i < s->ui->count; i++) {
+        struct ui_surface *surface = s->ui->surfaces[i];
+        if (!surface_matches_output(surface, o, NULL)) continue;
+        bool occluded = recorded && shader_occluded_on(o, surface);
+        if (surface->fps <= 0 && !occluded && background_moving(s, surface, now))
+            active = true;
+        if (track && surface->fps > 0 && !occluded && !lock_active(s) &&
+                !(surface->layer == UI_LAYER_SCREENSHOT && !screenshot_on(o)) &&
+                !shader_still(s, surface, now)) {
+            bool held = s->shader_holding && !surface->shader_clocked;
+            if (!held) {
+                double epoch = 0;
+                struct gfx_prog *shader = ui_asset_shader(shown_backdrop(surface), &epoch);
+                double clock = surface_clock(s, surface, now);
+                double shift = surface->shader_clocked ? 0 : s->shader_shift;
+                if (surface->shader_clocked) epoch = surface->shader_clock;
+                if (shader && !shader_settled(surface, clock)) {
+                    double tick = floor((clock - epoch) * surface->fps);
+                    schedule_step(o, epoch + (tick + 1) / surface->fps + shift, now);
+                }
+                if (surface->trail_on) {
+                    double tick = floor(clock * surface->fps);
+                    schedule_step(o, (tick + 1) / surface->fps + shift, now);
+                }
+            }
+        }
+        if (s->shader_lifting && !surface->shader_clocked && !occluded &&
+                !(surface->layer == UI_LAYER_SCREENSHOT && !screenshot_on(o)) &&
+                !shader_settled(surface, now) && !shader_still(s, surface, now)) {
+            if (surface->trail_on || ui_asset_shader(shown_backdrop(surface), NULL))
+                lifting_needed = true;
+        }
+    }
+    if (lifting_needed) active = true;
     return active;
 }
 
@@ -1701,6 +1777,7 @@ void ui_publish(struct tomoe *s) {
     struct ui_set *old = s->ui;
     slide_from(s, old, candidate);
     s->ui = candidate;
+    s->ui_epoch++;
     ui_set_finish(old);
 }
 
@@ -1941,15 +2018,13 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
         if (shader || surface->trail_on) {
             bool still = shader_still(o->server, surface, now);
             struct tomoe *server = o->server;
-            bool held = server->shader_holding && !surface->shader_clocked;
             double clock = surface_clock(server, surface, now);
-            double shift = surface->shader_clocked ? 0 : server->shader_shift;
             struct fbox area = { left, top, surface->width, surface->height };
             float windows[4 * UI_SHADER_WINDOWS];
             float selection[16], marks_box[4];
             struct shader_inputs inputs = { surface->shader_data, surface->shader_data_count,
                 windows, surface->shader_window_count, NULL, NULL, NULL, NULL,
-                surface->shader_opaque, NULL, effects_frost_stamp(o->server), NULL, 0 };
+                surface->shader_opaque, NULL, effects_frost_stamp(o->server), NULL, 0, surface };
             if (layer == UI_LAYER_SCREENSHOT) {
                 struct texture *marks;
                 struct fbox marks_at;
@@ -1989,8 +2064,6 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
                     double tick = floor((clock - epoch) * surface->fps);
                     time = tick / surface->fps;
                     frame = (int)fmin(tick, INT_MAX);
-                    if (!held)
-                        schedule_step(o, epoch + (tick + 1) / surface->fps + shift, now);
                 } else {
                     time = clock - epoch;
                 }
@@ -2000,11 +2073,6 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
             }
             if (!still && surface->trail_on) {
                 effect_trail(f, area, &surface->trail);
-                if (surface->fps > 0) {
-                    double tick = floor(clock * surface->fps);
-                    if (!held)
-                        schedule_step(o, (tick + 1) / surface->fps + shift, now);
-                }
             }
         }
         if (surface->canvas && surface->canvas->texture)

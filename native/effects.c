@@ -889,9 +889,10 @@ void effect_shader(struct frame *f, struct gfx_prog *p, struct fbox area, double
     size_t before = pass_record_count(f->pass);
     if (!beneath && !frosted) {
         if (pass_record(f->pass, NULL, covered, (struct box){0}, params, used)) {
-            if (marks) shader_marks_op(f, pass_recorded(f->pass, before), covered, inputs);
-            struct op *op = inputs && inputs->opaque ? pass_recorded(f->pass, before) : NULL;
-            if (op) {
+            struct op *op = pass_recorded(f->pass, before);
+            if (op && inputs) op->ui = inputs->ui;
+            if (marks) shader_marks_op(f, op, covered, inputs);
+            if (op && inputs && inputs->opaque) {
                 int x0 = (int)ceil(drawn.x), y0 = (int)ceil(drawn.y);
                 cover_rect(f, op, x0, y0, (int)floor(drawn.x + drawn.width) - x0,
                     (int)floor(drawn.y + drawn.height) - y0);
@@ -907,7 +908,9 @@ void effect_shader(struct frame *f, struct gfx_prog *p, struct fbox area, double
         if (pass_record_blur(f->pass, covered, reach, (struct box){0}, NULL, params, used,
                 ++f->blurs,
                 seed, planes_cross(f, reach) ? 0 : sizeof(seed) / sizeof(seed[0]))) {
-            if (marks) shader_marks_op(f, pass_recorded(f->pass, before), covered, inputs);
+            struct op *op = pass_recorded(f->pass, before);
+            if (op && inputs) op->ui = inputs->ui;
+            if (marks) shader_marks_op(f, op, covered, inputs);
             return;
         }
     }

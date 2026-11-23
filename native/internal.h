@@ -209,7 +209,7 @@ struct op {
     int kind, blur;
     bool mapped, hidden, cached;
 };
-struct oplist { struct op *ops; size_t len, cap; struct box bounds; bool lost, valid; };
+struct oplist { struct op *ops; size_t len, cap; struct box bounds; uint64_t ui_epoch; bool lost, valid; };
 struct op_clip {
     struct region region;
     const struct region *saved;
@@ -697,6 +697,7 @@ struct shader_inputs {
     uint64_t frost_stamp;
     const struct screenshot *marks_owner;
     uint64_t marks_seq;
+    const struct ui_surface *ui;
 };
 uint64_t effects_frost_stamp(struct tomoe *s);
 void effect_shader(struct frame *f, struct gfx_prog *p, struct fbox area, double time, int frame,
@@ -1230,6 +1231,7 @@ struct tomoe {
     struct wl_event_source *grab_release;
     bool running, stopping, failed, configuring_outputs, scene_dirty, outputs_deferred;
     struct ui_set *ui;
+    uint64_t ui_epoch;
     struct ui_pointer *ui_pointers;
     struct ui_asset_pool *ui_assets;
     uint64_t next_ui_callback_id, ui_rasterizations;

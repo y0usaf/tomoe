@@ -639,6 +639,7 @@ static bool scene_record_ops(struct output *o, const struct frame *data, bool lo
         *complete = false;
         return false;
     }
+    o->spare_ops.ui_epoch = o->server->ui_epoch;
     draw_scene(o, &record, NULL, locked, false, true);
     bool scene_complete = pass_submit(record.pass) &&
         oplist_damage(&o->ops, &o->spare_ops, changed);
@@ -740,12 +741,12 @@ static bool render_scene_prepared(struct output *o, struct buffer *buffer,
         .focused = plan ? plan->focused : o->server->focused };
     transform_coords(data.transform, &data.width, &data.height);
     bool locked = lock_active(o->server);
+    bool moving = false, ui_moved = false;
     if (!pre_recorded) {
-        bool moving = windows_animate(o->server, data.sample);
-        if (ui_animate(o->server, data.sample)) moving = true;
+        moving = windows_animate(o->server, data.sample);
+        ui_moved = ui_animate_step(o->server, data.sample);
         if (screenshot_animate(o->server, data.sample)) moving = true;
         if (track && cursor_motion_advance(o->server, animation_now())) moving = true;
-        o->animating = o->animating || moving;
     }
     struct region changed, clip;
     region_init(&changed);
@@ -758,6 +759,8 @@ static bool render_scene_prepared(struct output *o, struct buffer *buffer,
             o->ops.len + o->cursor_ops.len);
     } else {
         partial = track && scene_damage(o, &data, locked, &changed, &clip, &recorded);
+        if (ui_animate_active(o, data.sample, ui_moved, track, recorded)) moving = true;
+        o->animating = o->animating || moving;
     }
     size_t slot = track ? ring_slot(&o->ring, buffer) : RING_SLOTS;
     uint64_t plane_shape = planes && planes->count ? (planes->shape | 1) : 0;
@@ -924,25 +927,26 @@ bool render_presentation(struct output *o, struct screen_state *state,
         transform_coords(probe.transform, &probe.width, &probe.height);
         bool locked = lock_active(s);
         bool moving = windows_animate(s, probe.sample);
-        if (ui_animate(s, probe.sample)) moving = true;
+        bool ui_moved = ui_animate_step(s, probe.sample);
         if (screenshot_animate(s, probe.sample)) moving = true;
         if (cursor_motion_advance(s, animation_now())) moving = true;
-        o->animating = moving;
-        if (scene_record_ops(o, &probe, locked, &pre_changed, &pre_complete)) {
+        if (scene_record_ops(o, &probe, locked, &pre_changed, &pre_complete))
             pre_recorded = true;
-            if (!moving && pre_complete && !region_not_empty(&pre_changed)) {
-                o->frames++;
-                o->reused++;
-                o->reused_present = true;
-                o->drawn.age = 0;
-                o->drawn.pixels = 0;
-                o->drawn.ops = 0;
-                screen_state_set_buffer(state, o->drawn_buffer && ring_slot(&o->ring, o->drawn_buffer) < RING_SLOTS ? o->drawn_buffer : o->presented[0]);
-                if (s->render_timeline && fenced(output) && o->presented_point)
-                    screen_state_set_wait_timeline(state, s->render_timeline, o->presented_point);
-                region_fini(&pre_changed);
-                return true;
-            }
+        if (ui_animate_active(o, probe.sample, ui_moved, true, pre_recorded && pre_complete))
+            moving = true;
+        o->animating = moving;
+        if (pre_recorded && !moving && pre_complete && !region_not_empty(&pre_changed)) {
+            o->frames++;
+            o->reused++;
+            o->reused_present = true;
+            o->drawn.age = 0;
+            o->drawn.pixels = 0;
+            o->drawn.ops = 0;
+            screen_state_set_buffer(state, o->drawn_buffer && ring_slot(&o->ring, o->drawn_buffer) < RING_SLOTS ? o->drawn_buffer : o->presented[0]);
+            if (s->render_timeline && fenced(output) && o->presented_point)
+                screen_state_set_wait_timeline(state, s->render_timeline, o->presented_point);
+            region_fini(&pre_changed);
+            return true;
         }
     }
     struct buffer *buffer = ring == &o->ring ? ring_take(ring) : ring_acquire(s, ring);
