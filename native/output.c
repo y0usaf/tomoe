@@ -502,9 +502,13 @@ const char *tomoe_frames(struct tomoe *s) {
         effects_counters(s, &blurs, &reused);
         fprintf(out, "(:gl-calls %" PRIu64 " :quads %" PRIu64 " :runs %" PRIu64
             " :fragments %" PRIu64 " :uploads %" PRIu64 " :upload-bytes %" PRIu64
-            " :blurs %" PRIu64 " :blurs-reused %" PRIu64 ")",
+            " :blurs %" PRIu64 " :blurs-reused %" PRIu64,
             counters.gl_calls, counters.quads, counters.runs, counters.fragments,
             counters.uploads, counters.upload_bytes, blurs, reused);
+        if (counters.gpu_timestamps)
+            fprintf(out, " :gpu-frames %" PRIu64 " :gpu-ns %" PRIu64,
+                counters.gpu_frames, counters.gpu_ns);
+        fputc(')', out);
     }
     fputc(')', out);
     bool success = !ferror(out);

@@ -3,6 +3,7 @@
 #include "upload.h"
 #include <dirent.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <linux/dma-buf.h>
 #include <sys/ioctl.h>
 #include <poll.h>
@@ -95,8 +96,10 @@ struct batch {
     VkDeviceSize staged;
     struct vk_image **acquired;
     size_t acquired_len, acquired_cap;
+    VkQueryPool queries;
+    int64_t submit_ns;
     uint64_t serial;
-    bool busy;
+    bool busy, has_ts, is_frame;
 };
 
 struct scene_instance {
@@ -244,6 +247,10 @@ struct vk {
         bool failed, unfenced;
     } staging;
     bool rendering;
+    bool timestamps, in_target;
+    double ts_period;
+    uint32_t ts_bits;
+    FILE *ts_log;
     struct scene scene;
 };
 
@@ -463,6 +470,12 @@ static void graves_sweep(struct vk *v, bool all) {
     }
 }
 
+static int64_t ts_now_ns(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (int64_t)now.tv_sec * 1000000000LL + now.tv_nsec;
+}
+
 static void batch_recycle(struct vk *v, struct batch *b) {
     size_t spare_count = 0;
     for (struct chunk *s = v->spare; s; s = s->next) spare_count++;
@@ -481,6 +494,9 @@ static void batch_recycle(struct vk *v, struct batch *b) {
     b->acquired_len = 0;
     b->wait_count = 0;
     b->staged = 0;
+    b->has_ts = false;
+    b->is_frame = false;
+    b->submit_ns = 0;
 }
 
 static void device_lost(struct vk *v, const char *where) {
@@ -514,6 +530,20 @@ static void retire(struct vk *v, bool wait) {
             continue;
         }
         if (status != VK_SUCCESS) continue;
+        if (b->has_ts && b->is_frame && b->queries && !v->lost) {
+            uint64_t ts[2] = { 0, 0 };
+            if (vkGetQueryPoolResults(v->dev, b->queries, 0, 2, sizeof(ts), ts, sizeof(ts[0]),
+                    VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS) {
+                uint64_t mask = v->ts_bits >= 64 ? UINT64_MAX : ((1ULL << v->ts_bits) - 1);
+                uint64_t ticks = (ts[1] - ts[0]) & mask;
+                uint64_t ns = (uint64_t)llround((double)ticks * v->ts_period);
+                v->base.gpu_frames++;
+                v->base.gpu_ns += ns;
+                if (v->ts_log)
+                    fprintf(v->ts_log, "%" PRId64 " %" PRIu64 "\n",
+                        b->submit_ns ? b->submit_ns : ts_now_ns(), ns);
+            }
+        }
         vkResetFences(v->dev, 1, &b->fence);
         b->busy = false;
         if (b->serial > v->done) v->done = b->serial;
@@ -551,11 +581,21 @@ static bool batch_init(struct vk *v, struct batch *b) {
         if (vkCreateSemaphore(v->dev, &info, NULL, &b->signal) != VK_SUCCESS)
             b->signal = VK_NULL_HANDLE;
     }
+    if (v->timestamps) {
+        VkQueryPoolCreateInfo qp = {
+            .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+            .queryType = VK_QUERY_TYPE_TIMESTAMP,
+            .queryCount = 2,
+        };
+        if (vkCreateQueryPool(v->dev, &qp, NULL, &b->queries) != VK_SUCCESS)
+            b->queries = VK_NULL_HANDLE;
+    }
     return true;
 }
 
 static void batch_finish(struct vk *v, struct batch *b) {
     batch_recycle(v, b);
+    if (b->queries) vkDestroyQueryPool(v->dev, b->queries, NULL);
     VkCommandBuffer buffers[2] = { b->pre, b->main };
     vkFreeCommandBuffers(v->dev, v->command_pool, 2, buffers);
     vkDestroyFence(v->dev, b->fence, NULL);
@@ -607,7 +647,13 @@ static struct batch *batch(struct vk *v) {
     if (vkBeginCommandBuffer(b->pre, &begin) != VK_SUCCESS ||
             vkBeginCommandBuffer(b->main, &begin) != VK_SUCCESS) return NULL;
     b->serial = ++v->serial;
+    b->is_frame = v->in_target;
     v->open = b;
+    if (v->timestamps && b->queries) {
+        vkCmdResetQueryPool(b->pre, b->queries, 0, 2);
+        vkCmdWriteTimestamp2(b->pre, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, b->queries, 0);
+        b->has_ts = true;
+    }
     return b;
 }
 
@@ -742,6 +788,10 @@ static int submit(struct vk *v, bool export) {
     if (!b) return -1;
     rendering_end(v);
     release_foreign(v, b);
+    if (b->has_ts && b->queries) {
+        vkCmdWriteTimestamp2(b->main, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, b->queries, 1);
+        b->submit_ns = ts_now_ns();
+    }
     v->open = NULL;
     if (vkEndCommandBuffer(b->pre) != VK_SUCCESS || vkEndCommandBuffer(b->main) != VK_SUCCESS) {
         tomoe_log(LOG_ERROR, "tomoe: vulkan cannot end a command buffer");
@@ -2408,8 +2458,12 @@ static bool device_init(struct vk *v) {
     if (!family) return false;
     vkGetPhysicalDeviceQueueFamilyProperties(v->phys, &families, family);
     v->family = UINT32_MAX;
+    uint32_t ts_bits = 0;
     for (uint32_t i = 0; i < families && v->family == UINT32_MAX; i++)
-        if (family[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) v->family = i;
+        if (family[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+            v->family = i;
+            ts_bits = family[i].timestampValidBits;
+        }
     free(family);
     if (v->family == UINT32_MAX) return false;
     float priority = 1;
@@ -2480,6 +2534,31 @@ static bool device_init(struct vk *v) {
         .queueFamilyIndex = v->family,
     };
     if (vkCreateCommandPool(v->dev, &pool, NULL, &v->command_pool) != VK_SUCCESS) return false;
+    const char *ts_env = getenv("TOMOE_GPU_TIMESTAMPS");
+    if (ts_env && *ts_env && strcmp(ts_env, "0") != 0) {
+        if (ts_bits > 0 && props.limits.timestampPeriod > 0) {
+            v->timestamps = true;
+            v->ts_bits = ts_bits;
+            v->ts_period = (double)props.limits.timestampPeriod;
+            v->base.gpu_timestamps = true;
+            if (ts_env[0] == '/') {
+                int fd = open(ts_env, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+                if (fd >= 0) {
+                    v->ts_log = fdopen(fd, "a");
+                    if (!v->ts_log) close(fd);
+                    else {
+                        setvbuf(v->ts_log, NULL, _IOLBF, 0);
+                        fprintf(v->ts_log, "# vulkan %s period=%.6f bits=%u\n",
+                            props.deviceName, v->ts_period, v->ts_bits);
+                    }
+                }
+            }
+            tomoe_log(LOG_INFO, "tomoe: vulkan GPU timestamps enabled (period %.3f ns, %u bits)",
+                v->ts_period, v->ts_bits);
+        } else {
+            tomoe_log(LOG_WARNING, "tomoe: vulkan device does not support GPU timestamps");
+        }
+    }
     tomoe_log(LOG_INFO, "tomoe: vulkan renderer on %s (%s)", props.deviceName,
         v->sync_fd ? "sync_file fences" : "no fence export");
     return true;
@@ -3290,6 +3369,10 @@ void gfx_close(struct render *r) {
             (unsigned long long)v->imports_made);
         vkDeviceWaitIdle(v->dev);
         retire(v, true);
+        if (v->ts_log) {
+            fclose(v->ts_log);
+            v->ts_log = NULL;
+        }
         staging_free(v);
         level_pool_drain(v);
         if (v->dummy) image_free(v->dummy);
@@ -3421,6 +3504,13 @@ void gfx_finish(struct render *r) {
     finish(V(r));
 }
 
+void gfx_retire(struct render *r) {
+    struct vk *v = V(r);
+    if (!v->dev) return;
+    retire(v, false);
+    if (v->ts_log) fflush(v->ts_log);
+}
+
 int gfx_fence_export(struct render *r) {
     struct vk *v = V(r);
     if (!v->sync_fd) return -1;
@@ -3443,6 +3533,8 @@ static bool target_bind(struct vk *v, struct buffer *buffer) {
 bool gfx_target_begin(struct render *r, struct buffer *buffer) {
     struct vk *v = V(r);
     if (!target_bind(v, buffer)) return false;
+    v->in_target = true;
+    if (v->open) v->open->is_frame = true;
     latch(v);
     return true;
 }
@@ -3451,6 +3543,7 @@ void gfx_target_end(struct render *r) {
     struct vk *v = V(r);
     rendering_end(v);
     v->target = NULL;
+    v->in_target = false;
 }
 
 void gfx_target_viewport(struct render *r, struct buffer *buffer) {

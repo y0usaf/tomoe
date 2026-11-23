@@ -896,9 +896,11 @@ void render_usage(struct render *r, size_t *textures, uint64_t *texture_bytes, s
 }
 
 void render_counters(struct render *r, struct render_counters *out) {
+    gfx_retire(r);
     *out = (struct render_counters){ .gl_calls = r->gl_calls, .quads = r->quads,
         .runs = r->runs, .fragments = r->fragments, .uploads = r->uploads,
-        .upload_bytes = r->upload_bytes };
+        .upload_bytes = r->upload_bytes, .gpu_timestamps = r->gpu_timestamps,
+        .gpu_frames = r->gpu_frames, .gpu_ns = r->gpu_ns };
 }
 
 static void render_free(struct render *r) {

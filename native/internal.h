@@ -231,6 +231,8 @@ bool render_has_timeline(struct render *r);
 void render_usage(struct render *r, size_t *textures, uint64_t *texture_bytes, size_t *images);
 struct render_counters {
     uint64_t gl_calls, quads, runs, fragments, uploads, upload_bytes;
+    bool gpu_timestamps;
+    uint64_t gpu_frames, gpu_ns;
 };
 void render_counters(struct render *r, struct render_counters *out);
 const struct format_set *render_texture_formats(struct render *r);

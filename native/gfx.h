@@ -44,6 +44,8 @@ struct render {
     struct pass passes[PASS_POOL];
     bool pass_used[PASS_POOL];
     uint64_t gl_calls, quads, runs, fragments, uploads, upload_bytes;
+    bool gpu_timestamps;
+    uint64_t gpu_frames, gpu_ns;
     char *node;
     struct upload *upload;
 };
@@ -110,6 +112,7 @@ size_t gfx_image_count(struct render *r);
 void gfx_current(struct render *r);
 void gfx_flush(struct render *r);
 void gfx_finish(struct render *r);
+void gfx_retire(struct render *r);
 void gfx_upload_trim(struct render *r);
 bool gfx_idle_trim(struct render *r);
 void gfx_upload_latch(struct render *r);
