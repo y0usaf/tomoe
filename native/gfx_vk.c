@@ -129,7 +129,7 @@ struct vk {
     size_t batch_count;
     struct batch *open;
     uint64_t serial, done;
-    uint64_t chunks_made, chunk_bytes, images_made, fence_waits;
+    uint64_t chunks_made, chunk_bytes, images_made, fence_waits, levels_made, imports_made;
     struct grave *graves;
     struct chunk *spare;
     VkDescriptorSetLayout image_layout, sampler_layout;
@@ -856,6 +856,7 @@ static struct vk_image *import(struct vk *v, struct buffer *buffer) {
         free(image);
         return NULL;
     }
+    v->imports_made++;
     addon_init(&image->addon, &buffer->addons, &v->base, import_addon_destroy);
     wl_list_insert(&v->images, &image->link);
     return image;
@@ -1865,9 +1866,10 @@ void gfx_close(struct render *r) {
     struct vk *v = V(r);
     if (v->dev) {
         tomoe_log(LOG_ERROR, "tomoe: vulkan staging chunks %llu (%llu MiB), images %llu, batches %zu, "
-            "batch waits %llu", (unsigned long long)v->chunks_made,
+            "batch waits %llu, levels %llu, imports %llu", (unsigned long long)v->chunks_made,
             (unsigned long long)(v->chunk_bytes >> 20), (unsigned long long)v->images_made,
-            v->batch_count, (unsigned long long)v->fence_waits);
+            v->batch_count, (unsigned long long)v->fence_waits, (unsigned long long)v->levels_made,
+            (unsigned long long)v->imports_made);
         vkDeviceWaitIdle(v->dev);
         retire(v, true);
         if (v->dummy) image_free(v->dummy);
@@ -2008,6 +2010,7 @@ bool gfx_level_ensure(struct gfx_level *level, int width, int height) {
         return false;
     }
     level->token = (uint64_t)(uintptr_t)image;
+    v->levels_made++;
     level->width = width;
     level->height = height;
     return true;
