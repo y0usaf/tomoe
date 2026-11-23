@@ -69,7 +69,7 @@ struct gfx {
         GLsync fence[UPLOAD_FENCES];
         uint64_t limit[UPLOAD_FENCES];
         int fences;
-        bool failed;
+        bool failed, unfenced;
     } staging;
 };
 

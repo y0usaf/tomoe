@@ -936,13 +936,14 @@ static void staging_settle(struct render *r) {
     glFinish();
     for (int i = 0; i < g->staging.fences; i++) glDeleteSync(g->staging.fence[i]);
     g->staging.fences = 0;
+    g->staging.unfenced = false;
     if (r->upload) r->upload->gpu_done = r->upload->alloc;
 }
 
 static void staging_free(struct render *r) {
     struct gfx *g = G(r);
     staging_poll(r, true);
-    if (g->staging.fences) staging_settle(r);
+    if (g->staging.fences || g->staging.unfenced) staging_settle(r);
     if (!g->staging.pbo) return;
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, g->staging.pbo);
     glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
@@ -1008,8 +1009,8 @@ static void reclaim(void *data) {
 
 static void latch_jobs(struct render *r, bool ready) {
     struct upload *u = r->upload;
-    if (!upload_pending(u)) return;
     struct gfx *g = G(r);
+    if (!upload_pending(u) && (ready || !g->staging.unfenced)) return;
     uint64_t start = timing_enabled ? timing_now() : 0;
     current(r);
     staging_poll(r, false);
@@ -1031,6 +1032,14 @@ static void latch_jobs(struct render *r, bool ready) {
     }
     if (used) glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
     glBindTexture(GL_TEXTURE_2D, 0);
+    if (ready) {
+        g->staging.unfenced |= used;
+        upload_latch_end(u, false);
+        if (timing_enabled) timing_add(TIMING_UPLOAD_LATCH, timing_now() - start);
+        return;
+    }
+    used |= g->staging.unfenced;
+    g->staging.unfenced = false;
     if (used) {
         if (g->staging.fences == UPLOAD_FENCES) staging_poll(r, false);
         GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
@@ -1049,7 +1058,7 @@ static void latch_jobs(struct render *r, bool ready) {
     } else {
         u->gpu_done = u->alloc;
     }
-    upload_latch_end(u, !ready);
+    upload_latch_end(u, true);
     uint64_t want = upload_wanted(u);
     if (want && upload_idle(u)) {
         staging_free(r);
