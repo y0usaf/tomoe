@@ -73,11 +73,12 @@
                 nativeBuildInputs = [
                   pkgs.removeReferencesTo
                   pkgs.patchelf
+                  pkgs.binutils
                 ];
               }
               ''
                 install -Dm755 ${pkgs.lib.getBin built}/bin/glslangValidator $out/bin/glslangValidator
-                $STRIP $out/bin/glslangValidator
+                strip $out/bin/glslangValidator
                 patchelf --set-rpath ${pkgs.stdenv.cc.libc}/lib $out/bin/glslangValidator
                 remove-references-to -t ${built} -t ${pkgs.lib.getBin built} $out/bin/glslangValidator
               '';
