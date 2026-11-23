@@ -190,6 +190,11 @@ struct vk {
     VkPhysicalDeviceMemoryProperties memory;
     VkDeviceSize atom;
     uint32_t max_extent;
+    VkPipelineCache pipeline_cache;
+    char *pipeline_cache_path;
+    size_t pipeline_cache_bytes;
+    uint32_t vendor_id, device_id;
+    uint8_t cache_uuid[VK_UUID_SIZE];
     PFN_vkGetMemoryFdPropertiesKHR memory_fd_properties;
     PFN_vkGetSemaphoreFdKHR semaphore_fd;
     PFN_vkImportSemaphoreFdKHR import_semaphore;
@@ -1715,7 +1720,7 @@ static VkPipeline pipeline_make(struct vk *v, VkFormat format, int blend, VkShad
         .layout = layout,
     };
     VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateGraphicsPipelines(v->dev, VK_NULL_HANDLE, 1, &info, NULL, &pipeline) != VK_SUCCESS)
+    if (vkCreateGraphicsPipelines(v->dev, v->pipeline_cache, 1, &info, NULL, &pipeline) != VK_SUCCESS)
         return VK_NULL_HANDLE;
     return pipeline;
 }
@@ -2121,6 +2126,9 @@ static bool device_init(struct vk *v) {
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(v->phys, &props);
     v->atom = props.limits.nonCoherentAtomSize;
+    v->vendor_id = props.vendorID;
+    v->device_id = props.deviceID;
+    memcpy(v->cache_uuid, props.pipelineCacheUUID, VK_UUID_SIZE);
     v->ubo_align = props.limits.minUniformBufferOffsetAlignment;
     if (v->ubo_align < 16) v->ubo_align = 16;
     v->max_extent = props.limits.maxImageDimension2D;
@@ -2363,6 +2371,91 @@ static bool user_layouts_init(struct vk *v) {
         .pSetLayouts = sets,
     };
     return vkCreatePipelineLayout(v->dev, &layout, NULL, &v->user_layout) == VK_SUCCESS;
+}
+
+enum { PIPELINE_CACHE_LIMIT = 64 << 20 };
+
+static char *pipeline_cache_file(void) {
+    const char *cache = getenv("XDG_CACHE_HOME"), *home = getenv("HOME");
+    char *base = NULL, *tomoe = NULL, *path = NULL;
+    if (cache && *cache == '/') base = strdup(cache);
+    else if (home && *home == '/' && asprintf(&base, "%s/.cache", home) < 0) base = NULL;
+    if (!base) return NULL;
+    if (asprintf(&tomoe, "%s/tomoe", base) >= 0 && (mkdir(base, 0700) == 0 || errno == EEXIST) &&
+            (mkdir(tomoe, 0700) == 0 || errno == EEXIST) && asprintf(&path, "%s/vk-pipelines.bin", tomoe) < 0)
+        path = NULL;
+    free(tomoe);
+    free(base);
+    return path;
+}
+
+static bool pipeline_cache_matches(const struct vk *v, const uint8_t *data, size_t length) {
+    if (length < 16 + VK_UUID_SIZE) return false;
+    uint32_t header[4];
+    memcpy(header, data, sizeof(header));
+    return header[0] >= 16 + VK_UUID_SIZE && header[0] <= length &&
+        header[1] == VK_PIPELINE_CACHE_HEADER_VERSION_ONE && header[2] == v->vendor_id &&
+        header[3] == v->device_id && !memcmp(data + 16, v->cache_uuid, VK_UUID_SIZE);
+}
+
+static void pipeline_cache_open(struct vk *v) {
+    v->pipeline_cache_path = pipeline_cache_file();
+    uint8_t *data = NULL;
+    size_t length = 0;
+    int fd = v->pipeline_cache_path ? open(v->pipeline_cache_path, O_RDONLY | O_CLOEXEC) : -1;
+    struct stat st;
+    if (fd >= 0 && fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0 &&
+            st.st_size <= PIPELINE_CACHE_LIMIT && (data = malloc((size_t)st.st_size))) {
+        while (length < (size_t)st.st_size) {
+            ssize_t n = read(fd, data + length, (size_t)st.st_size - length);
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) break;
+            length += (size_t)n;
+        }
+        if (length != (size_t)st.st_size || !pipeline_cache_matches(v, data, length)) length = 0;
+    }
+    if (fd >= 0) close(fd);
+    VkPipelineCacheCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+        .initialDataSize = length,
+        .pInitialData = length ? data : NULL,
+    };
+    if (vkCreatePipelineCache(v->dev, &info, NULL, &v->pipeline_cache) != VK_SUCCESS) {
+        info.initialDataSize = 0;
+        info.pInitialData = NULL;
+        if (vkCreatePipelineCache(v->dev, &info, NULL, &v->pipeline_cache) != VK_SUCCESS)
+            v->pipeline_cache = VK_NULL_HANDLE;
+        length = 0;
+    }
+    v->pipeline_cache_bytes = length;
+    free(data);
+}
+
+static void pipeline_cache_save(struct vk *v) {
+    size_t length = 0;
+    if (!v->pipeline_cache || !v->pipeline_cache_path ||
+            vkGetPipelineCacheData(v->dev, v->pipeline_cache, &length, NULL) != VK_SUCCESS ||
+            !length || length == v->pipeline_cache_bytes || length > PIPELINE_CACHE_LIMIT) return;
+    uint8_t *data = malloc(length);
+    char *temporary = NULL;
+    if (data && vkGetPipelineCacheData(v->dev, v->pipeline_cache, &length, data) == VK_SUCCESS &&
+            pipeline_cache_matches(v, data, length) &&
+            asprintf(&temporary, "%s.%d", v->pipeline_cache_path, (int)getpid()) >= 0) {
+        int fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+        size_t done = 0;
+        while (fd >= 0 && done < length) {
+            ssize_t n = write(fd, data + done, length - done);
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) break;
+            done += (size_t)n;
+        }
+        if (fd >= 0 && close(fd) == 0 && done == length && rename(temporary, v->pipeline_cache_path) == 0)
+            v->pipeline_cache_bytes = length;
+        else
+            unlink(temporary);
+    }
+    free(temporary);
+    free(data);
 }
 
 static bool layouts_init(struct vk *v) {
@@ -2648,6 +2741,7 @@ bool gfx_open(struct render *r) {
 
 bool gfx_ready(struct render *r) {
     struct vk *v = V(r);
+    pipeline_cache_open(v);
     if (!layouts_init(v)) {
         tomoe_log(LOG_ERROR, "tomoe: vulkan pipeline setup failed");
         return false;
@@ -2665,6 +2759,7 @@ bool gfx_ready(struct render *r) {
     s->items = malloc(SCENE_RESERVE * sizeof(*s->items));
     if (s->items) s->cap = SCENE_RESERVE;
     if (!pipelines_for(v, VK_FORMAT_B8G8R8A8_UNORM)) return false;
+    pipeline_cache_save(v);
     finish(v);
     r->upload = upload_create();
     return true;
@@ -2755,11 +2850,14 @@ void gfx_close(struct render *r) {
         if (v->image_layout) vkDestroyDescriptorSetLayout(v->dev, v->image_layout, NULL);
         if (v->sampler_layout) vkDestroyDescriptorSetLayout(v->dev, v->sampler_layout, NULL);
         if (v->command_pool) vkDestroyCommandPool(v->dev, v->command_pool, NULL);
+        pipeline_cache_save(v);
+        if (v->pipeline_cache) vkDestroyPipelineCache(v->dev, v->pipeline_cache, NULL);
         vkDestroyDevice(v->dev, NULL);
     }
     if (v->instance) vkDestroyInstance(v->instance, NULL);
     if (current_vk == v) current_vk = NULL;
     free(v->batches);
+    free(v->pipeline_cache_path);
     free(v->pools);
     free(v->scene.items);
 }
