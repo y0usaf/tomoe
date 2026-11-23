@@ -447,6 +447,7 @@ struct pass *render_record(struct render *r, struct buffer *buffer, struct oplis
     list->len = 0;
     list->lost = false;
     list->valid = false;
+    list->bounds = (struct box){ 0, 0, buffer->width, buffer->height };
     pass->buffer = buffer_lock(buffer);
     pass->record = list;
     return pass;
@@ -513,6 +514,8 @@ bool op_begin(struct pass *pass, int kind, struct box box, struct op_clip *clip)
     if (!pass_touches(pass, box)) return false;
     if (!clip->op) return true;
     if (clip->op->hidden) return false;
+    struct box bounds = { 0, 0, pass->buffer->width, pass->buffer->height };
+    if (!box_intersection(&box, &box, &bounds)) return false;
     struct rect r = { box.x, box.y, box.x + box.width, box.y + box.height };
     if (region_contains_rectangle(&clip->op->visible, &r) == REGION_IN) return true;
     if (!pass->clip) {
@@ -730,14 +733,17 @@ static void visibility(struct oplist *list) {
     region_init(&covered);
     for (size_t i = list->len; i-- > 0;) {
         struct op *op = &list->ops[i];
+        struct box shown, foot;
         region_fini(&op->visible);
-        region_init_rect(&op->visible, op->box.x, op->box.y, op->box.width, op->box.height);
+        if (box_intersection(&shown, &op->box, &list->bounds))
+            region_init_rect(&op->visible, shown.x, shown.y, shown.width, shown.height);
+        else region_init(&op->visible);
         region_subtract(&op->visible, &op->visible, &covered);
         op->hidden = !region_not_empty(&op->visible);
         if (!op->hidden && !box_empty(&op->footprint)) {
-            struct rect f = { op->footprint.x, op->footprint.y,
-                op->footprint.x + op->footprint.width, op->footprint.y + op->footprint.height };
-            op->hidden = region_contains_rectangle(&covered, &f) == REGION_IN;
+            op->hidden = !box_intersection(&foot, &op->footprint, &list->bounds);
+            struct rect f = { foot.x, foot.y, foot.x + foot.width, foot.y + foot.height };
+            op->hidden = op->hidden || region_contains_rectangle(&covered, &f) == REGION_IN;
             if (op->hidden) region_clear(&op->visible);
         }
         if (op->grid.passes) {

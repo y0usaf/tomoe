@@ -209,7 +209,7 @@ struct op {
     int kind, blur;
     bool mapped, hidden, cached;
 };
-struct oplist { struct op *ops; size_t len, cap; bool lost, valid; };
+struct oplist { struct op *ops; size_t len, cap; struct box bounds; bool lost, valid; };
 struct op_clip {
     struct region region;
     const struct region *saved;
