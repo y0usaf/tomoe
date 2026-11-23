@@ -921,7 +921,7 @@ static void staging_poll(struct render *r, bool wait) {
     while (g->staging.fences > 0) {
         GLenum status = glClientWaitSync(g->staging.fence[0], wait ? GL_SYNC_FLUSH_COMMANDS_BIT : 0,
             wait ? (GLuint64)1000000000 : 0);
-        if (status == GL_TIMEOUT_EXPIRED) break;
+        if (status != GL_ALREADY_SIGNALED && status != GL_CONDITION_SATISFIED) break;
         wait = false;
         if (r->upload) r->upload->gpu_done = g->staging.limit[0];
         glDeleteSync(g->staging.fence[0]);
@@ -931,9 +931,18 @@ static void staging_poll(struct render *r, bool wait) {
     }
 }
 
+static void staging_settle(struct render *r) {
+    struct gfx *g = G(r);
+    glFinish();
+    for (int i = 0; i < g->staging.fences; i++) glDeleteSync(g->staging.fence[i]);
+    g->staging.fences = 0;
+    if (r->upload) r->upload->gpu_done = r->upload->alloc;
+}
+
 static void staging_free(struct render *r) {
     struct gfx *g = G(r);
-    while (g->staging.fences > 0) staging_poll(r, true);
+    staging_poll(r, true);
+    if (g->staging.fences) staging_settle(r);
     if (!g->staging.pbo) return;
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, g->staging.pbo);
     glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
@@ -1042,9 +1051,18 @@ static void latch(struct render *r) {
     if (bound) glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
     glBindTexture(GL_TEXTURE_2D, 0);
     if (used) {
-        if (g->staging.fences == UPLOAD_FENCES) staging_poll(r, true);
-        g->staging.fence[g->staging.fences] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-        g->staging.limit[g->staging.fences++] = u->alloc;
+        if (g->staging.fences == UPLOAD_FENCES) staging_poll(r, false);
+        GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        if (!fence) {
+            staging_settle(r);
+        } else if (g->staging.fences == UPLOAD_FENCES) {
+            glDeleteSync(g->staging.fence[UPLOAD_FENCES - 1]);
+            g->staging.fence[UPLOAD_FENCES - 1] = fence;
+            g->staging.limit[UPLOAD_FENCES - 1] = u->alloc;
+        } else {
+            g->staging.fence[g->staging.fences] = fence;
+            g->staging.limit[g->staging.fences++] = u->alloc;
+        }
     } else if (g->staging.fences) {
         g->staging.limit[g->staging.fences - 1] = u->alloc;
     } else {
