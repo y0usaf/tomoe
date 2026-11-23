@@ -42,11 +42,12 @@ static void *worker(void *data) {
     pthread_sigmask(SIG_UNBLOCK, &set, NULL);
     uint32_t next = 0;
     for (;;) {
+        uint32_t seq = atomic_load(&u->wake);
         if (next == atomic_load(&u->head)) {
             if (atomic_load(&u->stop)) break;
             atomic_store(&u->sleeping, 1);
             if (next == atomic_load(&u->head) && !atomic_load(&u->stop))
-                syscall(SYS_futex, (uint32_t *)&u->head, FUTEX_WAIT_PRIVATE, next, NULL, NULL, 0);
+                syscall(SYS_futex, (uint32_t *)&u->wake, FUTEX_WAIT_PRIVATE, seq, NULL, NULL, 0);
             atomic_store(&u->sleeping, 0);
             continue;
         }
@@ -123,7 +124,8 @@ static void release_jobs(struct upload *u) {
 void upload_destroy(struct upload *u) {
     if (!u) return;
     atomic_store(&u->stop, 1);
-    syscall(SYS_futex, (uint32_t *)&u->head, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
+    atomic_fetch_add(&u->wake, 1);
+    syscall(SYS_futex, (uint32_t *)&u->wake, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
     pthread_join(u->thread, NULL);
     uint32_t head = atomic_load(&u->head);
     for (uint32_t i = u->tail; i != head; i++) {
@@ -200,8 +202,10 @@ bool upload_stage(struct upload *u, struct texture *texture, struct buffer *buff
     u->stats.jobs++;
     atomic_store_explicit(&job->state, UPLOAD_QUEUED, memory_order_release);
     atomic_store(&u->head, head + 1);
-    if (atomic_load(&u->sleeping))
-        syscall(SYS_futex, (uint32_t *)&u->head, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
+    if (atomic_load(&u->sleeping)) {
+        atomic_fetch_add(&u->wake, 1);
+        syscall(SYS_futex, (uint32_t *)&u->wake, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
+    }
     return true;
 }
 
@@ -259,7 +263,7 @@ void upload_drain(struct upload *u) {
     uint64_t value;
     ssize_t n = read(u->fd, &value, sizeof(value));
     (void)n;
-    atomic_store(&u->signaled, 0);
+    atomic_exchange(&u->signaled, 0);
     release_jobs(u);
 }
 
