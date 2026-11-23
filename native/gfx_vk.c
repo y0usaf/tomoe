@@ -19,7 +19,7 @@
 
 enum {
     BLENDS = 3,
-    TARGET_FORMATS = 4,
+    TARGET_FORMATS = 8,
     POOL_SETS = 256,
     CHUNK_MIN = 4 << 20,
     SCENE_RESERVE = 4096,
@@ -85,6 +85,7 @@ struct batch {
     VkSemaphoreSubmitInfo *wait_infos;
     int wait_count, wait_made;
     struct chunk *chunks;
+    VkDeviceSize staged;
     struct vk_image **acquired;
     size_t acquired_len, acquired_cap;
     uint64_t serial;
@@ -118,6 +119,8 @@ struct ext_push {
 
 struct yuv_path {
     bool supported, midpoint, linear;
+    uint64_t modifiers[32];
+    int modifier_count;
     VkSamplerYcbcrConversion conversion;
     VkSampler sampler;
     VkDescriptorSetLayout set_layout;
@@ -148,6 +151,7 @@ struct vk {
     uint32_t family;
     VkPhysicalDeviceMemoryProperties memory;
     VkDeviceSize atom;
+    uint32_t max_extent;
     PFN_vkGetMemoryFdPropertiesKHR memory_fd_properties;
     PFN_vkGetSemaphoreFdKHR semaphore_fd;
     PFN_vkImportSemaphoreFdKHR import_semaphore;
@@ -387,6 +391,7 @@ static void batch_recycle(struct vk *v, struct batch *b) {
     }
     b->acquired_len = 0;
     b->wait_count = 0;
+    b->staged = 0;
 }
 
 static void retire(struct vk *v, bool wait) {
@@ -543,6 +548,7 @@ static void *stage_alloc(struct vk *v, VkDeviceSize size, VkBuffer *buffer, VkDe
     }
     *buffer = c->buffer;
     *offset = c->used;
+    b->staged += size;
     void *at = c->map + c->used;
     c->used += size;
     return at;
@@ -644,7 +650,22 @@ static int submit(struct vk *v, bool export) {
         .semaphore = b->signal,
         .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
     };
-    if (v->semaphore_fd(v->dev, &get, &fd) != VK_SUCCESS) return -1;
+    if (v->semaphore_fd(v->dev, &get, &fd) != VK_SUCCESS) {
+        tomoe_log(LOG_ERROR, "tomoe: vulkan cannot export a render fence");
+        vkWaitForFences(v->dev, 1, &b->fence, VK_TRUE, UINT64_MAX);
+        vkDestroySemaphore(v->dev, b->signal, NULL);
+        VkExportSemaphoreCreateInfo exported = {
+            .sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO,
+            .handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
+        };
+        VkSemaphoreCreateInfo info = {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+            .pNext = &exported,
+        };
+        if (vkCreateSemaphore(v->dev, &info, NULL, &b->signal) != VK_SUCCESS)
+            b->signal = VK_NULL_HANDLE;
+        return -1;
+    }
     for (size_t i = 0; fd >= 0 && i < b->acquired_len; i++) {
         struct vk_image *image = b->acquired[i];
         if (!image || image->fd < 0) continue;
@@ -660,6 +681,12 @@ static int submit(struct vk *v, bool export) {
 static void finish(struct vk *v) {
     submit(v, false);
     retire(v, true);
+}
+
+enum { IDLE_SUBMIT_BYTES = 64 << 20 };
+
+static void idle_submit(struct vk *v) {
+    if (v->open && (!v->target || v->open->staged > IDLE_SUBMIT_BYTES)) submit(v, false);
 }
 
 static VkDescriptorSet descriptor_new(struct vk *v, VkImageView view, VkDescriptorPool *from) {
@@ -815,6 +842,11 @@ static void image_free(struct vk_image *image) {
 
 static struct vk_image *image_new(struct vk *v, VkFormat format, int width, int height,
         VkImageUsageFlags usage, bool opaque) {
+    if (width < 1 || height < 1 || (uint32_t)width > v->max_extent ||
+            (uint32_t)height > v->max_extent) {
+        tomoe_log(LOG_ERROR, "tomoe: vulkan refuses a %dx%d image", width, height);
+        return NULL;
+    }
     struct batch *b = batch(v);
     struct vk_image *image = b ? calloc(1, sizeof(*image)) : NULL;
     if (!image) return NULL;
@@ -910,6 +942,11 @@ static struct vk_image *import(struct vk *v, struct buffer *buffer) {
             d.n_planes > DMABUF_MAX_PLANES) {
         tomoe_log(LOG_ERROR, "tomoe: vulkan cannot import format 0x%08x modifier 0x%016llx",
             d.format, (unsigned long long)d.modifier);
+        return NULL;
+    }
+    if (d.width < 1 || d.height < 1 || (uint32_t)d.width > v->max_extent ||
+            (uint32_t)d.height > v->max_extent) {
+        tomoe_log(LOG_ERROR, "tomoe: vulkan refuses a %dx%d dmabuf", d.width, d.height);
         return NULL;
     }
     for (int i = 1; i < d.n_planes; i++) {
@@ -1155,6 +1192,11 @@ static void latch_jobs(struct vk *v, bool ready) {
         used = true;
     }
     if (used && v->open) full_barrier(v, v->open->main);
+    if (ready && used && !v->target && v->open && v->staging.fences < UPLOAD_FENCES) {
+        v->staging.serial[v->staging.fences] = v->open->serial;
+        v->staging.limit[v->staging.fences++] = u->alloc;
+        used = false;
+    }
     if (ready) {
         v->staging.unfenced |= used;
         upload_latch_end(u, false);
@@ -1195,6 +1237,7 @@ static void latch(struct vk *v) {
 
 void gfx_upload_latch(struct render *r) {
     latch_jobs(V(r), true);
+    idle_submit(V(r));
 }
 
 static bool stage(struct vk_texture *t, struct buffer *buffer, const struct region *damage) {
@@ -1256,6 +1299,7 @@ bool texture_clear(struct texture *base) {
     vkCmdClearColorImage(b->main, t->image->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &range);
     full_barrier(v, b->main);
     base->serial = ++serials;
+    idle_submit(v);
     return true;
 }
 
@@ -1264,9 +1308,10 @@ bool texture_upload(struct texture *base, const void *data, uint32_t format,
     if (!base || !data || count <= 0 || stride % 4 != 0) return false;
     struct vk_texture *t = texture_of(base);
     if (t->buffer || format != t->format) return false;
-    if (!upload_rects(t, data, stride, rects, count)) return false;
-    base->serial = ++serials;
-    return true;
+    bool ok = upload_rects(t, data, stride, rects, count);
+    if (ok) base->serial = ++serials;
+    idle_submit(t->v);
+    return ok;
 }
 
 struct texture *texture_from_pixels(struct render *r, uint32_t format, uint32_t stride,
@@ -1319,6 +1364,7 @@ struct texture *texture_from_buffer(struct render *r, struct buffer *buffer) {
     t->alpha = format_alpha(dmabuf.format);
     t->external = image->yuv >= 0;
     t->buffer = buffer_lock(buffer);
+    idle_submit(v);
     return &t->base;
 }
 
@@ -1342,6 +1388,7 @@ bool texture_update(struct texture *base, struct buffer *buffer, const struct re
         if (ok) base->serial = ++serials;
     }
     buffer_end_access(buffer);
+    idle_submit(t->v);
     return ok;
 }
 
@@ -1423,15 +1470,17 @@ bool texture_read_pixels(struct texture *base, const struct read_options *option
 void texture_destroy(struct texture *base) {
     if (!base) return;
     struct vk_texture *t = texture_of(base);
-    upload_cancel(t->v->base.upload, base);
+    struct vk *v = t->v;
+    upload_cancel(v->base.upload, base);
     if (t->buffer) {
         buffer_unlock(t->buffer);
     } else {
         image_free(t->image);
-        t->v->base.textures--;
-        t->v->base.texture_bytes -= t->bytes;
+        v->base.textures--;
+        v->base.texture_bytes -= t->bytes;
     }
     free(t);
+    idle_submit(v);
 }
 
 bool render_wait(struct render *r, struct timeline *timeline, uint64_t point) {
@@ -1573,7 +1622,15 @@ static VkPipeline pipeline_make(struct vk *v, VkFormat format, int blend, VkShad
     return pipeline;
 }
 
+static struct target_pipelines *pipelines_find(struct vk *v, VkFormat format);
+
 static struct target_pipelines *pipelines_for(struct vk *v, VkFormat format) {
+    struct target_pipelines *t = pipelines_find(v, format);
+    if (!t) tomoe_log(LOG_ERROR, "tomoe: vulkan has no scene pipeline for format %d", (int)format);
+    return t;
+}
+
+static struct target_pipelines *pipelines_find(struct vk *v, VkFormat format) {
     for (int i = 0; i < TARGET_FORMATS; i++)
         if (v->targets[i].format == format && v->targets[i].blend[0]) return &v->targets[i];
     for (int i = 0; i < TARGET_FORMATS; i++) {
@@ -1615,6 +1672,11 @@ static bool rendering_begin(struct vk *v, struct vk_image *target) {
         .colorAttachmentCount = 1,
         .pColorAttachments = &color,
     };
+    if (!target->owned && target->fd >= 0 && v->sync_fd && target->written != b->serial) {
+        struct dma_buf_export_sync_file exported = { .flags = DMA_BUF_SYNC_RW, .fd = -1 };
+        if (ioctl(target->fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &exported) == 0 && exported.fd >= 0)
+            wait_fd(v, exported.fd);
+    }
     vkCmdBeginRendering(b->main, &info);
     target->written = b->serial;
     VkViewport viewport = { 0, 0, (float)target->width, (float)target->height, 0, 1 };
@@ -1959,6 +2021,7 @@ static bool device_init(struct vk *v) {
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(v->phys, &props);
     v->atom = props.limits.nonCoherentAtomSize;
+    v->max_extent = props.limits.maxImageDimension2D;
     vkGetPhysicalDeviceMemoryProperties(v->phys, &v->memory);
     uint32_t families = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(v->phys, &families, NULL);
@@ -2132,7 +2195,7 @@ static bool formats_init(struct vk *v) {
             if (!(features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) || (!midpoint && !cosited) ||
                     !modifier_usable(v, yuv_formats[i].vk, mods[j].drmFormatModifier,
                     VK_IMAGE_USAGE_SAMPLED_BIT)) continue;
-            format_set_add(&r->texture_formats, yuv_formats[i].drm, mods[j].drmFormatModifier);
+            if (y->modifier_count < 32) y->modifiers[y->modifier_count++] = mods[j].drmFormatModifier;
             y->supported = true;
             all_midpoint = all_midpoint && midpoint;
             all_linear = all_linear &&
@@ -2430,8 +2493,11 @@ bool gfx_ready(struct render *r) {
         return false;
     }
     v->ext_frag = shader_module(v, ext_frag, sizeof(ext_frag));
-    for (int i = 0; v->ext_frag && i < YUV_FORMATS; i++)
-        if (v->yuv[i].supported) yuv_init(v, i);
+    for (int i = 0; v->ext_frag && i < YUV_FORMATS; i++) {
+        if (!v->yuv[i].supported || !yuv_init(v, i)) continue;
+        for (int k = 0; k < v->yuv[i].modifier_count; k++)
+            format_set_add(&r->texture_formats, yuv_formats[i].drm, v->yuv[i].modifiers[k]);
+    }
     v->dummy = image_new(v, VK_FORMAT_R8G8B8A8_UNORM, 1, 1,
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, false);
     if (!v->dummy) return false;
