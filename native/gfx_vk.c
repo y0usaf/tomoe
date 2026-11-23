@@ -1,5 +1,6 @@
 #include "gfx.h"
 #include "drm.h"
+#include "upload.h"
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/stat.h>
@@ -149,6 +150,12 @@ struct vk {
     struct vk_image *target, *bound;
     struct vk_image *pool[LEVEL_POOL];
     int pooled;
+    struct {
+        struct chunk *chunk;
+        uint64_t serial[UPLOAD_FENCES], limit[UPLOAD_FENCES];
+        int fences;
+        bool failed;
+    } staging;
     bool rendering;
     struct scene scene;
 };
@@ -908,6 +915,163 @@ static bool upload_rects(struct vk_texture *t, const void *data, size_t stride,
     return true;
 }
 
+static void staging_poll(struct vk *v, bool wait) {
+    struct render *r = &v->base;
+    if (!v->staging.fences) return;
+    if (wait && v->open && v->staging.serial[0] >= v->open->serial) submit(v, false);
+    retire(v, false);
+    while (v->staging.fences > 0) {
+        if (v->staging.serial[0] > v->done) {
+            if (!wait) break;
+            retire(v, true);
+            if (v->staging.serial[0] > v->done) break;
+        }
+        wait = false;
+        if (r->upload) r->upload->gpu_done = v->staging.limit[0];
+        v->staging.fences--;
+        memmove(v->staging.serial, v->staging.serial + 1, sizeof(uint64_t) * (size_t)v->staging.fences);
+        memmove(v->staging.limit, v->staging.limit + 1, sizeof(uint64_t) * (size_t)v->staging.fences);
+    }
+}
+
+static void staging_free(struct vk *v) {
+    while (v->staging.fences > 0) {
+        int before = v->staging.fences;
+        staging_poll(v, true);
+        if (v->staging.fences == before) {
+            vkDeviceWaitIdle(v->dev);
+            retire(v, true);
+            v->staging.fences = 0;
+        }
+    }
+    if (!v->staging.chunk) return;
+    chunk_free(v, v->staging.chunk);
+    v->staging.chunk = NULL;
+    if (v->base.upload) upload_set_staging(v->base.upload, NULL, 0);
+}
+
+static bool staging_alloc(struct vk *v, uint64_t size) {
+    v->staging.chunk = chunk_new(v, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 0);
+    if (!v->staging.chunk) {
+        tomoe_log(LOG_ERROR, "tomoe: cannot map a %llu MiB upload staging buffer",
+            (unsigned long long)(size >> 20));
+        return false;
+    }
+    upload_set_staging(v->base.upload, v->staging.chunk->map, size);
+    return true;
+}
+
+static struct upload *staging(struct vk *v) {
+    struct render *r = &v->base;
+    if (!r->upload) return NULL;
+    if (!v->staging.chunk && !v->staging.failed &&
+            !staging_alloc(v, upload_wanted(r->upload))) v->staging.failed = true;
+    return v->staging.chunk ? r->upload : NULL;
+}
+
+static void reclaim(void *data) {
+    struct vk *v = data;
+    if (v->staging.fences) staging_poll(v, false);
+}
+
+static bool upload_rects(struct vk_texture *t, const void *data, size_t stride,
+        const struct rect *rects, int count);
+
+static bool direct(struct vk_texture *t, struct buffer *buffer, const struct rect *rects, int count) {
+    void *data;
+    uint32_t format;
+    size_t stride;
+    if (!buffer_begin_access(buffer, BUFFER_READ, &data, &format, &stride)) return false;
+    bool ok = format == t->format && stride % 4 == 0 && buffer->width == (int)t->base.width &&
+        buffer->height == (int)t->base.height;
+    if (ok) ok = upload_rects(t, data, stride, rects, count);
+    buffer_end_access(buffer);
+    return ok;
+}
+
+static void latch(struct vk *v) {
+    struct render *r = &v->base;
+    struct upload *u = r->upload;
+    if (!u || !upload_pending(u)) return;
+    uint64_t start = timing_enabled ? timing_now() : 0;
+    staging_poll(v, false);
+    struct batch *b = batch(v);
+    if (!b) return;
+    rendering_end(v);
+    bool used = false;
+    enum upload_take take;
+    struct upload_job *job;
+    while ((job = upload_latch_next(u, &take))) {
+        struct vk_texture *t = wl_container_of(job->texture, t, base);
+        if (take == UPLOAD_DIRECT) {
+            direct(t, job->buffer, job->rects, job->count);
+            continue;
+        }
+        VkDeviceSize at = (VkDeviceSize)(job->dst - u->base);
+        VkBufferImageCopy copies[UPLOAD_RECTS];
+        uint32_t n = 0;
+        for (int i = 0; i < job->count && i < UPLOAD_RECTS; i++) {
+            const struct rect *rect = &job->rects[i];
+            int width = rect->x2 - rect->x1, height = rect->y2 - rect->y1;
+            if (width > 0 && height > 0)
+                copies[n++] = (VkBufferImageCopy){
+                    .bufferOffset = at,
+                    .bufferRowLength = (uint32_t)width,
+                    .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+                    .imageOffset = { rect->x1, rect->y1, 0 },
+                    .imageExtent = { (uint32_t)width, (uint32_t)height, 1 },
+                };
+            at += (VkDeviceSize)width * (VkDeviceSize)height * 4;
+        }
+        if (!n) continue;
+        vkCmdCopyBufferToImage(b->main, v->staging.chunk->buffer, t->image->image,
+            VK_IMAGE_LAYOUT_GENERAL, n, copies);
+        r->gl_calls++;
+        used = true;
+    }
+    if (used) {
+        full_barrier(v, b->main);
+        if (v->staging.fences == UPLOAD_FENCES) staging_poll(v, true);
+        b = batch(v);
+        v->staging.serial[v->staging.fences] = b ? b->serial : v->serial;
+        v->staging.limit[v->staging.fences++] = u->alloc;
+    } else if (v->staging.fences) {
+        v->staging.limit[v->staging.fences - 1] = u->alloc;
+    } else {
+        u->gpu_done = u->alloc;
+    }
+    upload_latch_end(u);
+    uint64_t want = upload_wanted(u);
+    if (want && upload_idle(u)) {
+        staging_free(v);
+        u->stats.resizes++;
+        staging_alloc(v, want);
+    }
+    if (timing_enabled) timing_add(TIMING_UPLOAD_LATCH, timing_now() - start);
+}
+
+static bool stage(struct vk_texture *t, struct buffer *buffer, const struct region *damage) {
+    struct vk *v = t->v;
+    struct upload *u = staging(v);
+    int count = 0;
+    region_rectangles(damage, &count);
+    if (!u || count <= 0) return false;
+    size_t offset, stride;
+    uint32_t format;
+    struct wl_shm_view *view = buffer_shm_view(buffer, &offset, &format, &stride);
+    if (view) {
+        bool ok = format == t->format && stride % 4 == 0 && buffer->width == (int)t->base.width &&
+            buffer->height == (int)t->base.height;
+        if (ok && upload_full(u)) latch(v);
+        if (ok && upload_stage(u, &t->base, buffer, view, offset, stride, damage, reclaim, v))
+            return true;
+        wl_shm_view_unref(view);
+    }
+    u->stats.sync++;
+    latch(v);
+    return false;
+}
+
 struct texture *texture_new(struct render *r, uint32_t format, uint32_t width, uint32_t height) {
     struct vk *v = V(r);
     const struct pixel *p = pixel_for(format);
@@ -977,6 +1141,20 @@ struct texture *texture_from_buffer(struct render *r, struct buffer *buffer) {
         void *data;
         uint32_t format;
         size_t stride;
+        size_t offset;
+        struct wl_shm_view *view = r->upload ? buffer_shm_view(buffer, &offset, &format, &stride) : NULL;
+        if (view) {
+            wl_shm_view_unref(view);
+            struct texture *texture = texture_new(r, format, (uint32_t)buffer->width,
+                (uint32_t)buffer->height);
+            if (!texture) return NULL;
+            struct region full;
+            region_init_rect(&full, 0, 0, (uint32_t)buffer->width, (uint32_t)buffer->height);
+            bool staged = stage(texture_of(texture), buffer, &full);
+            region_fini(&full);
+            if (staged) return texture;
+            texture_destroy(texture);
+        }
         if (!buffer_begin_access(buffer, BUFFER_READ, &data, &format, &stride)) return NULL;
         struct texture *texture = texture_from_pixels(r, format, (uint32_t)stride,
             (uint32_t)buffer->width, (uint32_t)buffer->height, data);
@@ -999,6 +1177,10 @@ struct texture *texture_from_buffer(struct render *r, struct buffer *buffer) {
 bool texture_update(struct texture *base, struct buffer *buffer, const struct region *damage) {
     struct vk_texture *t = texture_of(base);
     if (t->buffer) return false;
+    if (stage(t, buffer, damage)) {
+        base->serial = ++serials;
+        return true;
+    }
     void *data;
     uint32_t format;
     size_t stride;
@@ -1018,6 +1200,7 @@ bool texture_update(struct texture *base, struct buffer *buffer, const struct re
 bool texture_read_pixels(struct texture *base, const struct read_options *options) {
     struct vk_texture *t = texture_of(base);
     struct vk *v = t->v;
+    latch(v);
     bool want_bgra = options->format == DRM_FORMAT_ARGB8888 ||
         options->format == DRM_FORMAT_XRGB8888;
     bool want_rgba = options->format == DRM_FORMAT_ABGR8888 ||
@@ -1092,6 +1275,7 @@ bool texture_read_pixels(struct texture *base, const struct read_options *option
 void texture_destroy(struct texture *base) {
     if (!base) return;
     struct vk_texture *t = texture_of(base);
+    upload_cancel(t->v->base.upload, base);
     if (t->buffer) {
         buffer_unlock(t->buffer);
     } else {
@@ -1846,6 +2030,7 @@ bool gfx_ready(struct render *r) {
     if (s->items) s->cap = SCENE_RESERVE;
     if (!pipelines_for(v, VK_FORMAT_B8G8R8A8_UNORM)) return false;
     finish(v);
+    r->upload = upload_create();
     return true;
 }
 
@@ -1856,6 +2041,11 @@ bool gfx_fences(struct render *r) {
 void gfx_stop(struct render *r) {
     struct vk *v = V(r);
     if (v->dev) finish(v);
+    if (r->upload) {
+        upload_report(r->upload);
+        upload_destroy(r->upload);
+        r->upload = NULL;
+    }
 }
 
 void gfx_drop_images(struct render *r) {
@@ -1878,6 +2068,7 @@ void gfx_close(struct render *r) {
             (unsigned long long)v->imports_made);
         vkDeviceWaitIdle(v->dev);
         retire(v, true);
+        staging_free(v);
         level_pool_drain(v);
         if (v->dummy) image_free(v->dummy);
         v->dummy = NULL;
@@ -1930,6 +2121,10 @@ void gfx_flush(struct render *r) {
 void gfx_upload_trim(struct render *r) {
     struct vk *v = V(r);
     level_pool_drain(v);
+    if (v->staging.chunk) {
+        staging_free(v);
+        if (r->upload) r->upload->stats.trims++;
+    }
     while (v->spare) {
         struct chunk *c = v->spare;
         v->spare = c->next;
@@ -1952,12 +2147,18 @@ bool gfx_target_prepare(struct render *r, struct buffer *buffer) {
     return image && image->target;
 }
 
-bool gfx_target_begin(struct render *r, struct buffer *buffer) {
-    struct vk *v = V(r);
+static bool target_bind(struct vk *v, struct buffer *buffer) {
     struct vk_image *image = import(v, buffer);
     if (!image || !image->target) return false;
     if (v->bound && v->bound != image) rendering_end(v);
     v->target = image;
+    return true;
+}
+
+bool gfx_target_begin(struct render *r, struct buffer *buffer) {
+    struct vk *v = V(r);
+    if (!target_bind(v, buffer)) return false;
+    latch(v);
     return true;
 }
 
@@ -1968,11 +2169,11 @@ void gfx_target_end(struct render *r) {
 }
 
 void gfx_target_viewport(struct render *r, struct buffer *buffer) {
-    gfx_target_begin(r, buffer);
+    target_bind(V(r), buffer);
 }
 
 void gfx_target_rebind(struct render *r, struct buffer *buffer) {
-    gfx_target_begin(r, buffer);
+    target_bind(V(r), buffer);
 }
 
 void gfx_state_dirty(struct pass *pass) {
