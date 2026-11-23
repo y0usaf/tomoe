@@ -2852,7 +2852,7 @@ void gfx_close(struct render *r) {
         if (v->image_layout) vkDestroyDescriptorSetLayout(v->dev, v->image_layout, NULL);
         if (v->sampler_layout) vkDestroyDescriptorSetLayout(v->dev, v->sampler_layout, NULL);
         if (v->command_pool) vkDestroyCommandPool(v->dev, v->command_pool, NULL);
-        pipeline_cache_save(v);
+        if (!v->lost) pipeline_cache_save(v);
         if (v->pipeline_cache) vkDestroyPipelineCache(v->dev, v->pipeline_cache, NULL);
         vkDestroyDevice(v->dev, NULL);
     }
