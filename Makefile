@@ -133,6 +133,17 @@ build/tomoe: $(NATIVE) $(SUPPORT:%=build/%.o) build/gfx
 build/obj/%.o: native/%.c $(wildcard native/*.h) $(LIB_HEADERS) $(HEADERS) | build/obj
 	$(CC) $(CFLAGS_NATIVE) -c $< -o $@
 
+SHADER_SOURCES = $(wildcard native/shaders/*.vert native/shaders/*.frag)
+SHADER_HEADERS = $(patsubst native/shaders/%,build/shaders/%.h,$(SHADER_SOURCES))
+
+build/obj/gfx_vk.o: $(SHADER_HEADERS)
+
+build/shaders/%.spv: native/shaders/% | build/shaders
+	glslangValidator -V --target-env vulkan1.3 -o $@ $<
+
+build/shaders/%.h: build/shaders/%.spv
+	od -An -v -tx4 $< | awk -v name=$(subst .,_,$*) 'BEGIN { printf "static const uint32_t %s[] = {\n", name } { for (i = 1; i <= NF; i++) printf "0x%s,", $$i; printf "\n" } END { printf "};\n" }' > $@
+
 build/obj/lib/%.o: lib/%.c $(LIB_HEADERS) build/wayland-server-protocol.h build/wayland-client-protocol.h | build/obj
 	@mkdir -p $(dir $@)
 	$(CC) $(call lib_cflags,$(firstword $(subst /, ,$*))) -c $< -o $@
@@ -161,7 +172,7 @@ build/%-protocol.h: %.xml | build
 build/%-protocol.c: %.xml | build
 	wayland-scanner private-code $< $@
 
-build build/obj:
+build build/obj build/shaders:
 	mkdir -p $@
 
 build/gfx: FORCE | build
