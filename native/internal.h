@@ -1810,6 +1810,7 @@ void cursor_motion_apply(struct tomoe *s, const double matrix[4], const double o
     double settle);
 bool cursor_trail_style(const struct tomoe *s, struct trail_style *style);
 void cursor_trail_settings(struct tomoe *s);
+void cursor_trail_wake(struct tomoe *s);
 void cursor_effects_register_primitives(struct tomoe *server);
 void cursor_effects_evaluate(struct tomoe *s, double now);
 int tomoe_cursor_apply(struct tomoe *s, double a, double b, double c, double d,

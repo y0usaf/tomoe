@@ -811,6 +811,7 @@ void cursor_shape_set(struct tomoe *s, uint32_t shape) {
         "sb_h_double_arrow", "sb_v_double_arrow", "fleur", "zoom-in", "zoom-out",
         "dnd-ask", "fleur" };
     if (!shape || shape >= sizeof(cursor_shape_names) / sizeof(cursor_shape_names[0])) return;
+    bool was_hidden = s->cursor_hidden;
     s->cursor_hidden = false;
     if (s->cursor_surface) cursor_surface_destroy(&s->cursor_surface_destroy, NULL);
     float scale = 1;
@@ -854,6 +855,7 @@ void cursor_shape_set(struct tomoe *s, uint32_t shape) {
         s->default_hotspot_y = y;
     }
     cursor_show(s, s->default_cursor, s->default_hotspot_x, s->default_hotspot_y, scale);
+    if (was_hidden) cursor_trail_wake(s);
 }
 
 void cursor_default(struct tomoe *s) {
@@ -1722,6 +1724,7 @@ static void cursor_apply(struct tomoe *s) {
 }
 void cursor_requested(struct tomoe *s, struct surface *surface, int32_t x, int32_t y) {
     if (s->cursor_surface) cursor_surface_destroy(&s->cursor_surface_destroy, NULL);
+    bool was_hidden = s->cursor_hidden;
     s->cursor_surface = surface;
     s->cursor_hidden = !surface;
     s->cursor_hotspot_x = x;
@@ -1729,6 +1732,7 @@ void cursor_requested(struct tomoe *s, struct surface *surface, int32_t x, int32
     if (surface) listen(&s->cursor_surface_destroy, &surface->events.destroy, cursor_surface_destroy);
     cursor_apply(s);
     pointer_sync_cursors(s);
+    if (was_hidden && !s->cursor_hidden) cursor_trail_wake(s);
 }
 void cursor_committed(struct tomoe *s, struct surface *surface) {
     if (surface != s->cursor_surface) return;

@@ -365,6 +365,10 @@ static bool trail_alive(const struct tomoe *s, double now) {
     return now - s->pointer_trail[newest].t < style.life;
 }
 
+void cursor_trail_wake(struct tomoe *s) {
+    if (trail_alive(s, animation_now())) cursor_schedule(s);
+}
+
 static void update_acceleration(struct tomoe *s, double now) {
     struct cursor_motion *m = &s->cursor_motion;
     double vx, vy;
