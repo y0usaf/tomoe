@@ -41,6 +41,8 @@ void core_flush(void);
 uint32_t core_watch_fd(int fd);
 void core_unwatch_fd(uint32_t id);
 bool core_connected(void);
+void core_send_frame(uint16_t type, const void *a, size_t a_length, const void *b, size_t b_length);
+void policy_shader_build(const uint8_t *payload, size_t length);
 lisp_value core_memory_report(char *error, size_t error_size, bool *ok);
 
 bool policy_link_work(void);

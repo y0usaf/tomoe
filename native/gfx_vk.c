@@ -17,6 +17,7 @@
 #include "shaders/lut.frag.h"
 #include "shaders/ext.frag.h"
 #include "shaders/glass.frag.h"
+#include "shader-vk.h"
 
 enum {
     BLENDS = 3,
@@ -68,10 +69,13 @@ struct grave {
     VkImageView view, sample;
     VkDescriptorSet set;
     VkDescriptorPool pool;
+    VkShaderModule module;
+    VkPipeline pipelines[TARGET_FORMATS];
 };
 
 struct chunk {
     struct chunk *next;
+    VkDescriptorSet ubo;
     VkBuffer buffer;
     VkDeviceMemory memory;
     unsigned char *map;
@@ -145,7 +149,30 @@ struct glass_push {
 
 struct gfx_prog {
     int builtin;
+    struct gfx_prog *next;
+    struct vk *v;
+    uint64_t hash;
+    uint32_t *code;
+    size_t words;
+    int refs;
+    uint32_t reads;
+    VkShaderModule frag;
+    VkFormat formats[TARGET_FORMATS];
+    VkPipeline pipelines[TARGET_FORMATS];
 };
+
+struct user_uniforms {
+    float mouse[4], marks_box[4], beneath_box[4], frost_box[4];
+    float resolution[3];
+    float time;
+    int32_t frame, trail_count, window_count, reserved;
+    float trail[POINTER_TRAIL][4];
+    float data[SHADER_DATA / 4][4];
+    float windows[SHADER_WINDOWS][4];
+    float selection[4][4];
+};
+
+_Static_assert(sizeof(struct user_uniforms) == 2080, "std140 TomoeUniforms is 2080 bytes");
 
 struct target_pipelines {
     VkFormat format;
@@ -186,7 +213,11 @@ struct vk {
     VkShaderModule vert, frag, blur_vert, down_frag, up_frag, lut_frag, ext_frag, glass_frag;
     bool ycbcr;
     struct yuv_path yuv[YUV_FORMATS];
-    VkPipelineLayout blur_layout, lut_layout, glass_layout;
+    VkPipelineLayout blur_layout, lut_layout, glass_layout, user_layout;
+    VkDescriptorSetLayout ubo_layout;
+    VkDescriptorPool ubo_pool;
+    VkDeviceSize ubo_align;
+    struct gfx_prog *user_progs;
     struct gfx_prog glass_program;
     VkPipeline down, up;
     struct target_pipelines targets[TARGET_FORMATS];
@@ -324,6 +355,7 @@ static void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout from,
 }
 
 static void chunk_free(struct vk *v, struct chunk *c) {
+    if (c->ubo) vkFreeDescriptorSets(v->dev, v->ubo_pool, 1, &c->ubo);
     if (c->map) vkUnmapMemory(v->dev, c->memory);
     vkDestroyBuffer(v->dev, c->buffer, NULL);
     vkFreeMemory(v->dev, c->memory, NULL);
@@ -372,6 +404,9 @@ static struct chunk *chunk_new(struct vk *v, VkDeviceSize size, VkBufferUsageFla
 }
 
 static void bury_now(struct vk *v, struct grave *g) {
+    for (int i = 0; i < TARGET_FORMATS; i++)
+        if (g->pipelines[i]) vkDestroyPipeline(v->dev, g->pipelines[i], NULL);
+    if (g->module) vkDestroyShaderModule(v->dev, g->module, NULL);
     if (g->set) vkFreeDescriptorSets(v->dev, g->pool, 1, &g->set);
     if (g->sample && g->sample != g->view) vkDestroyImageView(v->dev, g->sample, NULL);
     if (g->view) vkDestroyImageView(v->dev, g->view, NULL);
@@ -527,12 +562,14 @@ static void bury(struct vk *v, struct grave g) {
     v->graves = copy;
 }
 
-static void *stage_alloc(struct vk *v, VkDeviceSize size, VkBuffer *buffer, VkDeviceSize *offset) {
+static void *stage_alloc_in(struct vk *v, VkDeviceSize size, VkDeviceSize align,
+        struct chunk **chunk, VkDeviceSize *offset) {
     struct batch *b = batch(v);
     if (!b) return NULL;
     size = (size + 15) & ~(VkDeviceSize)15;
     struct chunk *c = b->chunks;
-    if (!c || c->size - c->used < size) {
+    VkDeviceSize at = c ? (c->used + align - 1) / align * align : 0;
+    if (!c || at > c->size || c->size - at < size) {
         struct chunk **link = &v->spare;
         c = NULL;
         while (*link) {
@@ -547,7 +584,8 @@ static void *stage_alloc(struct vk *v, VkDeviceSize size, VkBuffer *buffer, VkDe
             VkDeviceSize want = CHUNK_MIN;
             while (want < size) want *= 2;
             c = chunk_new(v, want, VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 0);
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 0);
             if (!c) {
                 tomoe_log(LOG_ERROR, "tomoe: vulkan cannot allocate %llu staging bytes",
                     (unsigned long long)want);
@@ -557,12 +595,19 @@ static void *stage_alloc(struct vk *v, VkDeviceSize size, VkBuffer *buffer, VkDe
         c->used = 0;
         c->next = b->chunks;
         b->chunks = c;
+        at = 0;
     }
-    *buffer = c->buffer;
-    *offset = c->used;
-    b->staged += size;
-    void *at = c->map + c->used;
-    c->used += size;
+    *chunk = c;
+    *offset = at;
+    b->staged += size + (at - c->used);
+    c->used = at + size;
+    return c->map + at;
+}
+
+static void *stage_alloc(struct vk *v, VkDeviceSize size, VkBuffer *buffer, VkDeviceSize *offset) {
+    struct chunk *c;
+    void *at = stage_alloc_in(v, size, 16, &c, offset);
+    if (at) *buffer = c->buffer;
     return at;
 }
 
@@ -2040,6 +2085,8 @@ static bool device_init(struct vk *v) {
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(v->phys, &props);
     v->atom = props.limits.nonCoherentAtomSize;
+    v->ubo_align = props.limits.minUniformBufferOffsetAlignment;
+    if (v->ubo_align < 16) v->ubo_align = 16;
     v->max_extent = props.limits.maxImageDimension2D;
     vkGetPhysicalDeviceMemoryProperties(v->phys, &v->memory);
     uint32_t families = 0;
@@ -2242,6 +2289,46 @@ static VkShaderModule shader_module(struct vk *v, const uint32_t *code, size_t b
     return module;
 }
 
+enum { USER_SETS = 5, UBO_SETS = 256 };
+
+static bool user_layouts_init(struct vk *v) {
+    VkDescriptorSetLayoutBinding binding = {
+        .binding = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+        .descriptorCount = 1,
+        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+    };
+    VkDescriptorSetLayoutCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 1,
+        .pBindings = &binding,
+    };
+    if (vkCreateDescriptorSetLayout(v->dev, &info, NULL, &v->ubo_layout) != VK_SUCCESS) {
+        v->ubo_layout = VK_NULL_HANDLE;
+        return false;
+    }
+    VkDescriptorPoolSize size = { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, UBO_SETS };
+    VkDescriptorPoolCreateInfo pool = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+        .maxSets = UBO_SETS,
+        .poolSizeCount = 1,
+        .pPoolSizes = &size,
+    };
+    if (vkCreateDescriptorPool(v->dev, &pool, NULL, &v->ubo_pool) != VK_SUCCESS) {
+        v->ubo_pool = VK_NULL_HANDLE;
+        return false;
+    }
+    VkDescriptorSetLayout sets[USER_SETS] = { v->ubo_layout, v->sampler_layout, v->image_layout,
+        v->image_layout, v->image_layout };
+    VkPipelineLayoutCreateInfo layout = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = USER_SETS,
+        .pSetLayouts = sets,
+    };
+    return vkCreatePipelineLayout(v->dev, &layout, NULL, &v->user_layout) == VK_SUCCESS;
+}
+
 static bool layouts_init(struct vk *v) {
     VkDescriptorSetLayoutBinding image = {
         .binding = 0,
@@ -2352,6 +2439,10 @@ static bool layouts_init(struct vk *v) {
     if (!v->glass_frag ||
             vkCreatePipelineLayout(v->dev, &glass_info, NULL, &v->glass_layout) != VK_SUCCESS)
         v->glass_layout = VK_NULL_HANDLE;
+    if (!user_layouts_init(v)) {
+        tomoe_log(LOG_ERROR, "tomoe: vulkan cannot lay out user shaders; they will not draw");
+        v->user_layout = VK_NULL_HANDLE;
+    }
     v->down = pipeline_make(v, (VkFormat)LEVEL_FORMAT, 0, v->blur_vert, v->down_frag,
         v->blur_layout, false);
     v->up = pipeline_make(v, (VkFormat)LEVEL_FORMAT, 0, v->blur_vert, v->up_frag,
@@ -2602,6 +2693,17 @@ void gfx_close(struct render *r) {
         if (v->lut_layout) vkDestroyPipelineLayout(v->dev, v->lut_layout, NULL);
         if (v->lut_frag) vkDestroyShaderModule(v->dev, v->lut_frag, NULL);
         if (v->glass_layout) vkDestroyPipelineLayout(v->dev, v->glass_layout, NULL);
+        for (struct gfx_prog *p = v->user_progs; p; p = p->next) {
+            for (int i = 0; i < TARGET_FORMATS; i++)
+                if (p->pipelines[i]) vkDestroyPipeline(v->dev, p->pipelines[i], NULL);
+            if (p->frag) vkDestroyShaderModule(v->dev, p->frag, NULL);
+            p->frag = VK_NULL_HANDLE;
+            memset(p->pipelines, 0, sizeof(p->pipelines));
+            p->v = NULL;
+        }
+        if (v->user_layout) vkDestroyPipelineLayout(v->dev, v->user_layout, NULL);
+        if (v->ubo_pool) vkDestroyDescriptorPool(v->dev, v->ubo_pool, NULL);
+        if (v->ubo_layout) vkDestroyDescriptorSetLayout(v->dev, v->ubo_layout, NULL);
         if (v->glass_frag) vkDestroyShaderModule(v->dev, v->glass_frag, NULL);
         if (v->down) vkDestroyPipeline(v->dev, v->down, NULL);
         if (v->up) vkDestroyPipeline(v->dev, v->up, NULL);
@@ -2721,7 +2823,7 @@ bool gfx_external_ready(struct render *r) {
 }
 
 bool gfx_prog_reads(const struct gfx_prog *p, enum gfx_input input) {
-    return false;
+    return p && !p->builtin && (p->reads & (1u << input));
 }
 
 static void level_pool_put(struct vk *v, struct vk_image *image) {
@@ -2944,8 +3046,138 @@ void gfx_backdrop_grab(struct render *r, struct buffer *buffer, const struct gfx
     rendering_end(v);
 }
 
+static VkPipeline user_pipeline(struct vk *v, struct gfx_prog *p, VkFormat format) {
+    int slot = -1;
+    for (int i = 0; i < TARGET_FORMATS; i++) {
+        if (p->pipelines[i] && p->formats[i] == format) return p->pipelines[i];
+        if (!p->pipelines[i] && slot < 0) slot = i;
+    }
+    if (slot < 0) return VK_NULL_HANDLE;
+    p->pipelines[slot] = pipeline_make(v, format, 1, v->vert, p->frag, v->user_layout, true);
+    p->formats[slot] = format;
+    if (!p->pipelines[slot]) tomoe_log(LOG_ERROR, "tomoe: vulkan cannot build a user shader pipeline");
+    return p->pipelines[slot];
+}
+
+static VkDescriptorSet chunk_ubo(struct vk *v, struct chunk *c) {
+    if (c->ubo) return c->ubo;
+    VkDescriptorSetAllocateInfo alloc = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = v->ubo_pool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &v->ubo_layout,
+    };
+    if (vkAllocateDescriptorSets(v->dev, &alloc, &c->ubo) != VK_SUCCESS) {
+        c->ubo = VK_NULL_HANDLE;
+        return VK_NULL_HANDLE;
+    }
+    VkDescriptorBufferInfo info = { c->buffer, 0, sizeof(struct user_uniforms) };
+    VkWriteDescriptorSet write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = c->ubo,
+        .dstBinding = 0,
+        .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+        .pBufferInfo = &info,
+    };
+    vkUpdateDescriptorSets(v->dev, 1, &write, 0, NULL);
+    return c->ubo;
+}
+
+static void user_uniforms_fill(struct user_uniforms *u, const struct gfx_shader_params *sp) {
+    memset(u, 0, sizeof(*u));
+    u->mouse[0] = (float)sp->mouse_x;
+    u->mouse[1] = (float)sp->mouse_y;
+    if (sp->marks_box) memcpy(u->marks_box, sp->marks_box, sizeof(u->marks_box));
+    if (sp->beneath) memcpy(u->beneath_box, sp->beneath_box, sizeof(u->beneath_box));
+    if (sp->frost) {
+        double fw = (double)(sp->frost->width << 1), fh = (double)(sp->frost->height << 1);
+        if (fw > 0 && fh > 0) {
+            u->frost_box[0] = (float)-sp->box.x;
+            u->frost_box[1] = (float)(sp->box.y + sp->box.height);
+            u->frost_box[2] = (float)(1.0 / fw);
+            u->frost_box[3] = (float)(-1.0 / fh);
+        }
+    }
+    u->resolution[0] = (float)sp->box.width;
+    u->resolution[1] = (float)sp->box.height;
+    u->resolution[2] = 1;
+    u->time = (float)sp->time;
+    u->frame = sp->frame;
+    int trails = sp->trail_count < 0 ? 0 : sp->trail_count > POINTER_TRAIL ? POINTER_TRAIL :
+        sp->trail_count;
+    u->trail_count = sp->trail_count;
+    if (trails && sp->trail) memcpy(u->trail, sp->trail, (size_t)trails * sizeof(u->trail[0]));
+    int data = sp->data_count < 0 ? 0 : sp->data_count > SHADER_DATA ? SHADER_DATA : sp->data_count;
+    if (data && sp->data) memcpy(u->data, sp->data, (size_t)data * sizeof(float));
+    int windows = sp->window_count < 0 ? 0 : sp->window_count > SHADER_WINDOWS ? SHADER_WINDOWS :
+        sp->window_count;
+    u->window_count = sp->window_count;
+    if (windows && sp->windows) memcpy(u->windows, sp->windows, (size_t)windows * sizeof(u->windows[0]));
+    if (sp->selection) memcpy(u->selection, sp->selection, sizeof(u->selection));
+}
+
 void gfx_shader_draw(struct pass *pass, struct gfx_prog *p, const struct gfx_shader_params *sp,
         const float pos[8], const float local[8]) {
+    struct vk *v = V(pass->r);
+    struct render *r = pass->r;
+    if (!p || p->builtin || !p->frag || p->v != v || !v->user_layout || !v->target || !v->dummy)
+        return;
+    VkPipeline pipeline = user_pipeline(v, p, v->target->format);
+    if (!pipeline) return;
+    struct vk_image *beneath = sp->beneath ? level_image(sp->beneath) : NULL;
+    struct vk_image *frost = sp->frost && sp->frost_ok ? level_image(sp->frost) : NULL;
+    struct vk_image *marks = NULL;
+    if (sp->marks && (p->reads & (1u << GFX_IN_MARKS))) {
+        struct vk_texture *t = texture_of(sp->marks);
+        if (t->image && t->image->set && image_use(v, t->image)) marks = t->image;
+    }
+    pass_flush(pass);
+    struct chunk *chunk;
+    VkDeviceSize uniform_offset;
+    struct user_uniforms *u = stage_alloc_in(v, sizeof(*u), v->ubo_align, &chunk, &uniform_offset);
+    if (!u) return;
+    user_uniforms_fill(u, sp);
+    VkDescriptorSet ubo = chunk_ubo(v, chunk);
+    VkBuffer buffer;
+    VkDeviceSize offset;
+    struct scene_instance *in = stage_alloc(v, sizeof(*in), &buffer, &offset);
+    if (!ubo || !in || !rendering_begin(v, v->target)) return;
+    memset(in, 0, sizeof(*in));
+    memcpy(in->pos, pos, sizeof(in->pos));
+    memcpy(in->local, local, sizeof(in->local));
+    VkCommandBuffer cb = v->open->main;
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    VkDescriptorSet sets[USER_SETS] = { ubo, v->sampler_sets[0],
+        beneath && beneath->set ? beneath->set : v->dummy->set,
+        marks ? marks->set : v->dummy->set,
+        frost && frost->set ? frost->set : v->dummy->set };
+    uint32_t dynamic = (uint32_t)uniform_offset;
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, v->user_layout, 0, USER_SETS, sets,
+        1, &dynamic);
+    vkCmdBindVertexBuffers(cb, 0, 1, &buffer, &offset);
+    r->gl_calls += 4;
+    int count = 1;
+    const struct rect *rects = pass->clip ? region_rectangles((struct region *)pass->clip, &count) :
+        NULL;
+    for (int i = 0; i < count; i++) {
+        VkRect2D scissor = { { 0, 0 }, { (uint32_t)v->target->width, (uint32_t)v->target->height } };
+        if (rects) {
+            int32_t x1 = rects[i].x1 < 0 ? 0 : rects[i].x1, y1 = rects[i].y1 < 0 ? 0 : rects[i].y1;
+            int32_t x2 = rects[i].x2 > v->target->width ? v->target->width : rects[i].x2;
+            int32_t y2 = rects[i].y2 > v->target->height ? v->target->height : rects[i].y2;
+            if (x2 <= x1 || y2 <= y1) continue;
+            scissor = (VkRect2D){ { x1, y1 }, { (uint32_t)(x2 - x1), (uint32_t)(y2 - y1) } };
+            r->fragments += quad_pixels(pass, pos, &rects[i]);
+        } else {
+            r->fragments += quad_pixels(pass, pos, NULL);
+        }
+        vkCmdSetScissor(cb, 0, 1, &scissor);
+        vkCmdDraw(cb, 6, 1, 0, 0);
+        r->gl_calls += 2;
+        r->quads++;
+    }
+    r->runs++;
 }
 
 void gfx_glass_draw(struct pass *pass, struct gfx_prog *p, struct texture *map,
@@ -3025,6 +3257,152 @@ struct gfx_prog *render_shader_create(struct render *r, const char *source, bool
     return NULL;
 }
 
+bool gfx_spirv_shaders(struct render *r) {
+    return r && V(r)->user_layout;
+}
+
+enum {
+    SPV_NAME = 5, SPV_ENTRY = 15, SPV_TYPE_INT = 21, SPV_CONSTANT = 43, SPV_VARIABLE = 59,
+    SPV_LOAD = 61, SPV_ACCESS = 65, SPV_ACCESS_IN_BOUNDS = 66, SPV_PTR_ACCESS = 67,
+    SPV_DECORATE = 71, SPV_COPY_MEMORY = 63,
+    DECO_BUILTIN = 11, DECO_LOCATION = 30, DECO_BINDING = 33, DECO_SET = 34,
+    CLASS_UNIFORM_CONSTANT = 0, CLASS_INPUT = 1, CLASS_UNIFORM = 2, CLASS_OUTPUT = 3,
+    CLASS_PUSH = 9, CLASS_STORAGE = 12,
+};
+
+struct spv_id { int32_t set, binding, location, constant; uint32_t storage; bool builtin, variable; };
+
+static bool spirv_scan(const uint32_t *code, size_t words, uint32_t *reads) {
+    if (words < 5 || code[0] != 0x07230203u || code[1] > 0x00010600u || code[3] == 0 ||
+            code[3] > (1u << 22)) return false;
+    uint32_t bound = code[3];
+    struct spv_id *ids = calloc(bound, sizeof(*ids));
+    if (!ids) return false;
+    for (uint32_t i = 0; i < bound; i++) ids[i] = (struct spv_id){ -1, -1, -1, -1, 0, false, false };
+    bool ok = true;
+    for (int pass = 0; pass < 2 && ok; pass++) {
+        size_t at = 5;
+        while (at < words) {
+            uint32_t count = code[at] >> 16, op = code[at] & 0xffff;
+            if (!count || at + count > words) {
+                ok = false;
+                break;
+            }
+            const uint32_t *w = code + at;
+            if (pass == 0) {
+                if (op == SPV_DECORATE && count >= 3 && w[1] < bound) {
+                    struct spv_id *id = &ids[w[1]];
+                    if (w[2] == DECO_SET && count >= 4) id->set = (int32_t)w[3];
+                    else if (w[2] == DECO_BINDING && count >= 4) id->binding = (int32_t)w[3];
+                    else if (w[2] == DECO_LOCATION && count >= 4) id->location = (int32_t)w[3];
+                    else if (w[2] == DECO_BUILTIN) id->builtin = true;
+                } else if (op == SPV_CONSTANT && count == 4 && w[2] < bound) {
+                    ids[w[2]].constant = (int32_t)w[3];
+                } else if (op == SPV_VARIABLE && count >= 4 && w[2] < bound) {
+                    ids[w[2]].variable = true;
+                    ids[w[2]].storage = w[3];
+                }
+            } else {
+                if (op == SPV_VARIABLE && count >= 4 && w[2] < bound) {
+                    const struct spv_id *id = &ids[w[2]];
+                    switch (w[3]) {
+                    case CLASS_UNIFORM_CONSTANT:
+                    case CLASS_UNIFORM:
+                        if (id->binding != 0 || id->set < 0 || id->set >= USER_SETS) ok = false;
+                        break;
+                    case CLASS_INPUT:
+                        if (!id->builtin && id->location != 5) ok = false;
+                        break;
+                    case CLASS_OUTPUT:
+                        if (id->location != 0) ok = false;
+                        break;
+                    case CLASS_PUSH:
+                    case CLASS_STORAGE:
+                        ok = false;
+                        break;
+                    default:
+                        break;
+                    }
+                } else if ((op == SPV_LOAD && count >= 4) || op == SPV_COPY_MEMORY) {
+                    uint32_t pointer = op == SPV_LOAD ? w[3] : count >= 3 ? w[2] : 0;
+                    if (pointer < bound && ids[pointer].variable) {
+                        int32_t set = ids[pointer].set;
+                        if (set == 0) *reads |= ~0u;
+                        else if (set == 2) *reads |= 1u << GFX_IN_BENEATH;
+                        else if (set == 3) *reads |= 1u << GFX_IN_MARKS;
+                        else if (set == 4) *reads |= 1u << GFX_IN_FROST;
+                    }
+                } else if ((op == SPV_ACCESS || op == SPV_ACCESS_IN_BOUNDS || op == SPV_PTR_ACCESS) &&
+                        count >= 5 && w[3] < bound && ids[w[3]].variable && ids[w[3]].set == 0) {
+                    uint32_t index = op == SPV_PTR_ACCESS ? (count >= 6 ? w[5] : 0) : w[4];
+                    int32_t member = index < bound ? ids[index].constant : -1;
+                    switch (member) {
+                    case TOMOE_VK_MOUSE: *reads |= 1u << GFX_IN_MOUSE; break;
+                    case TOMOE_VK_MARKS_BOX: *reads |= 1u << GFX_IN_MARKS; break;
+                    case TOMOE_VK_BENEATH_BOX: *reads |= 1u << GFX_IN_BENEATH; break;
+                    case TOMOE_VK_FROST_BOX: *reads |= 1u << GFX_IN_FROST; break;
+                    case TOMOE_VK_TRAIL_COUNT: case TOMOE_VK_TRAIL: *reads |= 1u << GFX_IN_TRAIL; break;
+                    case TOMOE_VK_WINDOW_COUNT: case TOMOE_VK_WINDOWS: *reads |= 1u << GFX_IN_WINDOWS; break;
+                    case TOMOE_VK_DATA: *reads |= 1u << GFX_IN_DATA; break;
+                    case TOMOE_VK_SELECTION: *reads |= 1u << GFX_IN_SELECTION; break;
+                    case TOMOE_VK_RESOLUTION: case TOMOE_VK_TIME: case TOMOE_VK_FRAME: break;
+                    default: *reads |= ~0u; break;
+                    }
+                }
+            }
+            at += count;
+        }
+    }
+    free(ids);
+    return ok;
+}
+
+struct gfx_prog *gfx_user_shader(struct render *r, const void *bytes, size_t length) {
+    struct vk *v = V(r);
+    if (!v->user_layout || !bytes || length < 20 || length % 4 || length > (1u << 20)) return NULL;
+    size_t words = length / 4;
+    uint64_t hash = UINT64_C(0xcbf29ce484222325);
+    for (size_t i = 0; i < length; i++) {
+        hash ^= ((const unsigned char *)bytes)[i];
+        hash *= UINT64_C(0x100000001b3);
+    }
+    for (struct gfx_prog *p = v->user_progs; p; p = p->next) {
+        if (p->hash != hash || p->words != words || memcmp(p->code, bytes, length)) continue;
+        if (p->refs == INT32_MAX) return NULL;
+        p->refs++;
+        return p;
+    }
+    struct gfx_prog *p = calloc(1, sizeof(*p));
+    if (!p || !(p->code = malloc(length))) {
+        free(p);
+        return NULL;
+    }
+    memcpy(p->code, bytes, length);
+    p->words = words;
+    p->hash = hash;
+    if (!spirv_scan(p->code, words, &p->reads)) {
+        tomoe_log(LOG_ERROR, "tomoe: a user shader declares inputs outside the Tomoe interface");
+        free(p->code);
+        free(p);
+        return NULL;
+    }
+    VkShaderModuleCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = length,
+        .pCode = p->code,
+    };
+    if (vkCreateShaderModule(v->dev, &info, NULL, &p->frag) != VK_SUCCESS) {
+        free(p->code);
+        free(p);
+        return NULL;
+    }
+    p->v = v;
+    p->refs = 1;
+    p->next = v->user_progs;
+    v->user_progs = p;
+    return p;
+}
+
 bool render_shader_reap(struct render *r) {
     return false;
 }
@@ -3034,10 +3412,21 @@ struct gfx_prog *render_shader_compile(struct render *r, const char *source) {
 }
 
 void render_shader_destroy(struct gfx_prog *program) {
+    if (!program || program->builtin || --program->refs > 0) return;
+    struct vk *v = program->v;
+    if (v) {
+        struct gfx_prog **link = &v->user_progs;
+        while (*link && *link != program) link = &(*link)->next;
+        if (*link) *link = program->next;
+        struct grave g = { .module = program->frag };
+        memcpy(g.pipelines, program->pipelines, sizeof(g.pipelines));
+        bury(v, g);
+    }
+    free(program->code);
+    free(program);
 }
 
 int tomoe_warm_shaders(const char *node, const char *directory, const char *marker,
         const char *name) {
-    tomoe_log(LOG_ERROR, "tomoe: GFX=vk has no shader warm cache");
-    return 1;
+    return 0;
 }

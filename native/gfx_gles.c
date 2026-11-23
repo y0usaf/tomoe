@@ -623,6 +623,14 @@ static struct gfx_prog *shader_create(struct render *r, const char *source, bool
     return NULL;
 }
 
+bool gfx_spirv_shaders(struct render *r) {
+    return false;
+}
+
+struct gfx_prog *gfx_user_shader(struct render *r, const void *spirv, size_t length) {
+    return NULL;
+}
+
 struct gfx_prog *render_shader_create(struct render *r, const char *source, bool *pending) {
     return shader_create(r, source, true, pending);
 }

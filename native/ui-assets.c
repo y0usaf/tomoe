@@ -27,14 +27,16 @@ struct ui_asset {
     uint32_t width, height;
     struct gfx_prog *shader;
     char *shader_source;
-    bool shader_waiting;
+    bool shader_waiting, spirv;
+    uint64_t build;
+    uint32_t sent;
     double epoch;
 };
 
 struct ui_asset_pool {
     struct tomoe *server;
     struct ui_asset *assets;
-    uint64_t count, bytes, loads, next_id;
+    uint64_t count, bytes, loads, next_id, next_build;
     struct wl_event_source *timer;
     size_t waiting;
 };
@@ -120,11 +122,55 @@ static void shader_wait_end(struct ui_asset *asset) {
     free(asset->shader_source);
     asset->shader_source = NULL;
     asset->shader_waiting = false;
-    if (asset->pool->waiting) asset->pool->waiting--;
+    if (!asset->spirv && asset->pool->waiting) asset->pool->waiting--;
+    asset->spirv = false;
+}
+
+static const char *shader_name(const struct ui_asset *asset) {
+    return strcmp(asset->name, "glsl") ? asset->path : "";
+}
+
+static void shader_request(struct tomoe *s, struct ui_asset *asset) {
+    uint32_t generation = policy_link_generation(s);
+    if (asset->sent && asset->sent == generation) return;
+    if (policy_link_shader_build(s, asset->build, shader_name(asset), asset->shader_source,
+            strlen(asset->shader_source))) asset->sent = generation ? generation : 1;
+    else tomoe_log(LOG_WARNING, "tomoe: shader %s waits for tomoe-policy to build it",
+            *shader_name(asset) ? shader_name(asset) : "(inline)");
+}
+
+void ui_assets_shader_resend(struct tomoe *s) {
+    if (!s || !s->ui_assets) return;
+    for (struct ui_asset *asset = s->ui_assets->assets; asset; asset = asset->next)
+        if (asset->shader_waiting && asset->spirv) shader_request(s, asset);
+}
+
+void ui_asset_shader_built(struct tomoe *s, uint64_t build, const void *spirv, size_t length,
+        uint32_t flags) {
+    if (!s || !s->ui_assets || !build) return;
+    struct ui_asset *asset = s->ui_assets->assets;
+    while (asset && !(asset->spirv && asset->shader_waiting && asset->build == build))
+        asset = asset->next;
+    if (!asset) return;
+    struct ui_asset_pool *pool = asset->pool;
+    uint64_t bytes = strlen(asset->shader_source);
+    asset->shader = length && s->renderer ? gfx_user_shader(s->renderer, spirv, length) : NULL;
+    if (!asset->shader) {
+        fprintf(stderr, "tomoe: shell shader asset unavailable: %s\n",
+            *shader_name(asset) ? shader_name(asset) : "inline GLSL");
+        shader_wait_end(asset);
+        return;
+    }
+    asset->epoch = shader_clock_now(s, animation_now());
+    shader_wait_end(asset);
+    asset->bytes = bytes;
+    pool->bytes += bytes;
+    ui_backdrops_ready(s);
 }
 
 static bool shader_retry(struct ui_asset *asset) {
     struct ui_asset_pool *pool = asset->pool;
+    if (asset->spirv) return false;
     if (!asset->shader_source || !pool->server || !pool->server->renderer) {
         shader_wait_end(asset);
         return false;
@@ -171,7 +217,18 @@ static enum asset_status shader_start(struct tomoe *s, struct ui_asset *asset,
     if (status != ASSET_OK) return status;
     data.bytes[data.length] = '\0';
     if (data.length > available) status = ASSET_HARD;
-    else if (s->renderer && strlen((char *)data.bytes) == data.length)
+    else if (s->renderer && gfx_spirv_shaders(s->renderer)) {
+        if (strlen((char *)data.bytes) != data.length) {
+            free(data.bytes);
+            return ASSET_MISSING;
+        }
+        asset->shader_source = (char *)data.bytes;
+        asset->shader_waiting = true;
+        asset->spirv = true;
+        asset->build = ++asset->pool->next_build;
+        shader_request(s, asset);
+        return ASSET_PENDING;
+    } else if (s->renderer && strlen((char *)data.bytes) == data.length)
         asset->shader = render_shader_create(s->renderer, (char *)data.bytes, &waiting);
     if (status == ASSET_OK && !asset->shader && waiting) {
         asset->shader_source = (char *)data.bytes;

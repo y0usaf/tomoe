@@ -77,6 +77,10 @@ static void fatal_link(const char *why) {
     _exit(1);
 }
 
+void core_send_frame(uint16_t type, const void *a, size_t a_length, const void *b, size_t b_length) {
+    if (link_fd >= 0) send_now(type, 0, a, a_length, b, b_length);
+}
+
 bool core_connected(void) {
     return link_fd >= 0;
 }
@@ -812,6 +816,7 @@ static void process(struct message *message) {
     case TPL_HELLO: handle_hello(message); break;
     case TPL_RESUME: handle_resume(message); break;
     case TPL_EVENTS: handle_events(message); break;
+    case TPL_SHADER_BUILD: policy_shader_build(message->payload, message->hdr.len); break;
     default: break;
     }
     free(message->payload);

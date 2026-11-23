@@ -208,6 +208,7 @@
           buildPhase = ''
             runHook preBuild
             make -j"$NIX_BUILD_CORES" VERSION=${version} GFX=${gfx} \
+              ${pkgs.lib.optionalString (gfx == "vk") "GLSLANG=${pkgs.lib.getBin pkgs.glslang}/bin/glslangValidator"} \
               PATH_PREFIX=$out/bin \
               FONT_DIR=${pkgs.dejavu_fonts.minimal} \
               XKB_CONFIG_ROOT=${pkgs.xkeyboard_config}/etc/X11/xkb \

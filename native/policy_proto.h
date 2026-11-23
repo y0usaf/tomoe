@@ -12,6 +12,7 @@ enum tpl_type {
     TPL_EVENTS = 3,
     TPL_REPLY = 4,
     TPL_PING = 5,
+    TPL_SHADER_BUILD = 6,
     TPL_READY = 64,
     TPL_CALL = 65,
     TPL_DONE = 66,
@@ -20,7 +21,8 @@ enum tpl_type {
     TPL_LOADING = 69,
     TPL_WATCH = 70,
     TPL_UNWATCH = 71,
-    TPL_HOOK_BEGIN = 72
+    TPL_HOOK_BEGIN = 72,
+    TPL_SHADER_SPIRV = 73
 };
 
 struct tpl_hdr {
@@ -71,6 +73,26 @@ struct tpl_resume {
     uint32_t snapshots;
     uint32_t has_rng;
     uint32_t pad;
+};
+
+enum { TPL_SHADER_SOURCE_MAX = 1u << 20, TPL_SHADER_SPIRV_MAX = 1u << 20 };
+
+enum tpl_shader_flag {
+    TPL_SHADER_KEPT = 1u << 0,
+    TPL_SHADER_FAILED = 1u << 1
+};
+
+struct tpl_shader_build {
+    uint64_t build;
+    uint32_t name_length;
+    uint32_t source_length;
+};
+
+struct tpl_shader_spirv {
+    uint64_t build;
+    uint64_t hash;
+    uint32_t flags;
+    uint32_t words;
 };
 
 struct tpl_done {

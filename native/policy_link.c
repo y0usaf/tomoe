@@ -396,6 +396,7 @@ static void handle_message(struct policy_link *link, const struct tpl_hdr *hdr,
         link->ready_ms = now_ms();
         clients_open(link);
         listeners_watch(link);
+        ui_assets_shader_resend(s);
         if (link->inflight && link->replays >= LINK_REPLAYS) {
             tomoe_log(LOG_ERROR, "tomoe: an event batch stopped tomoe-policy %d times; dropping it",
                 link->replays);
@@ -469,6 +470,16 @@ static void handle_message(struct policy_link *link, const struct tpl_hdr *hdr,
         link->ping_pending = false;
         link_settle(link);
         return;
+    case TPL_SHADER_SPIRV: {
+        struct tpl_shader_spirv head;
+        if (hdr->len < sizeof(head)) return;
+        memcpy(&head, data, sizeof(head));
+        size_t length = hdr->len - sizeof(head);
+        if ((uint64_t)head.words * 4 != length || length > TPL_SHADER_SPIRV_MAX) return;
+        ui_asset_shader_built(s, head.build, length ? data + sizeof(head) : NULL, length,
+            head.flags);
+        return;
+    }
     default:
         return;
     }
@@ -1074,6 +1085,22 @@ void policy_link_stop(struct policy_link *link) {
     free(link->in);
     free(link->config);
     free(link);
+}
+
+bool policy_link_shader_build(struct tomoe *s, uint64_t build, const char *name,
+        const char *source, size_t length) {
+    if (!s || !s->policy_link || !name || !source) return false;
+    size_t name_length = strlen(name);
+    if (name_length > 4096 || length > TPL_SHADER_SOURCE_MAX) return false;
+    struct tpl_shader_build head = { build, (uint32_t)name_length, (uint32_t)length };
+    char *body = malloc(name_length + length + 1);
+    if (!body) return false;
+    memcpy(body, name, name_length);
+    memcpy(body + name_length, source, length);
+    bool sent = link_send(s->policy_link, TPL_SHADER_BUILD, 0, &head, sizeof(head), body,
+        name_length + length);
+    free(body);
+    return sent;
 }
 
 bool policy_link_up(struct tomoe *s) {

@@ -101,14 +101,15 @@ XWM = $(patsubst native/xwm/%.c,build/obj/xwm-%.o,$(wildcard native/xwm/*.c))
 
 LISP_OBJECTS = $(patsubst lib/%.c,build/obj/lib/%.o,$(wildcard lib/lisp/*.c))
 POLICY = $(patsubst policy/%.c,build/obj/policy-%.o,$(wildcard policy/*.c)) $(LISP_OBJECTS) build/obj/pv.o build/obj/desktop-paths.o build/obj/lib/wayland/wire.o
-CFLAGS_POLICY = $(CFLAGS_BASE) -DTOMOE_VERSION='"$(VERSION)"' -Ipolicy -Inative -Ilib/lisp/include -Ilib/wayland/include -Ilib/wayland/scanner -Ibuild
+GLSLANG ?= glslangValidator
+CFLAGS_POLICY = $(CFLAGS_BASE) -DTOMOE_VERSION='"$(VERSION)"' -DTOMOE_GLSLANG='"$(GLSLANG)"' -Ipolicy -Inative -Ilib/lisp/include -Ilib/wayland/include -Ilib/wayland/scanner -Ibuild
 
 all: build/tomoe build/tomoe-portal build/tomoe-xwm build/tomoe-policy
 
 build/tomoe-policy: $(POLICY)
 	$(CC) $(LTO) $^ -o $@ -lm
 
-build/obj/policy-%.o: policy/%.c $(wildcard policy/*.h) native/pv.h native/policy_proto.h native/desktop-session.h $(wildcard lib/lisp/include/*.h) | build/obj
+build/obj/policy-%.o: policy/%.c $(wildcard policy/*.h) native/pv.h native/policy_proto.h native/shader-vk.h native/desktop-session.h $(wildcard lib/lisp/include/*.h) | build/obj
 	$(CC) $(CFLAGS_POLICY) -c $< -o $@
 
 build/obj/policy-main.o: $(wildcard lisp/*.lisp)

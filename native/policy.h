@@ -136,6 +136,8 @@ uint32_t policy_link_generation(struct tomoe *server);
 bool policy_accepting(struct tomoe *server);
 bool policy_loading(struct tomoe *server);
 bool policy_link_up(struct tomoe *server);
+bool policy_link_shader_build(struct tomoe *server, uint64_t build, const char *name,
+    const char *source, size_t length);
 bool policy_link_floor(struct tomoe *server, const char *command);
 pv policy_event_value(struct tomoe *server, const struct tomoe_event *event, pv *aux);
 pv policy_broadcast_value(struct tomoe *server, const struct tomoe_event *event, const char **name);

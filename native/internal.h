@@ -375,6 +375,11 @@ bool render_shader_reap(struct render *r);
 struct gfx_prog *render_shader_compile(struct render *r, const char *source);
 struct gfx_prog *gfx_glass_program(struct render *r);
 void render_shader_destroy(struct gfx_prog *program);
+bool gfx_spirv_shaders(struct render *r);
+struct gfx_prog *gfx_user_shader(struct render *r, const void *spirv, size_t length);
+void ui_asset_shader_built(struct tomoe *s, uint64_t build, const void *spirv, size_t length,
+    uint32_t flags);
+void ui_assets_shader_resend(struct tomoe *s);
 #define RING_SLOTS 4
 #define RING_START_SLOTS 2
 #define RING_FRAME_SLOTS 3
