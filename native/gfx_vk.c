@@ -356,14 +356,16 @@ static void full_barrier(struct vk *v, VkCommandBuffer cb) {
         VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
 }
 
-static void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout from, VkImageLayout to,
-        uint32_t src_family, uint32_t dst_family) {
+static void image_sync(VkCommandBuffer cb, VkImage image,
+        VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
+        VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access,
+        VkImageLayout from, VkImageLayout to, uint32_t src_family, uint32_t dst_family) {
     VkImageMemoryBarrier2 barrier = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .srcStageMask = src_stage,
+        .srcAccessMask = src_access,
+        .dstStageMask = dst_stage,
+        .dstAccessMask = dst_access,
         .oldLayout = from,
         .newLayout = to,
         .srcQueueFamilyIndex = src_family,
@@ -377,6 +379,14 @@ static void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout from,
         .pImageMemoryBarriers = &barrier,
     };
     vkCmdPipelineBarrier2(cb, &info);
+}
+
+static void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout from, VkImageLayout to,
+        uint32_t src_family, uint32_t dst_family) {
+    image_sync(cb, image, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        from, to, src_family, dst_family);
 }
 
 static void chunk_free(struct vk *v, struct chunk *c) {
@@ -1031,13 +1041,28 @@ static struct vk_image *image_new(struct vk *v, VkFormat format, int width, int 
         return NULL;
     }
     v->images_made++;
-    image_barrier(b->pre, image->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
-        VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
+    VkPipelineStageFlags2 dst_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_COPY_BIT |
+        VK_PIPELINE_STAGE_2_BLIT_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT;
+    VkAccessFlags2 dst_access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT |
+        VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
+        VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
     if (usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) {
+        image_sync(b->pre, image->image, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
+            VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+            VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
         VkClearColorValue zero = {{ 0, 0, 0, 0 }};
         VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
         vkCmdClearColorImage(b->pre, image->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &range);
-        full_barrier(v, b->pre);
+        image_sync(b->pre, image->image, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT, dst_stage, dst_access,
+            VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+            VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
+    } else {
+        image_sync(b->pre, image->image, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
+            dst_stage, dst_access, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+            VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
     }
     return image;
 }
