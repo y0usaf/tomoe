@@ -2402,7 +2402,7 @@ static void pipeline_cache_open(struct vk *v) {
     v->pipeline_cache_path = pipeline_cache_file();
     uint8_t *data = NULL;
     size_t length = 0;
-    int fd = v->pipeline_cache_path ? open(v->pipeline_cache_path, O_RDONLY | O_CLOEXEC) : -1;
+    int fd = v->pipeline_cache_path ? open(v->pipeline_cache_path, O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW) : -1;
     struct stat st;
     if (fd >= 0 && fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0 &&
             st.st_size <= PIPELINE_CACHE_LIMIT && (data = malloc((size_t)st.st_size))) {
@@ -2441,7 +2441,7 @@ static void pipeline_cache_save(struct vk *v) {
     if (data && vkGetPipelineCacheData(v->dev, v->pipeline_cache, &length, data) == VK_SUCCESS &&
             pipeline_cache_matches(v, data, length) &&
             asprintf(&temporary, "%s.%d", v->pipeline_cache_path, (int)getpid()) >= 0) {
-        int fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+        int fd = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
         size_t done = 0;
         while (fd >= 0 && done < length) {
             ssize_t n = write(fd, data + done, length - done);
