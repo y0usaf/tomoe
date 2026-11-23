@@ -1626,8 +1626,8 @@ def shm_show(wl, surf, buf, rects):
 def tomoe_upload_stats(tomoe_bin, sock):
     r = subprocess.run([tomoe_bin, "--socket", sock, "timings"], stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL, text=True, timeout=10)
-    m = re.search(r":upload (\(.*?\)|nil)", r.stdout)
-    return m.group(1) if m else "?"
+    m = re.search(r":UPLOAD (\(.*?\)|NIL)", r.stdout, re.I)
+    return m.group(1) if m else "?" + repr(r.stdout[-160:])
 
 
 def check_shm_truncate(path, client_bin, tomoe_bin):
