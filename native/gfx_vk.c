@@ -2,6 +2,8 @@
 #include "drm.h"
 #include "upload.h"
 #include <fcntl.h>
+#include <linux/dma-buf.h>
+#include <sys/ioctl.h>
 #include <poll.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
@@ -40,7 +42,8 @@ struct vk_image {
     uint32_t drm_format;
     int width, height;
     bool foreign, target, owned, used;
-    uint64_t batch;
+    uint64_t batch, written;
+    int fd;
 };
 
 struct vk_texture {
@@ -164,6 +167,7 @@ static uint64_t serials;
 static struct vk *current_vk;
 
 static void level_pool_drain(struct vk *v);
+static bool wait_fd(struct vk *v, int fd);
 
 enum { LEVEL_FORMAT = VK_FORMAT_B8G8R8A8_UNORM };
 
@@ -522,6 +526,11 @@ static bool image_use(struct vk *v, struct vk_image *image) {
     image_barrier(b->pre, image->image, from, VK_IMAGE_LAYOUT_GENERAL,
         VK_QUEUE_FAMILY_FOREIGN_EXT, v->family);
     image->used = true;
+    if (!image->owned && image->fd >= 0 && v->sync_fd) {
+        struct dma_buf_export_sync_file exported = { .flags = DMA_BUF_SYNC_READ, .fd = -1 };
+        if (ioctl(image->fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &exported) == 0 && exported.fd >= 0)
+            wait_fd(v, exported.fd);
+    }
     return true;
 }
 
@@ -588,6 +597,15 @@ static int submit(struct vk *v, bool export) {
         .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
     };
     if (v->semaphore_fd(v->dev, &get, &fd) != VK_SUCCESS) return -1;
+    for (size_t i = 0; fd >= 0 && i < b->acquired_len; i++) {
+        struct vk_image *image = b->acquired[i];
+        if (!image || image->fd < 0) continue;
+        struct dma_buf_import_sync_file imported = {
+            .flags = image->written == b->serial ? DMA_BUF_SYNC_WRITE : DMA_BUF_SYNC_READ,
+            .fd = fd,
+        };
+        ioctl(image->fd, DMA_BUF_IOCTL_IMPORT_SYNC_FILE, &imported);
+    }
     return fd;
 }
 
@@ -671,6 +689,7 @@ static bool image_view(struct vk *v, struct vk_image *image, bool opaque) {
 
 static void image_free(struct vk_image *image) {
     struct vk *v = image->v;
+    if (image->fd >= 0) close(image->fd);
     if (v->bound == image) rendering_end(v);
     bury(v, (struct grave){ .image = image->image, .memory = image->memory, .view = image->view,
         .sample = image->sample, .set = image->set, .pool = image->pool });
@@ -690,6 +709,7 @@ static struct vk_image *image_new(struct vk *v, VkFormat format, int width, int 
     image->usage = usage;
     image->width = width;
     image->height = height;
+    image->fd = -1;
     wl_list_init(&image->link);
     VkImageCreateInfo info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -788,6 +808,7 @@ static struct vk_image *import(struct vk *v, struct buffer *buffer) {
     image->width = d.width;
     image->height = d.height;
     image->foreign = true;
+    image->fd = -1;
     image->usage = import_usage(v, d.format, d.modifier);
     image->target = image->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     image->owned = render_owns(buffer);
@@ -870,6 +891,7 @@ static struct vk_image *import(struct vk *v, struct buffer *buffer) {
         return NULL;
     }
     v->imports_made++;
+    image->fd = fcntl(d.fd[0], F_DUPFD_CLOEXEC, 0);
     addon_init(&image->addon, &buffer->addons, &v->base, import_addon_destroy);
     wl_list_insert(&v->images, &image->link);
     return image;
@@ -1289,11 +1311,18 @@ void texture_destroy(struct texture *base) {
 bool render_wait(struct render *r, struct timeline *timeline, uint64_t point) {
     struct vk *v = V(r);
     if (!v->sync_fd) return false;
+    int fd = timeline_export_sync_file(timeline, point);
+    if (fd < 0) return false;
+    return wait_fd(v, fd);
+}
+
+static bool wait_fd(struct vk *v, int fd) {
     struct batch *b = batch(v);
-    if (!b) return false;
+    if (!b) {
+        close(fd);
+        return false;
+    }
     if (b->wait_count == BATCH_WAITS) {
-        int fd = timeline_export_sync_file(timeline, point);
-        if (fd < 0) return false;
         struct pollfd ready = { .fd = fd, .events = POLLIN };
         poll(&ready, 1, -1);
         close(fd);
@@ -1301,12 +1330,12 @@ bool render_wait(struct render *r, struct timeline *timeline, uint64_t point) {
     }
     if (b->wait_count == b->wait_made) {
         VkSemaphoreCreateInfo info = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
-        if (vkCreateSemaphore(v->dev, &info, NULL, &b->waits[b->wait_made]) != VK_SUCCESS)
+        if (vkCreateSemaphore(v->dev, &info, NULL, &b->waits[b->wait_made]) != VK_SUCCESS) {
+            close(fd);
             return false;
+        }
         b->wait_made++;
     }
-    int fd = timeline_export_sync_file(timeline, point);
-    if (fd < 0) return false;
     VkImportSemaphoreFdInfoKHR import_info = {
         .sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR,
         .semaphore = b->waits[b->wait_count],
@@ -1456,6 +1485,7 @@ static bool rendering_begin(struct vk *v, struct vk_image *target) {
         .pColorAttachments = &color,
     };
     vkCmdBeginRendering(b->main, &info);
+    target->written = b->serial;
     VkViewport viewport = { 0, 0, (float)target->width, (float)target->height, 0, 1 };
     vkCmdSetViewport(b->main, 0, 1, &viewport);
     v->rendering = true;
