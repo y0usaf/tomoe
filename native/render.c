@@ -1124,6 +1124,7 @@ void ring_finish(struct ring *ring) {
         if (ring->slots[i]) buffer_drop(ring->slots[i]);
         ring->slots[i] = NULL;
         ring->frames[i] = 0;
+        ring->plane_shapes[i] = 0;
     }
     format_set_finish(&ring->format);
     ring->width = ring->height = 0;

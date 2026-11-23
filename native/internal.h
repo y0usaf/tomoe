@@ -384,6 +384,7 @@ void ui_assets_shader_resend(struct tomoe *s);
 struct ring {
     struct buffer *slots[RING_SLOTS];
     uint64_t frames[RING_SLOTS];
+    uint64_t plane_shapes[RING_SLOTS];
     int width, height;
     bool implicit;
     bool grow;

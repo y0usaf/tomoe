@@ -3065,7 +3065,8 @@ bool gfx_buffer_copy(struct pass *pass, struct buffer *src, const struct region 
     if (!v || !src || !pass->buffer || src == pass->buffer || !region) return false;
     struct vk_image *from = import(v, src), *to = import(v, pass->buffer);
     if (!from || !to || from == to || from->width != to->width || from->height != to->height ||
-            from->format != to->format) return false;
+            from->format != to->format || from->drm_format != to->drm_format) return false;
+    if (from->owned && !from->used) return false;
     if (!(from->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ||
             !(to->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT)) return false;
     pass_flush(pass);
@@ -3079,7 +3080,7 @@ bool gfx_buffer_copy(struct pass *pass, struct buffer *src, const struct region 
     }
     VkCommandBuffer cb = transfer_begin(v);
     if (!cb) return false;
-    if (!from->foreign) full_barrier(v, cb);
+    if (!from->foreign || from->written == b->serial) full_barrier(v, cb);
     int count = 0;
     const struct rect *rects = region_rectangles((struct region *)region, &count);
     VkImageCopy copies[32];

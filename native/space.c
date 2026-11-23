@@ -759,9 +759,12 @@ static bool render_scene_prepared(struct output *o, struct buffer *buffer,
     } else {
         partial = track && scene_damage(o, &data, locked, &changed, &clip, &recorded);
     }
+    size_t slot = track ? ring_slot(&o->ring, buffer) : RING_SLOTS;
+    uint64_t plane_shape = planes && planes->count ? (planes->shape | 1) : 0;
     bool highlight = track && debug_damage();
     if (highlight) partial = false;
-    if (o->planes.changed) partial = false;
+    if (o->planes.changed || (slot < RING_SLOTS && o->ring.plane_shapes[slot] != plane_shape))
+        partial = false;
     if (fenced(output)) {
         if (!s->render_timeline)
             s->render_timeline = timeline_create(render_drm_fd(s->renderer));
@@ -769,8 +772,10 @@ static bool render_scene_prepared(struct output *o, struct buffer *buffer,
     }
     struct pass *pass = render_begin(s->renderer, buffer, signal, s->render_point);
     if (!pass) {
-        size_t slot = ring_slot(&o->ring, buffer);
-        if (track && slot < RING_SLOTS) o->ring.frames[slot] = 0;
+        if (slot < RING_SLOTS) {
+            o->ring.frames[slot] = 0;
+            o->ring.plane_shapes[slot] = 0;
+        }
         region_fini(&changed);
         region_fini(&clip);
         return false;
@@ -787,7 +792,8 @@ static bool render_scene_prepared(struct output *o, struct buffer *buffer,
         size_t prev_slot = prev ? ring_slot(&o->ring, prev) : RING_SLOTS;
         if (prev && prev != buffer && prev->width == buffer->width &&
                 prev->height == buffer->height && prev_slot < RING_SLOTS &&
-                o->damage_seq > 1 && o->ring.frames[prev_slot] == o->damage_seq - 1) {
+                o->damage_seq > 1 && o->ring.frames[prev_slot] == o->damage_seq - 1 &&
+                o->ring.plane_shapes[prev_slot] == 0) {
             struct region latest;
             region_init(&latest);
             region_copy(&latest, &changed);
@@ -840,6 +846,13 @@ static bool render_scene_prepared(struct output *o, struct buffer *buffer,
         .box = { .width = buffer->width, .height = buffer->height },
         .color = { 0.25f, 0, 0.25f, 0.25f }, .clip = &changed });
     bool success = pass_submit(pass);
+    if (slot < RING_SLOTS) {
+        if (success) o->ring.plane_shapes[slot] = plane_shape;
+        else {
+            o->ring.frames[slot] = 0;
+            o->ring.plane_shapes[slot] = 0;
+        }
+    }
     if (phase) timing_frame_raster(o->server, timing_now() - phase);
     region_fini(&changed);
     region_fini(&clip);
