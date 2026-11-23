@@ -103,7 +103,7 @@ pkgs.testers.runNixOSTest {
     machine.succeed(
         f"systemd-run --unit=e2e-tomoe --collect {unit_env} "
         f"tomoe --socket e2e --backend drm --drm_device /dev/dri/{vkms_card} "
-        "--config /run/e2e/cfg/init.lisp --no-watch"
+        "--config /run/e2e/cfg/init.lisp --no-watch --test-gfx-software"
     )
 
     inspect = ""

@@ -9,6 +9,7 @@ static struct test_flag {
 } test_flags[] = {
     { "debug-damage", NULL, false },
     { "gfx-lose-device", NULL, false },
+    { "gfx-software", NULL, false },
     { "shader-time", NULL, false },
     { "upload-no-worker", NULL, false },
     { "refuse-planes", NULL, false },

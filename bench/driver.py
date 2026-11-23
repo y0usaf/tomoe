@@ -214,7 +214,7 @@ class Tomoe(Compositor):
         command = ["tomoe", "--socket", "bench", "--backend", "drm"]
         if self.paths.get("drm_device"):
             command += ["--drm_device", self.paths["drm_device"]]
-        return command + ["--config", f"{self.config}/init.lisp", "--no-watch"]
+        return command + ["--config", f"{self.config}/init.lisp", "--no-watch", "--test-gfx-software"]
 
     def extra_environment(self):
         return {"MESA_LOADER_DRIVER_OVERRIDE": "zink", "VK_DRIVER_FILES": self.paths["lavapipe"]}

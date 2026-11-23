@@ -2127,7 +2127,7 @@ static bool device_init(struct vk *v) {
     vkEnumeratePhysicalDevices(v->instance, &count, devices);
     for (uint32_t i = 0; i < count && !v->phys; i++)
         if (device_matches(devices[i], st.st_rdev)) v->phys = devices[i];
-    for (uint32_t i = 0; i < count && !v->phys; i++)
+    for (uint32_t i = 0; i < count && !v->phys && tomoe_test_flag("gfx-software"); i++)
         if (device_software(devices[i])) v->phys = devices[i];
     free(devices);
     if (!v->phys) {
