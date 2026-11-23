@@ -957,11 +957,13 @@ void ui_hold_resume(struct tomoe *s) {
 static void shader_hold_advance(struct tomoe *s, double now) {
     double hold = s->settings.shader_hold;
     bool idle = hold > 0 && s->input_at > 0 && now - s->input_at >= hold;
-    if (idle && !s->shader_holding) {
-        s->shader_holding = true;
-        s->shader_hold_at = now;
+    if (idle) {
+        if (!s->shader_holding) {
+            s->shader_holding = true;
+            s->shader_hold_at = now;
+        }
         s->shader_lifting = false;
-    } else if (!idle && s->shader_holding) {
+    } else if (s->shader_holding) {
         if (!s->shader_lifting) {
             s->shader_lifting = true;
         } else {
