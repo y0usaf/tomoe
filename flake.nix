@@ -55,6 +55,32 @@
           gfx ? "gles",
         }:
         let
+          glslangValidator =
+            let
+              built = pkgs.glslang.overrideAttrs (old: {
+                cmakeFlags = (old.cmakeFlags or [ ]) ++ [
+                  "-DBUILD_SHARED_LIBS=OFF"
+                  "-DENABLE_OPT=OFF"
+                ];
+                preConfigure = (old.preConfigure or "") + ''
+                  cmakeFlagsArray+=("-DCMAKE_EXE_LINKER_FLAGS=-static-libstdc++ -static-libgcc")
+                '';
+                doCheck = false;
+              });
+            in
+            pkgs.runCommand "tomoe-glslang-validator"
+              {
+                nativeBuildInputs = [
+                  pkgs.removeReferencesTo
+                  pkgs.patchelf
+                ];
+              }
+              ''
+                install -Dm755 ${pkgs.lib.getBin built}/bin/glslangValidator $out/bin/glslangValidator
+                $STRIP $out/bin/glslangValidator
+                patchelf --set-rpath ${pkgs.stdenv.cc.libc}/lib $out/bin/glslangValidator
+                remove-references-to -t ${built} -t ${pkgs.lib.getBin built} $out/bin/glslangValidator
+              '';
           freetype = pkgs.freetype.overrideAttrs (old: {
             propagatedBuildInputs = pkgs.lib.subtractLists [
               pkgs.bzip2
@@ -208,7 +234,7 @@
           buildPhase = ''
             runHook preBuild
             make -j"$NIX_BUILD_CORES" VERSION=${version} GFX=${gfx} \
-              ${pkgs.lib.optionalString (gfx == "vk") "GLSLANG=${pkgs.lib.getBin pkgs.glslang}/bin/glslangValidator"} \
+              ${pkgs.lib.optionalString (gfx == "vk") "GLSLANG=${glslangValidator}/bin/glslangValidator"} \
               PATH_PREFIX=$out/bin \
               FONT_DIR=${pkgs.dejavu_fonts.minimal} \
               XKB_CONFIG_ROOT=${pkgs.xkeyboard_config}/etc/X11/xkb \
