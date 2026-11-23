@@ -360,7 +360,7 @@ void cursor_trail_settings(struct tomoe *s) {
 
 static bool trail_alive(const struct tomoe *s, double now) {
     struct trail_style style;
-    if (!cursor_trail_style(s, &style) || !s->pointer_trail_count) return false;
+    if (s->cursor_hidden || !cursor_trail_style(s, &style) || !s->pointer_trail_count) return false;
     int newest = (s->pointer_trail_head + POINTER_TRAIL - 1) % POINTER_TRAIL;
     return now - s->pointer_trail[newest].t < style.life;
 }
