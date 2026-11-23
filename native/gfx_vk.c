@@ -3557,16 +3557,41 @@ static bool clip_copy(int *sx, int *sy, int *dx, int *dy, int *w, int *h,
     return *w > 0 && *h > 0;
 }
 
-static void blit(VkCommandBuffer cb, struct vk_image *from, struct vk_image *to,
-        int sx0, int sy0, int sx1, int sy1, int dx0, int dy0, int dx1, int dy1, VkFilter filter) {
-    VkImageBlit region = {
+enum { COPY_STACK = 32 };
+
+static bool can_copy_image(const struct vk_image *from, const struct vk_image *to) {
+    return from->format == to->format && from->yuv < 0 && to->yuv < 0 &&
+        (from->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) &&
+        (to->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+}
+
+static VkImageCopy copy_region(int sx, int sy, int dx, int dy, int w, int h) {
+    return (VkImageCopy){
+        .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+        .srcOffset = { sx, sy, 0 },
+        .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+        .dstOffset = { dx, dy, 0 },
+        .extent = { (uint32_t)w, (uint32_t)h, 1 },
+    };
+}
+
+static VkImageBlit blit_region(int sx0, int sy0, int sx1, int sy1,
+        int dx0, int dy0, int dx1, int dy1) {
+    return (VkImageBlit){
         .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
         .srcOffsets = { { sx0, sy0, 0 }, { sx1, sy1, 1 } },
         .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
         .dstOffsets = { { dx0, dy0, 0 }, { dx1, dy1, 1 } },
     };
-    vkCmdBlitImage(cb, from->image, VK_IMAGE_LAYOUT_GENERAL, to->image, VK_IMAGE_LAYOUT_GENERAL,
-        1, &region, filter);
+}
+
+static bool rects_overlap(const struct rect *rects, int count) {
+    for (int i = 0; i < count; i++)
+        for (int j = i + 1; j < count; j++)
+            if (rects[i].x1 < rects[j].x2 && rects[j].x1 < rects[i].x2 &&
+                    rects[i].y1 < rects[j].y2 && rects[j].y1 < rects[i].y2)
+                return true;
+    return false;
 }
 
 static void blit_barrier(struct vk *v, VkCommandBuffer cb) {
@@ -3650,18 +3675,63 @@ void gfx_level_blit(const struct gfx_level *from, const struct gfx_level *to,
         const struct box *samples, int count, int sx, int sy, int dx, int dy) {
     struct vk *v = current_vk;
     struct vk_image *a = level_image(from), *b = level_image(to);
-    if (!v || !a || !b || count <= 0) return;
+    if (!v || !a || !b || count <= 0 || !can_copy_image(a, b)) return;
+    if (a == b && sx == dx && sy == dy) return;
     VkCommandBuffer cb = transfer_begin(v);
     if (!cb) return;
+    int ox = dx - sx, oy = dy - sy;
+    struct rect clipped_stack[COPY_STACK];
+    struct rect *clipped = count > COPY_STACK ? malloc((size_t)count * sizeof(*clipped)) :
+        clipped_stack;
+    int kept = 0;
     bool copied = false;
-    for (int i = 0; i < count; i++) {
-        int x0 = samples[i].x - sx, y0 = samples[i].y - sy;
-        int x1 = samples[i].x - dx, y1 = samples[i].y - dy;
-        int w = samples[i].width, h = samples[i].height;
-        if (!clip_copy(&x0, &y0, &x1, &y1, &w, &h, a, b)) continue;
-        blit(cb, a, b, x0, y0, x0 + w, y0 + h, x1, y1, x1 + w, y1 + h, VK_FILTER_NEAREST);
-        copied = true;
+    if (clipped) {
+        for (int i = 0; i < count; i++) {
+            int x0 = samples[i].x - sx, y0 = samples[i].y - sy;
+            int x1 = samples[i].x - dx, y1 = samples[i].y - dy;
+            int w = samples[i].width, h = samples[i].height;
+            if (clip_copy(&x0, &y0, &x1, &y1, &w, &h, a, b))
+                clipped[kept++] = (struct rect){ x1, y1, x1 + w, y1 + h };
+        }
     }
+    struct region merged;
+    bool use_merged = kept > 1 && rects_overlap(clipped, kept);
+    const struct rect *rects = clipped;
+    int rcount = kept;
+    if (use_merged) {
+        region_init(&merged);
+        for (int i = 0; i < kept; i++)
+            region_union_rect(&merged, &merged, clipped[i].x1, clipped[i].y1,
+                (uint32_t)(clipped[i].x2 - clipped[i].x1),
+                (uint32_t)(clipped[i].y2 - clipped[i].y1));
+        rects = region_rectangles(&merged, &rcount);
+    }
+    if (rcount > 0) {
+        VkImageCopy stack[COPY_STACK];
+        VkImageCopy *regions = rcount > COPY_STACK ? malloc((size_t)rcount * sizeof(*regions)) :
+            stack;
+        if (!regions) regions = stack;
+        uint32_t n = 0;
+        for (int i = 0; i < rcount; i++) {
+            if (regions == stack && n == COPY_STACK) {
+                vkCmdCopyImage(cb, a->image, VK_IMAGE_LAYOUT_GENERAL, b->image,
+                    VK_IMAGE_LAYOUT_GENERAL, n, regions);
+                n = 0;
+                copied = true;
+            }
+            int x1 = rects[i].x1, y1 = rects[i].y1;
+            int w = rects[i].x2 - x1, h = rects[i].y2 - y1;
+            regions[n++] = copy_region(x1 + ox, y1 + oy, x1, y1, w, h);
+        }
+        if (n) {
+            vkCmdCopyImage(cb, a->image, VK_IMAGE_LAYOUT_GENERAL, b->image,
+                VK_IMAGE_LAYOUT_GENERAL, n, regions);
+            copied = true;
+        }
+        if (regions != stack) free(regions);
+    }
+    if (use_merged) region_fini(&merged);
+    if (clipped != clipped_stack) free(clipped);
     if (copied) blit_barrier(v, cb);
 }
 
@@ -3677,27 +3747,72 @@ void gfx_blur_copy_in(struct render *r, struct buffer *buffer, struct gfx_level 
         struct box grown, const struct rect *copy, int copies, int shrink) {
     struct vk *v = V(r);
     struct vk_image *source = import(v, buffer), *dest = level_image(level);
-    if (!source || !dest || !image_use(v, source)) return;
+    if (!source || !dest || copies <= 0 || !image_use(v, source)) return;
     VkCommandBuffer cb = transfer_begin(v);
     if (!cb) return;
     bool copied = false;
-    for (int i = 0; i < copies; i++) {
-        int dx0 = copy[i].x1, dy0 = copy[i].y1, dx1 = copy[i].x2, dy1 = copy[i].y2;
-        int sx0 = grown.x + (dx0 << shrink), sy0 = grown.y + (dy0 << shrink);
-        int sx1 = grown.x + (dx1 << shrink), sy1 = grown.y + (dy1 << shrink);
-        if (shrink) {
-            if (sx0 < 0 || sy0 < 0 || sx1 > source->width || sy1 > source->height ||
-                    dx0 < 0 || dy0 < 0 || dx1 > dest->width || dy1 > dest->height ||
-                    dx1 <= dx0 || dy1 <= dy0) continue;
-            blit(cb, source, dest, sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, VK_FILTER_LINEAR);
-            copied = true;
-            continue;
+    if (!shrink && can_copy_image(source, dest)) {
+        VkImageCopy stack[COPY_STACK];
+        VkImageCopy *regions = copies > COPY_STACK ? malloc((size_t)copies * sizeof(*regions)) :
+            stack;
+        if (!regions) regions = stack;
+        uint32_t n = 0;
+        for (int i = 0; i < copies; i++) {
+            int dx0 = copy[i].x1, dy0 = copy[i].y1, dx1 = copy[i].x2, dy1 = copy[i].y2;
+            int sx0 = grown.x + dx0, sy0 = grown.y + dy0;
+            int w = dx1 - dx0, h = dy1 - dy0;
+            if (!clip_copy(&sx0, &sy0, &dx0, &dy0, &w, &h, source, dest)) continue;
+            if (regions == stack && n == COPY_STACK) {
+                vkCmdCopyImage(cb, source->image, VK_IMAGE_LAYOUT_GENERAL, dest->image,
+                    VK_IMAGE_LAYOUT_GENERAL, n, regions);
+                n = 0;
+                copied = true;
+            }
+            regions[n++] = copy_region(sx0, sy0, dx0, dy0, w, h);
         }
-        int w = dx1 - dx0, h = dy1 - dy0;
-        if (!clip_copy(&sx0, &sy0, &dx0, &dy0, &w, &h, source, dest)) continue;
-        blit(cb, source, dest, sx0, sy0, sx0 + w, sy0 + h, dx0, dy0, dx0 + w, dy0 + h,
-            VK_FILTER_NEAREST);
-        copied = true;
+        if (n) {
+            vkCmdCopyImage(cb, source->image, VK_IMAGE_LAYOUT_GENERAL, dest->image,
+                VK_IMAGE_LAYOUT_GENERAL, n, regions);
+            copied = true;
+        }
+        if (regions != stack) free(regions);
+    } else {
+        VkImageBlit stack[COPY_STACK];
+        VkImageBlit *regions = copies > COPY_STACK ? malloc((size_t)copies * sizeof(*regions)) :
+            stack;
+        if (!regions) regions = stack;
+        uint32_t n = 0;
+        VkFilter filter = shrink ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+        for (int i = 0; i < copies; i++) {
+            int dx0 = copy[i].x1, dy0 = copy[i].y1, dx1 = copy[i].x2, dy1 = copy[i].y2;
+            int sx0 = grown.x + (dx0 << shrink), sy0 = grown.y + (dy0 << shrink);
+            int sx1 = grown.x + (dx1 << shrink), sy1 = grown.y + (dy1 << shrink);
+            if (shrink) {
+                if (sx0 < 0 || sy0 < 0 || sx1 > source->width || sy1 > source->height ||
+                        dx0 < 0 || dy0 < 0 || dx1 > dest->width || dy1 > dest->height ||
+                        dx1 <= dx0 || dy1 <= dy0) continue;
+            } else {
+                int w = dx1 - dx0, h = dy1 - dy0;
+                if (!clip_copy(&sx0, &sy0, &dx0, &dy0, &w, &h, source, dest)) continue;
+                sx1 = sx0 + w;
+                sy1 = sy0 + h;
+                dx1 = dx0 + w;
+                dy1 = dy0 + h;
+            }
+            if (regions == stack && n == COPY_STACK) {
+                vkCmdBlitImage(cb, source->image, VK_IMAGE_LAYOUT_GENERAL, dest->image,
+                    VK_IMAGE_LAYOUT_GENERAL, n, regions, filter);
+                n = 0;
+                copied = true;
+            }
+            regions[n++] = blit_region(sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1);
+        }
+        if (n) {
+            vkCmdBlitImage(cb, source->image, VK_IMAGE_LAYOUT_GENERAL, dest->image,
+                VK_IMAGE_LAYOUT_GENERAL, n, regions, filter);
+            copied = true;
+        }
+        if (regions != stack) free(regions);
     }
     if (copied) blit_barrier(v, cb);
 }
@@ -3821,7 +3936,15 @@ void gfx_backdrop_grab(struct render *r, struct buffer *buffer, const struct gfx
         int sx = shown->x, sy = shown->y, dx = shown->x - need.x, dy = shown->y - need.y;
         int w = shown->width, h = shown->height;
         if (cb && clip_copy(&sx, &sy, &dx, &dy, &w, &h, source, dest)) {
-            blit(cb, source, dest, sx, sy, sx + w, sy + h, dx, dy, dx + w, dy + h, VK_FILTER_NEAREST);
+            if (can_copy_image(source, dest)) {
+                VkImageCopy region = copy_region(sx, sy, dx, dy, w, h);
+                vkCmdCopyImage(cb, source->image, VK_IMAGE_LAYOUT_GENERAL, dest->image,
+                    VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+            } else {
+                VkImageBlit region = blit_region(sx, sy, sx + w, sy + h, dx, dy, dx + w, dy + h);
+                vkCmdBlitImage(cb, source->image, VK_IMAGE_LAYOUT_GENERAL, dest->image,
+                    VK_IMAGE_LAYOUT_GENERAL, 1, &region, VK_FILTER_NEAREST);
+            }
             blit_barrier(v, cb);
         }
     }
