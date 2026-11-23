@@ -1209,8 +1209,9 @@ def main(machine, paths):
             "drm_devices": drm_outputs,
             "clock_ticks_per_second": hz,
             "renderer": "Mesa llvmpipe (GLES through EGL on GBM) compositing to a vkms virtual "
-                        "KMS output; Tomoe alone runs it through zink on lavapipe, because under "
-                        "plain kms_swrast its GBM device cannot create dumb buffers here",
+                        "KMS output; Tomoe renders with Vulkan on Mesa lavapipe and allocates "
+                        "its GBM buffers through zink, because under plain kms_swrast its GBM "
+                        "device cannot create dumb buffers here",
             "input": "uinput evdev pointer and keyboard devices (real libinput path)",
             "repeat_runs": REPEATS,
             "samples_per_run": SAMPLES,
@@ -1252,7 +1253,7 @@ def main(machine, paths):
             "every compositor runs its stock defaults plus the one focus binding, a pointer drag "
             "and a flat 1:1 pointer profile; desktop configs (bars, wallpapers, effects) and "
             "Xwayland are absent",
-            "Tomoe's GLES stack is zink on lavapipe, so its file-backed PSS includes Vulkan "
+            "Tomoe's renderer is Vulkan on lavapipe, so its file-backed PSS includes Vulkan "
             "driver mappings the others do not load; pss_anon and private_dirty compare cleaner",
             "niri is built with its software-renderer refusal removed (bench/niri.nix) and is "
             "pointed at the vkms node, since otherwise it will not composite on llvmpipe",

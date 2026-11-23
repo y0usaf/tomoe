@@ -482,7 +482,7 @@ output baseline, while later explicit `configure-output` effects can override it
 
 The policy runs in `tomoe-policy`, a supervised sidecar holding the Lisp runtime,
 the control socket and the JSON socket; the C core holds no Lisp. The core speaks
-the Wayland wire protocol itself, renders with EGL and GLES2 on GBM, and drives
+the Wayland wire protocol itself, renders with Vulkan on GBM buffers, and drives
 DRM/KMS through the kernel's own ioctls, libinput and seatd; it can also run
 nested in another compositor or headless. The two talk over a versioned binary
 protocol on a socket pair: the core sends batched events and answers the
@@ -804,9 +804,10 @@ libinput path, flat 1:1), and prints a table plus one JSON document with latency
 input event), CPU per frame at 1, 10 and 50 windows, presented frame times and CPU
 per frame while a window is dragged, idle CPU and wakeups, RSS/PSS at 0, 1, 10 and
 50 windows, and the size of each executable and of its runtime closure. Every
-number carries the spread across its repeats. All four composite with Mesa
-llvmpipe; niri is rebuilt without its refusal of software renderers
-(`bench/niri.nix`), and Tomoe goes through zink. vkms is a 60 Hz software display,
+number carries the spread across its repeats. All four composite on the CPU:
+sway, niri and Hyprland with Mesa llvmpipe, niri rebuilt without its refusal of
+software renderers (`bench/niri.nix`), and Tomoe with Vulkan on Mesa lavapipe.
+vkms is a 60 Hz software display,
 so these are compositor pipeline costs: nothing here measures input-to-photon
 latency, GPU cost or power draw.
 
