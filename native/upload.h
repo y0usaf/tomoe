@@ -12,15 +12,13 @@ enum { UPLOAD_JOBS = 256, UPLOAD_RECTS = 4, UPLOAD_FENCES = 8, UPLOAD_WINDOW = 2
 
 enum upload_state { UPLOAD_QUEUED, UPLOAD_WORKER, UPLOAD_MAIN, UPLOAD_DONE };
 
-enum upload_take { UPLOAD_SKIP, UPLOAD_STAGED, UPLOAD_DIRECT };
-
 struct upload_job {
     _Atomic int state;
     struct texture *texture;
     struct buffer *buffer;
     struct wl_shm_view *view;
     size_t offset, stride;
-    unsigned char *dst;
+    unsigned char *dst, *src;
     uint64_t start, end;
     int count;
     struct rect rects[UPLOAD_RECTS];
@@ -28,20 +26,20 @@ struct upload_job {
 };
 
 struct upload_stats {
-    uint64_t jobs, staged_bytes, stolen, raced, sync, trims, faults, resizes;
+    uint64_t jobs, staged_bytes, stolen, raced, waited, sync, trims, faults, resizes;
     _Atomic uint64_t worker_ns, worker_jobs;
 };
 
 struct upload {
     struct upload_job jobs[UPLOAD_JOBS];
-    _Atomic uint32_t head, sleeping, stop, signaled;
+    _Atomic uint32_t head, sleeping, stop, signaled, wake;
     uint32_t taken, tail, latch;
     int fd;
     pthread_t thread;
     unsigned char *base;
     uint64_t size, alloc, gpu_done, frame_bytes, peak, window_max, window_peak, resume;
     uint32_t window_latches;
-    bool calm;
+    bool calm, threadless;
     struct upload_stats stats;
 };
 
@@ -53,8 +51,8 @@ bool upload_stage(struct upload *u, struct texture *texture, struct buffer *buff
     struct wl_shm_view *view, size_t offset, size_t stride, const struct region *damage,
     void (*reclaim)(void *data), void *data);
 bool upload_pending(const struct upload *u);
-struct upload_job *upload_latch_next(struct upload *u, enum upload_take *take);
-void upload_latch_end(struct upload *u);
+struct upload_job *upload_latch_next(struct upload *u, bool ready);
+void upload_latch_end(struct upload *u, bool frame);
 void upload_cancel(struct upload *u, const struct texture *texture);
 void upload_drain(struct upload *u);
 bool upload_idle(const struct upload *u);

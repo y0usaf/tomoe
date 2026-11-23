@@ -8,6 +8,7 @@ static struct test_flag {
     bool set;
 } test_flags[] = {
     { "debug-damage", NULL, false },
+    { "upload-no-worker", NULL, false },
     { "refuse-planes", NULL, false },
     { "pacing", NULL, false },
     { "pacing-class", NULL, false },

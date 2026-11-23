@@ -1,5 +1,6 @@
 #include "upload.h"
 #include <linux/futex.h>
+#include <sched.h>
 #include <signal.h>
 #include <sys/eventfd.h>
 #include <sys/syscall.h>
@@ -20,8 +21,7 @@ static uint64_t now_ns(void) {
     return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
 }
 
-static void copy_job(struct upload_job *job) {
-    unsigned char *dst = job->dst;
+static bool copy_rects(const struct upload_job *job, unsigned char *dst) {
     bool ok = true;
     for (int i = 0; ok && i < job->count; i++) {
         const struct rect *r = &job->rects[i];
@@ -31,7 +31,11 @@ static void copy_job(struct upload_job *job) {
             job->stride, row, rows, dst);
         dst += row * (size_t)rows;
     }
-    job->fault = !ok;
+    return ok;
+}
+
+static void copy_job(struct upload_job *job) {
+    job->fault = !copy_rects(job, job->dst);
 }
 
 static void *worker(void *data) {
@@ -42,11 +46,12 @@ static void *worker(void *data) {
     pthread_sigmask(SIG_UNBLOCK, &set, NULL);
     uint32_t next = 0;
     for (;;) {
+        uint32_t seq = atomic_load(&u->wake);
         if (next == atomic_load(&u->head)) {
             if (atomic_load(&u->stop)) break;
             atomic_store(&u->sleeping, 1);
             if (next == atomic_load(&u->head) && !atomic_load(&u->stop))
-                syscall(SYS_futex, (uint32_t *)&u->head, FUTEX_WAIT_PRIVATE, next, NULL, NULL, 0);
+                syscall(SYS_futex, (uint32_t *)&u->wake, FUTEX_WAIT_PRIVATE, seq, NULL, NULL, 0);
             atomic_store(&u->sleeping, 0);
             continue;
         }
@@ -78,6 +83,10 @@ struct upload *upload_create(void) {
     }
     for (int i = 0; i < UPLOAD_JOBS; i++) atomic_init(&u->jobs[i].state, UPLOAD_DONE);
     wl_shm_prepare_threads();
+    if ((u->threadless = tomoe_test_flag("upload-no-worker"))) {
+        described = u;
+        return u;
+    }
     sigset_t all, old;
     sigfillset(&all);
     pthread_sigmask(SIG_SETMASK, &all, &old);
@@ -123,8 +132,9 @@ static void release_jobs(struct upload *u) {
 void upload_destroy(struct upload *u) {
     if (!u) return;
     atomic_store(&u->stop, 1);
-    syscall(SYS_futex, (uint32_t *)&u->head, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
-    pthread_join(u->thread, NULL);
+    atomic_fetch_add(&u->wake, 1);
+    syscall(SYS_futex, (uint32_t *)&u->wake, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
+    if (!u->threadless) pthread_join(u->thread, NULL);
     uint32_t head = atomic_load(&u->head);
     for (uint32_t i = u->tail; i != head; i++) {
         struct upload_job *job = slot(u, i);
@@ -200,8 +210,10 @@ bool upload_stage(struct upload *u, struct texture *texture, struct buffer *buff
     u->stats.jobs++;
     atomic_store_explicit(&job->state, UPLOAD_QUEUED, memory_order_release);
     atomic_store(&u->head, head + 1);
-    if (atomic_load(&u->sleeping))
-        syscall(SYS_futex, (uint32_t *)&u->head, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
+    if (atomic_load(&u->sleeping)) {
+        atomic_fetch_add(&u->wake, 1);
+        syscall(SYS_futex, (uint32_t *)&u->wake, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
+    }
     return true;
 }
 
@@ -209,31 +221,58 @@ bool upload_pending(const struct upload *u) {
     return u && u->latch != atomic_load(&u->head);
 }
 
-struct upload_job *upload_latch_next(struct upload *u, enum upload_take *take) {
+static bool main_copy(struct upload *u, struct upload_job *job, int state) {
+    if (state == UPLOAD_MAIN) {
+        u->stats.stolen++;
+        job->src = job->dst;
+        return copy_rects(job, job->src);
+    }
+    u->stats.raced++;
+    job->superseded = true;
+    uint64_t start;
+    if (reserve(u, job->end - job->start, &start)) {
+        job->src = u->base + start % u->size;
+        u->alloc = start + (job->end - job->start);
+        return copy_rects(job, job->src);
+    }
+    u->stats.waited++;
+    while (atomic_load_explicit(&job->state, memory_order_acquire) != UPLOAD_DONE) sched_yield();
+    job->src = job->dst;
+    return !job->fault;
+}
+
+struct upload_job *upload_latch_next(struct upload *u, bool ready) {
     uint32_t head = atomic_load(&u->head);
     while (u->latch != head) {
-        struct upload_job *job = slot(u, u->latch++);
+        struct upload_job *job = slot(u, u->latch);
+        if (ready && job->texture &&
+                atomic_load_explicit(&job->state, memory_order_acquire) != UPLOAD_DONE)
+            return NULL;
+        u->latch++;
         job->latched = true;
         int state = UPLOAD_QUEUED;
-        bool claimed = atomic_compare_exchange_strong(&job->state, &state, UPLOAD_MAIN);
-        if (!claimed && state == UPLOAD_WORKER) job->superseded = true;
-        if (!job->texture) continue;
-        if (claimed) {
-            u->stats.stolen++;
-        } else if (job->superseded) {
-            u->stats.raced++;
-        } else {
+        if (atomic_compare_exchange_strong(&job->state, &state, UPLOAD_MAIN)) state = UPLOAD_MAIN;
+        if (!job->texture) {
+            if (state == UPLOAD_WORKER) job->superseded = true;
+            continue;
+        }
+        if (state == UPLOAD_DONE) {
             if (job->fault) continue;
-            *take = UPLOAD_STAGED;
+            job->src = job->dst;
             return job;
         }
-        *take = UPLOAD_DIRECT;
-        return job;
+        if (main_copy(u, job, state)) return job;
+        u->stats.faults++;
+        buffer_shm_fault(job->buffer);
     }
     return NULL;
 }
 
-void upload_latch_end(struct upload *u) {
+void upload_latch_end(struct upload *u, bool frame) {
+    if (!frame) {
+        release_jobs(u);
+        return;
+    }
     if (u->frame_bytes > u->peak) u->peak = u->frame_bytes;
     if (u->frame_bytes > u->window_max) u->window_max = u->frame_bytes;
     u->frame_bytes = 0;
@@ -259,7 +298,7 @@ void upload_drain(struct upload *u) {
     uint64_t value;
     ssize_t n = read(u->fd, &value, sizeof(value));
     (void)n;
-    atomic_store(&u->signaled, 0);
+    atomic_exchange(&u->signaled, 0);
     release_jobs(u);
 }
 
@@ -291,22 +330,24 @@ void upload_describe(FILE *out) {
         fputs("nil", out);
         return;
     }
-    fprintf(out, "(:jobs %llu :staged-bytes %llu :stolen %llu :raced %llu :sync %llu :trims %llu "
+    fprintf(out, "(:jobs %llu :staged-bytes %llu :stolen %llu :raced %llu :waited %llu :sync %llu :trims %llu "
         ":faults %llu :resizes %llu :worker-jobs %llu :worker-ns %llu :staging-bytes %llu)",
         (unsigned long long)u->stats.jobs, (unsigned long long)u->stats.staged_bytes,
         (unsigned long long)u->stats.stolen, (unsigned long long)u->stats.raced,
-        (unsigned long long)u->stats.sync, (unsigned long long)u->stats.trims,
+        (unsigned long long)u->stats.waited, (unsigned long long)u->stats.sync,
+        (unsigned long long)u->stats.trims,
         (unsigned long long)u->stats.faults, (unsigned long long)u->stats.resizes,
         (unsigned long long)atomic_load(&u->stats.worker_jobs),
         (unsigned long long)atomic_load(&u->stats.worker_ns), (unsigned long long)u->size);
 }
 
 void upload_report(const struct upload *u) {
-    tomoe_log(LOG_INFO, "tomoe: shm upload jobs %llu staged-mib %.1f stolen %llu raced %llu sync %llu trims %llu "
+    tomoe_log(LOG_INFO, "tomoe: shm upload jobs %llu staged-mib %.1f stolen %llu raced %llu waited %llu sync %llu trims %llu "
         "faults %llu resizes %llu worker-jobs %llu worker-ms %.1f staging-mib %llu",
         (unsigned long long)u->stats.jobs, (double)u->stats.staged_bytes / 1048576.0,
         (unsigned long long)u->stats.stolen, (unsigned long long)u->stats.raced,
-        (unsigned long long)u->stats.sync, (unsigned long long)u->stats.trims,
+        (unsigned long long)u->stats.waited, (unsigned long long)u->stats.sync,
+        (unsigned long long)u->stats.trims,
         (unsigned long long)u->stats.faults, (unsigned long long)u->stats.resizes,
         (unsigned long long)atomic_load(&u->stats.worker_jobs),
         (double)atomic_load(&u->stats.worker_ns) / 1e6, (unsigned long long)(u->size >> 20));

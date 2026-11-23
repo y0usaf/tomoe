@@ -1057,7 +1057,9 @@ int render_upload_fd(struct render *r) {
 }
 
 void render_upload_drain(struct render *r) {
-    if (r && r->upload) upload_drain(r->upload);
+    if (!r || !r->upload) return;
+    upload_drain(r->upload);
+    if (upload_pending(r->upload)) gfx_upload_latch(r);
 }
 
 void render_upload_trim(struct render *r) {

@@ -109,6 +109,7 @@ void gfx_current(struct render *r);
 void gfx_flush(struct render *r);
 void gfx_finish(struct render *r);
 void gfx_upload_trim(struct render *r);
+void gfx_upload_latch(struct render *r);
 int gfx_fence_export(struct render *r);
 bool gfx_target_prepare(struct render *r, struct buffer *buffer);
 bool gfx_target_begin(struct render *r, struct buffer *buffer);

@@ -2540,6 +2540,10 @@ void gfx_upload_trim(struct render *r) {
     }
 }
 
+void gfx_upload_latch(struct render *r) {
+    (void)r;
+}
+
 void gfx_finish(struct render *r) {
     finish(V(r));
 }

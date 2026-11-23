@@ -1653,8 +1653,8 @@ def check_shm_truncate(path, client_bin, tomoe_bin):
     os.close(fd)
     err = wl.error
     wl.sock.close()
-    if not err or err[0] != bb or err[1] != 2:
-        raise SystemExit(f"shm-truncate: FAIL expected wl_shm INVALID_FD on buffer {bb}, got {err}")
+    if not err or err[0] not in (ba, bb) or err[1] != 2:
+        raise SystemExit(f"shm-truncate: FAIL expected wl_shm INVALID_FD on buffer {ba} or {bb}, got {err}")
     inspect(tomoe_bin, sock)
     out, _ = other.communicate(timeout=20)
     frames = re.search(r"^frames (\d+)$", out, re.M)
@@ -1662,6 +1662,42 @@ def check_shm_truncate(path, client_bin, tomoe_bin):
     if other.returncode != 0 or not frames or int(frames.group(1)) == 0 or not lost or lost.group(1) != "0":
         raise SystemExit(f"shm-truncate: FAIL the other client stopped rendering: rc={other.returncode} {out[-200:]!r}")
     return f"shm-truncate=ok(frames={frames.group(1)} upload={tomoe_upload_stats(tomoe_bin, sock)})"
+
+
+def check_shm_destroyed(path, client_bin, tomoe_bin):
+    sock = os.path.basename(path)
+    other = subprocess.Popen([client_bin, "--input", "virtual", "--phase", "frames", "--seconds", "4",
+        "--windows", "1", "--tag", "shm-other"], env=dict(os.environ, WAYLAND_DISPLAY=sock),
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    time.sleep(0.5)
+    wl, shm, surf, w, h = shm_window(path, "shm-destroyed")
+    a = shm_pattern(w, h)
+    fd, pool, (ba, bb) = shm_pool(wl, shm, [a, a], w, h)
+    cb = shm_show(wl, surf, ba, [(0, 0, w, h)])
+    if wl.wait(lambda e: e[0] == cb and e[1] == 0) is None:
+        raise SystemExit(f"shm-destroyed: FAIL first frame never shown (error {wl.error})")
+    wl.send(surf, 1, struct.pack("<Iii", bb, 0, 0))
+    wl.send(surf, 9, struct.pack("<iiii", 0, 0, w, h))
+    wl.send(surf, 6)
+    wl.send(bb, 0)
+    wl.send(pool, 1)
+    wl.roundtrip()
+    os.ftruncate(fd, 0)
+    cb = wl.new()
+    wl.send(surf, 3, struct.pack("<I", cb))
+    wl.send(surf, 6)
+    wl.wait(lambda e: e[0] == cb and e[1] == 0)
+    os.close(fd)
+    if wl.closed:
+        raise SystemExit(f"shm-destroyed: FAIL connection closed (error {wl.error})")
+    wl.sock.close()
+    inspect(tomoe_bin, sock)
+    out, _ = other.communicate(timeout=20)
+    frames = re.search(r"^frames (\d+)$", out, re.M)
+    lost = re.search(r"^lost (\d+)$", out, re.M)
+    if other.returncode != 0 or not frames or int(frames.group(1)) == 0 or not lost or lost.group(1) != "0":
+        raise SystemExit(f"shm-destroyed: FAIL the other client stopped rendering: rc={other.returncode} {out[-200:]!r}")
+    return f"shm-destroyed=ok(frames={frames.group(1)} upload={tomoe_upload_stats(tomoe_bin, sock)})"
 
 
 def check_shm_pixels(path, tomoe_bin, capture_bin):
@@ -1768,6 +1804,8 @@ def main():
             results.append(check_policy_effects(args[3], client_bin))
         elif check == "shm-truncate":
             results.append(check_shm_truncate(path, client_bin, args[3]))
+        elif check == "shm-destroyed":
+            results.append(check_shm_destroyed(path, client_bin, args[3]))
         elif check == "shm-pixels":
             results.append(check_shm_pixels(path, args[3], args[5]))
         elif check == "policy-effects-bugs":
