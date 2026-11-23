@@ -1834,7 +1834,7 @@ static struct target_pipelines *pipelines_find(struct vk *v, VkFormat format) {
 }
 
 static bool rendering_begin_area(struct vk *v, struct vk_image *target, VkRect2D area,
-        VkAttachmentLoadOp load_op) {
+        VkAttachmentLoadOp load_op, const float clear[4]) {
     if (!target) return false;
     rendering_end(v);
     struct batch *b = batch(v);
@@ -1846,6 +1846,8 @@ static bool rendering_begin_area(struct vk *v, struct vk_image *target, VkRect2D
         .loadOp = load_op,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
     };
+    if (load_op == VK_ATTACHMENT_LOAD_OP_CLEAR && clear)
+        memcpy(color.clearValue.color.float32, clear, sizeof(color.clearValue.color.float32));
     VkRenderingInfo info = {
         .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
         .renderArea = area,
@@ -1868,11 +1870,16 @@ static bool rendering_begin_area(struct vk *v, struct vk_image *target, VkRect2D
     return true;
 }
 
-static bool rendering_begin(struct vk *v, struct vk_image *target) {
+static bool rendering_begin_op(struct vk *v, struct vk_image *target, VkAttachmentLoadOp load_op,
+        const float clear[4]) {
     if (v->rendering && v->bound == target) return true;
     if (!target) return false;
     VkRect2D area = { { 0, 0 }, { (uint32_t)target->width, (uint32_t)target->height } };
-    return rendering_begin_area(v, target, area, VK_ATTACHMENT_LOAD_OP_LOAD);
+    return rendering_begin_area(v, target, area, load_op, clear);
+}
+
+static bool rendering_begin(struct vk *v, struct vk_image *target) {
+    return rendering_begin_op(v, target, VK_ATTACHMENT_LOAD_OP_LOAD, NULL);
 }
 
 static struct vk_image *level_image(const struct gfx_level *level) {
@@ -1995,6 +2002,19 @@ static void run_draw(struct vk *v, VkCommandBuffer cb, struct target_pipelines *
     r->quads += run->count;
 }
 
+static bool item_covers_target(const struct scene_item *item, const struct vk_image *target) {
+    if (item->blend != 0 || item->in.shape[2] >= 0.5f || item->in.params[3] >= 0.5f)
+        return false;
+    if (item->scissor[2] > item->scissor[0] &&
+            (item->scissor[0] > 0 || item->scissor[1] > 0 ||
+            item->scissor[2] < target->width || item->scissor[3] < target->height))
+        return false;
+    const float *p = item->in.pos;
+    return p[0] <= -1.0f && p[1] <= -1.0f && p[2] >= 1.0f && p[3] <= -1.0f &&
+        p[4] <= -1.0f && p[5] >= 1.0f && p[6] >= 1.0f && p[7] >= 1.0f &&
+        p[0] == p[4] && p[2] == p[6] && p[1] == p[3] && p[5] == p[7];
+}
+
 void pass_flush(struct pass *pass) {
     struct render *r = pass->r;
     struct vk *v = V(r);
@@ -2006,24 +2026,46 @@ void pass_flush(struct pass *pass) {
     if (!v->target) return;
     struct target_pipelines *pipes = pipelines_for(v, v->target->format);
     if (!pipes || !v->dummy) return;
-    for (size_t i = 0; i < count; i++)
-        if (s->items[i].image && !image_use(v, s->items[i].image)) return;
+    VkAttachmentLoadOp load_op = VK_ATTACHMENT_LOAD_OP_LOAD;
+    const float *clear = NULL;
+    size_t start = 0;
+    if (!(v->rendering && v->bound == v->target) && item_covers_target(&s->items[0], v->target)) {
+        if (s->items[0].in.extra[3] < 0.5f) {
+            if (s->items[0].in.params[0] == 1.0f && s->items[0].in.params[2] == 0.0f) {
+                load_op = VK_ATTACHMENT_LOAD_OP_CLEAR;
+                clear = s->items[0].in.color;
+                start = 1;
+            } else {
+                load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            }
+        } else if (s->items[0].image && s->items[0].image->set) {
+            load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        }
+    }
+    const struct scene_item *items = s->items + start;
+    size_t n = count - start;
+    if (!n) {
+        rendering_begin_op(v, v->target, load_op, clear);
+        return;
+    }
+    for (size_t i = 0; i < n; i++)
+        if (items[i].image && !image_use(v, items[i].image)) return;
     VkBuffer buffer;
     VkDeviceSize offset;
-    struct scene_instance *out = stage_alloc(v, count * sizeof(*out), &buffer, &offset);
+    struct scene_instance *out = stage_alloc(v, n * sizeof(*out), &buffer, &offset);
     if (!out) return;
-    for (size_t i = 0; i < count; i++) out[i] = s->items[i].in;
+    for (size_t i = 0; i < n; i++) out[i] = items[i].in;
     r->uploads++;
-    r->upload_bytes += count * sizeof(*out);
-    if (!rendering_begin(v, v->target)) return;
+    r->upload_bytes += n * sizeof(*out);
+    if (!rendering_begin_op(v, v->target, load_op, clear)) return;
     VkCommandBuffer cb = v->open->main;
     vkCmdBindVertexBuffers(cb, 0, 1, &buffer, &offset);
     r->gl_calls++;
     int blend = -1, filter = -1;
     VkDescriptorSet set = VK_NULL_HANDLE;
     struct scene_run run = {0};
-    for (size_t i = 0; i < count; i++) {
-        const struct scene_item *in = &s->items[i];
+    for (size_t i = 0; i < n; i++) {
+        const struct scene_item *in = &items[i];
         bool joins = run.count && run.blend == in->blend &&
             (!in->image || !run.image || (run.image == in->image && run.filter == in->filter)) &&
             !memcmp(run.scissor, in->scissor, sizeof(run.scissor));
@@ -3684,7 +3726,7 @@ static void sample_pass(struct vk *v, VkPipeline pipeline, struct vk_image *from
     VkAttachmentLoadOp load_op = (count == 1 && min_x == 0 && min_y == 0 &&
             max_x == to->width && max_y == to->height)
         ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : VK_ATTACHMENT_LOAD_OP_LOAD;
-    if (!rendering_begin_area(v, to, area, load_op)) return;
+    if (!rendering_begin_area(v, to, area, load_op, NULL)) return;
     VkCommandBuffer cb = v->open->main;
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     VkDescriptorSet sets[2] = { from->set, v->sampler_sets[0] };
@@ -3744,9 +3786,19 @@ void gfx_backdrop_grab(struct render *r, struct buffer *buffer, const struct gfx
     struct vk *v = V(r);
     struct vk_image *source = import(v, buffer), *dest = level_image(level);
     if (!source || !dest || !image_use(v, source)) return;
-    bool any = false;
-    for (int i = 0; i < count; i++) any = any || !box_empty(&clear[i]);
-    if (any && rendering_begin(v, dest)) {
+    bool any = false, full = false;
+    for (int i = 0; i < count; i++) {
+        if (box_empty(&clear[i])) continue;
+        any = true;
+        if (clear[i].x <= 0 && clear[i].y <= 0 &&
+                clear[i].x + clear[i].width >= dest->width &&
+                clear[i].y + clear[i].height >= dest->height) full = true;
+    }
+    static const VkClearColorValue clear_color = {{ 0, 0, 0, 1 }};
+    if (full && !(v->rendering && v->bound == dest)) {
+        if (rendering_begin_op(v, dest, VK_ATTACHMENT_LOAD_OP_CLEAR, clear_color.float32))
+            rendering_end(v);
+    } else if (any && rendering_begin(v, dest)) {
         for (int i = 0; i < count; i++) {
             if (box_empty(&clear[i])) continue;
             int x = clear[i].x, y = clear[i].y, w = clear[i].width, h = clear[i].height;
@@ -3758,7 +3810,7 @@ void gfx_backdrop_grab(struct render *r, struct buffer *buffer, const struct gfx
             VkClearAttachment attachment = {
                 .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
                 .colorAttachment = 0,
-                .clearValue = { .color = {{ 0, 0, 0, 1 }} },
+                .clearValue = { .color = clear_color },
             };
             VkClearRect rect = { { { x, y }, { (uint32_t)w, (uint32_t)h } }, 0, 1 };
             vkCmdClearAttachments(v->open->main, 1, &attachment, 1, &rect);
