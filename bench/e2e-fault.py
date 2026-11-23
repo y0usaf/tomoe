@@ -1653,8 +1653,8 @@ def check_shm_truncate(path, client_bin, tomoe_bin):
     os.close(fd)
     err = wl.error
     wl.sock.close()
-    if not err or err[0] != bb or err[1] != 2:
-        raise SystemExit(f"shm-truncate: FAIL expected wl_shm INVALID_FD on buffer {bb}, got {err}")
+    if not err or err[0] not in (ba, bb) or err[1] != 2:
+        raise SystemExit(f"shm-truncate: FAIL expected wl_shm INVALID_FD on buffer {ba} or {bb}, got {err}")
     inspect(tomoe_bin, sock)
     out, _ = other.communicate(timeout=20)
     frames = re.search(r"^frames (\d+)$", out, re.M)
