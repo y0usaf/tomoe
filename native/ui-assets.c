@@ -25,7 +25,7 @@ struct ui_asset {
     int kind;
     bool scratch;
     uint32_t width, height;
-    struct program *shader;
+    struct gfx_prog *shader;
     char *shader_source;
     bool shader_waiting;
     double epoch;
@@ -262,7 +262,7 @@ struct texture *ui_asset_backdrop(const struct ui_asset *asset, int *x, int *y) 
     return NULL;
 }
 
-struct program *ui_asset_shader(const struct ui_asset *asset, double *epoch) {
+struct gfx_prog *ui_asset_shader(const struct ui_asset *asset, double *epoch) {
     if (!asset || !asset->shader) return NULL;
     if (epoch) *epoch = asset->epoch;
     return asset->shader;

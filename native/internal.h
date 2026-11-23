@@ -12,7 +12,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <GLES2/gl2.h>
 #include "wayland.h"
 #include <drm/drm_fourcc.h>
 #include "region.h"
@@ -340,28 +339,22 @@ struct ui_asset_pool;
 struct ui_pointer;
 
 struct timeline;
-enum { PROGRAM_SCENE, PROGRAM_SDF, PROGRAM_EXTERNAL, PROGRAM_TEXTURE_LUT, PROGRAM_EXTERNAL_LUT,
-    PROGRAM_DOWN, PROGRAM_UP, PROGRAM_TRAIL, PROGRAM_COUNT };
-struct program {
-    GLuint id;
-    GLint pos, local, texcoord;
-    GLint tex, alpha, opaque, size, radius, clip, width, kind, color, range, power, half_pixel, offset;
-    GLint resolution, time, frame, mouse, channel, lut, trail, trail_count, tint;
-    GLint box, min_ndc, max_ndc, drag, tex_prev, tex_next;
-    GLint geo_to_tex, geo_to_tex_prev, geo_to_tex_next;
-    GLint curr_geo_to_prev_geo, curr_geo_to_next_geo;
-    GLint progress, clamped_progress, random_seed, path, path_count;
-    GLint data, windows, window_count, beneath, selection, marks, marks_box;
-    GLint frost, frost_box, grain, vibrancy;
-};
+struct gfx_prog;
+enum gfx_input { GFX_IN_BENEATH, GFX_IN_FROST, GFX_IN_MARKS, GFX_IN_SELECTION, GFX_IN_DATA,
+    GFX_IN_WINDOWS, GFX_IN_MOUSE, GFX_IN_TRAIL };
+bool gfx_prog_reads(const struct gfx_prog *p, enum gfx_input input);
+struct gfx_level { uint64_t token; int width, height; };
+static inline bool gfx_level_live(const struct gfx_level *level) {
+    return level->token != 0;
+}
 enum { SCENE_RECT, SCENE_BORDER, SCENE_SHADOW, SCENE_TEXTURE };
+enum { SCENE_FILTER_NONE, SCENE_FILTER_LINEAR, SCENE_FILTER_NEAREST };
 struct scene_quad {
     float pos[8], local[8], tex[8];
     float color[4], tint[4];
     float alpha, radius, width, range, power, size[2];
     int kind, shader_clip, opaque, filter, blend;
-    uint32_t target;
-    GLuint raw;
+    const struct gfx_level *level;
     struct texture *texture;
     const struct region *clip;
 };
@@ -374,11 +367,10 @@ struct trail_cell {
 void pass_scene(struct pass *pass, const struct scene_quad *quad);
 void pass_trail(struct pass *pass, const struct trail_cell *cells, size_t count, uint64_t pixels);
 void pass_flush(struct pass *pass);
-void pass_scene_attributes_dirty(struct pass *pass);
-struct program *render_shader_create(struct render *r, const char *source, bool *pending);
+struct gfx_prog *render_shader_create(struct render *r, const char *source, bool *pending);
 bool render_shader_reap(struct render *r);
-struct program *render_shader_compile(struct render *r, const char *source);
-void render_shader_destroy(struct program *program);
+struct gfx_prog *render_shader_compile(struct render *r, const char *source);
+void render_shader_destroy(struct gfx_prog *program);
 #define RING_SLOTS 4
 #define RING_START_SLOTS 2
 #define RING_FRAME_SLOTS 3
@@ -391,12 +383,6 @@ struct ring {
     struct format_set format;
 };
 struct render *render_create(int drm_fd);
-struct program *render_program(struct render *renderer, int kind);
-void pass_quad(struct pass *pass, struct program *p, const float pos[8], const float local[8],
-    const float texcoords[8]);
-void pass_triangles(struct pass *pass, struct program *p, const float *pos, size_t vertices);
-bool render_texture_gl(struct texture *texture, GLenum *target, GLuint *tex, bool *alpha);
-GLuint render_buffer_fbo(struct render *renderer, struct buffer *buffer);
 uint32_t render_read_format(struct render *renderer);
 const struct format_set *render_formats(struct render *renderer);
 bool render_wait(struct render *renderer, struct timeline *timeline,
@@ -699,7 +685,7 @@ struct shader_inputs {
     uint64_t marks_seq;
 };
 uint64_t effects_frost_stamp(struct tomoe *s);
-void effect_shader(struct frame *f, struct program *p, struct fbox area, double time, int frame,
+void effect_shader(struct frame *f, struct gfx_prog *p, struct fbox area, double time, int frame,
     const struct shader_inputs *inputs);
 enum { TRAIL_CELLS = 0, TRAIL_DOTS = 1 };
 struct trail_style {
@@ -710,7 +696,7 @@ struct trail_style {
 void effect_trail(struct frame *f, struct fbox area, const struct trail_style *style);
 bool effect_cursor(struct frame *f, const struct texture_options *options,
     const struct fbox corners[4], const float texcoords[8]);
-bool effect_glass(struct frame *f, struct program *p, struct texture *map, struct fbox area,
+bool effect_glass(struct frame *f, struct gfx_prog *p, struct texture *map, struct fbox area,
     double bend);
 void effects_plan(struct tomoe *s, struct oplist *list);
 void effects_forget(struct tomoe *s);
@@ -799,7 +785,7 @@ struct cursor_motion {
 enum { CURSOR_GLASS_EDGE = 2 };
 struct cursor_glass {
     struct wl_event_source *timer;
-    struct program *program;
+    struct gfx_prog *program;
     struct texture *map;
     const struct screen *screen;
     uint64_t map_generation;

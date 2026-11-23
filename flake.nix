@@ -52,6 +52,7 @@
           opt ? "-O2",
           lto ? false,
           portal ? true,
+          gfx ? "gles",
         }:
         let
           freetype = pkgs.freetype.overrideAttrs (old: {
@@ -184,20 +185,29 @@
           nativeBuildInputs = [
             pkgs.pkg-config
             pkgs.wayland-scanner
-          ];
+          ]
+          ++ pkgs.lib.optional (gfx == "vk") pkgs.glslang;
           buildInputs = [
             libinput
-            libs.libglvnd
             libs.libgbm
             pkgs.wayland-protocols
             pkgs.wlr-protocols
             freetype
-          ];
+          ]
+          ++ (
+            if gfx == "vk" then
+              [
+                pkgs.vulkan-headers
+                pkgs.vulkan-loader
+              ]
+            else
+              [ libs.libglvnd ]
+          );
           strictDeps = true;
           dontStrip = true;
           buildPhase = ''
             runHook preBuild
-            make -j"$NIX_BUILD_CORES" VERSION=${version} \
+            make -j"$NIX_BUILD_CORES" VERSION=${version} GFX=${gfx} \
               PATH_PREFIX=$out/bin \
               FONT_DIR=${pkgs.dejavu_fonts.minimal} \
               XKB_CONFIG_ROOT=${pkgs.xkeyboard_config}/etc/X11/xkb \
@@ -255,6 +265,7 @@
       packages = nixpkgs.lib.mapAttrs (_: pkgs: rec {
         default = package pkgs { };
         tomoe = default;
+        tomoe-vk = package pkgs { gfx = "vk"; };
         znver4 = package pkgs {
           cpu = "znver4";
           opt = "-O3";
@@ -266,6 +277,15 @@
       }) pkgsFor;
       checks = nixpkgs.lib.mapAttrs (_: pkgs: {
         tomoe = package pkgs { };
+        tomoe-vk = package pkgs { gfx = "vk"; };
+        gfx-seam = pkgs.runCommand "tomoe-gfx-seam" { } ''
+          cd ${./native}
+          if grep -nE 'GL[a-z]|gl[A-Z]|EGL|GLES' *.c *.h | grep -vE '^gfx_gles(\.h|\.c|_effects\.c):'; then
+            echo "GL outside the GLES backend"
+            exit 1
+          fi
+          touch $out
+        '';
         e2e = import ./bench/e2e.nix {
           inherit pkgs;
           tomoe = package pkgs { };

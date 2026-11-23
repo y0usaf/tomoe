@@ -9,7 +9,13 @@ WLR ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wlr-protocols)/unstable
 WP ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols)
 WAYLAND_XML ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-scanner)/wayland.xml
 
-LIBS = freetype2 libinput glesv2 egl gbm
+GFX ?= gles
+LIBS_gles = glesv2 egl
+LIBS_vk = vulkan
+LIBS = freetype2 libinput $(LIBS_$(GFX)) gbm
+ifeq ($(filter $(GFX),gles vk),)
+$(error GFX must be gles or vk, not $(GFX))
+endif
 LINK = $(shell $(PKG_CONFIG) --libs $(LIBS))
 PORTAL_LIBS = gbm
 SUPPORT = executions watches notifications mpris backlight battery network system
@@ -72,7 +78,9 @@ LIB_OBJECTS = $(patsubst lib/%.c,build/obj/lib/%.o,$(filter-out lib/wayland/%,$(
 WAYLAND_CORE = build/obj/lib/wayland/wire.o build/obj/wayland-protocol.o
 WAYLAND_SERVER = $(WAYLAND_CORE) build/obj/lib/wayland/loop.o build/obj/lib/wayland/server.o build/obj/lib/wayland/shm.o
 WAYLAND_CLIENT = $(WAYLAND_CORE) build/obj/lib/wayland/client.o
-NATIVE = $(patsubst native/%.c,build/obj/%.o,$(wildcard native/*.c)) $(LIB_OBJECTS) $(NAMES:%=build/obj/%-protocol.o) $(WAYLAND_SERVER) build/obj/lib/wayland/client.o
+GFX_ALL = $(wildcard native/gfx_*.c)
+NATIVE_SOURCES = $(filter-out $(GFX_ALL),$(wildcard native/*.c)) $(filter native/gfx_$(GFX).c native/gfx_$(GFX)_%.c,$(GFX_ALL))
+NATIVE = $(patsubst native/%.c,build/obj/%.o,$(NATIVE_SOURCES)) $(LIB_OBJECTS) $(NAMES:%=build/obj/%-protocol.o) $(WAYLAND_SERVER) build/obj/lib/wayland/client.o
 CFLAGS_CODE = $(OPT) $(LTO) $(CPU)
 CFLAGS_BASE = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter
 CFLAGS_NATIVE = $(CFLAGS_BASE) -DTOMOE_VERSION='"$(VERSION)"' -DTOMOE_PATH_PREFIX='"$(PATH_PREFIX)"' -DTOMOE_FONT_DIR='"$(FONT_DIR)"' -Ibuild -Inative $(LIB_INCLUDE) $(shell $(PKG_CONFIG) --cflags $(LIBS))
@@ -117,7 +125,7 @@ build/tomoe-portal: $(PORTAL) $(PORTAL_PROTOCOLS:%=build/obj/%-protocol.o) $(WAY
 build/obj/portal-%.o: native/portal/%.c $(wildcard native/portal/*.h) $(LIB_HEADERS) $(HEADERS) | build/obj
 	$(CC) $(CFLAGS_PORTAL) -c $< -o $@
 
-build/tomoe: $(NATIVE) $(SUPPORT:%=build/%.o)
+build/tomoe: $(NATIVE) $(SUPPORT:%=build/%.o) build/gfx
 	$(CC) $(LTO) $(NATIVE) $(SUPPORT:%=build/%.o) -o $@ $(LINK) -lm \
 		-Wl,--export-dynamic-symbol=tomoe_png_glyph_info \
 		-Wl,--export-dynamic-symbol=tomoe_png_glyph_rows
@@ -155,5 +163,11 @@ build/%-protocol.c: %.xml | build
 
 build build/obj:
 	mkdir -p $@
+
+build/gfx: FORCE | build
+	@[ "$$(cat $@ 2>/dev/null)" = "$(GFX)" ] || echo $(GFX) > $@
+
+.PHONY: FORCE
+FORCE:
 
 .SECONDARY:

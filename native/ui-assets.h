@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-struct program;
+struct gfx_prog;
 struct texture;
 struct tomoe;
 struct ui_asset;
@@ -17,7 +17,7 @@ void tomoe_ui_assets_discard(struct tomoe *s);
 struct ui_asset *ui_asset_acquire(struct tomoe *s, uint64_t id);
 struct ui_asset *ui_asset_retain(struct ui_asset *asset);
 struct texture *ui_asset_backdrop(const struct ui_asset *asset, int *x, int *y);
-struct program *ui_asset_shader(const struct ui_asset *asset, double *epoch);
+struct gfx_prog *ui_asset_shader(const struct ui_asset *asset, double *epoch);
 bool ui_asset_owned_by(const struct ui_asset *asset, const char *owner, uint64_t source_id);
 void ui_asset_release(struct ui_asset *asset);
 bool ui_asset_paint(struct ui_asset *asset, uint32_t *dst, int dst_width, int dst_height,

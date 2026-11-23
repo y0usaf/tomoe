@@ -1795,10 +1795,10 @@ size_t ui_claim(struct output *o, int layer, struct box *boxes, bool *blurs, siz
             .width = surface->width, .height = surface->height };
         if (!box_intersection(&placed, &placed, &output)) continue;
         if (count == max) return SIZE_MAX;
-        struct program *shader = ui_asset_shader(shown_backdrop(surface), NULL);
+        struct gfx_prog *shader = ui_asset_shader(shown_backdrop(surface), NULL);
         if (blurs)
             blurs[count] = (o->server->settings.blur_enabled && surface->blur >= 0) ||
-                (shader && shader->channel >= 0);
+                (shader && gfx_prog_reads(shader, GFX_IN_BENEATH));
         boxes[count++] = placed;
     }
     return count;
@@ -1878,7 +1878,7 @@ static void draw_texture(struct frame *f, struct texture *texture, int x, int y,
         .ui = surface, .content_seq = surface ? surface->content_seq : 0 });
 }
 
-static void shader_reach(struct frame *f, struct program *shader, struct fbox area,
+static void shader_reach(struct frame *f, struct gfx_prog *shader, struct fbox area,
         double time, int frame, struct shader_inputs *inputs, double reach) {
     struct region ring;
     region_init(&ring);
@@ -1925,7 +1925,7 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
         int x, y;
         double epoch;
         struct texture *image = ui_asset_backdrop(shown, &x, &y);
-        struct program *shader = ui_asset_shader(shown, &epoch);
+        struct gfx_prog *shader = ui_asset_shader(shown, &epoch);
         int left = surface->x + surface->offset_x, top = surface->y + surface->offset_y;
         const struct settings *st = &o->server->settings;
         if (surface->blur >= 0 && st->blur_enabled)
