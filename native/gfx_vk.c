@@ -3612,7 +3612,8 @@ void gfx_blur_copy_in(struct render *r, struct buffer *buffer, struct gfx_level 
 
 static void sample_pass(struct vk *v, VkPipeline pipeline, struct vk_image *from,
         struct vk_image *to, double offset, const struct region *where, float grain,
-        float vibrancy, bool sample_next) {
+        float vibrancy, VkPipelineStageFlags2 src_stage, VkPipelineStageFlags2 dst_stage,
+        VkAccessFlags2 dst_access) {
     int count = 0;
     const struct rect *rects = region_rectangles(where, &count);
     if (!count || !from->set) return;
@@ -3652,14 +3653,9 @@ static void sample_pass(struct vk *v, VkPipeline pipeline, struct vk_image *from
         vkCmdDraw(cb, 4, 1, 0, 0);
         v->base.gl_calls += 2;
     }
-    if (sample_next) {
-        rendering_close(v);
-        memory_barrier(v, cb, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-    } else {
-        rendering_end(v);
-    }
+    rendering_close(v);
+    memory_barrier(v, cb, src_stage, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, dst_stage,
+        dst_access);
 }
 
 void gfx_blur_passes(struct render *r, struct gfx_level *const *levels, int passes,
@@ -3667,14 +3663,29 @@ void gfx_blur_passes(struct render *r, struct gfx_level *const *levels, int pass
         float vibrancy) {
     struct vk *v = V(r);
     if (!v->down || !v->up) return;
+    VkPipelineStageFlags2 color = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkPipelineStageFlags2 frag = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    VkPipelineStageFlags2 both = frag | color;
+    VkAccessFlags2 sample = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    VkAccessFlags2 attach = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
+        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
     for (int i = 1; i <= passes; i++) {
         struct vk_image *from = level_image(levels[i - 1]), *to = level_image(levels[i]);
-        if (from && to) sample_pass(v, v->down, from, to, offset, &down[i], 0, 1, i < passes);
+        if (!from || !to) continue;
+        if (i < passes)
+            sample_pass(v, v->down, from, to, offset, &down[i], 0, 1, color, frag, sample);
+        else
+            sample_pass(v, v->down, from, to, offset, &down[i], 0, 1, both, both, sample | attach);
     }
     for (int i = passes - 1; i >= 0; i--) {
         struct vk_image *from = level_image(levels[i + 1]), *to = level_image(levels[i]);
-        if (from && to) sample_pass(v, v->up, from, to, offset, &up[i], i ? 0 : noise,
-            i ? 1 : vibrancy, false);
+        if (!from || !to) continue;
+        if (i > 0)
+            sample_pass(v, v->up, from, to, offset, &up[i], 0, 1, both, both, sample | attach);
+        else
+            sample_pass(v, v->up, from, to, offset, &up[i], noise, vibrancy, both,
+                both | VK_PIPELINE_STAGE_2_BLIT_BIT, sample | attach |
+                VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
     }
 }
 
