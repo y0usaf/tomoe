@@ -1766,6 +1766,39 @@ def check_shm_pool_fds(tomoe_bin, client_bin):
             tomoe.wait()
 
 
+def check_gfx_lost(tomoe_bin, client_bin):
+    sock = "e2e-gfxlost"
+    drm = os.environ.get("E2E_DRM_DEVICE")
+    args = [tomoe_bin, "--socket", sock, "--backend", "headless", "--bare", "--no-watch",
+        "--test-gfx-lose-device=60"]
+    if drm:
+        args += ["--drm_device", drm]
+    log = open(os.path.join(os.environ["XDG_RUNTIME_DIR"], "e2e-gfxlost.log"), "w+")
+    tomoe = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=log)
+    client = None
+    try:
+        inspect(tomoe_bin, sock)
+        client = subprocess.Popen([client_bin, "--input", "virtual", "--phase", "frames", "--seconds", "20",
+            "--windows", "3", "--tag", "gfxlost"], env=dict(os.environ, WAYLAND_DISPLAY=sock),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            code = tomoe.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            raise SystemExit("gfx-lost: FAIL tomoe kept running 15 s after the device was lost")
+        log.seek(0)
+        err = log.read()
+        if code != 1 or "Vulkan device was lost" not in err:
+            raise SystemExit(f"gfx-lost: FAIL exit {code}, log {err[-300:]!r}")
+        return f"gfx-lost=ok(exit {code})"
+    finally:
+        if client:
+            client.kill()
+            client.wait()
+        if tomoe.poll() is None:
+            tomoe.kill()
+            tomoe.wait()
+
+
 def check_shm_pixels(path, tomoe_bin, capture_bin):
     sock = os.path.basename(path)
     wl, shm, surf, w, h = shm_window(path, "shm-pixels")
@@ -1872,6 +1905,8 @@ def main():
             results.append(check_shm_truncate(path, client_bin, args[3]))
         elif check == "shm-destroyed":
             results.append(check_shm_destroyed(path, client_bin, args[3]))
+        elif check == "gfx-lost":
+            results.append(check_gfx_lost(args[3], client_bin))
         elif check == "shm-pool-fds":
             results.append(check_shm_pool_fds(args[3], client_bin))
         elif check == "shm-pixels":
