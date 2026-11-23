@@ -23,7 +23,7 @@ enum {
     POOL_SETS = 256,
     CHUNK_MIN = 4 << 20,
     SCENE_RESERVE = 4096,
-    BATCH_LIMIT = 16,
+    BATCH_LIMIT = 32,
     LEVEL_POOL = 24,
     YUV_FORMATS = 3,
     YUV_POOL_SETS = 64,
@@ -2542,7 +2542,7 @@ void gfx_drop_images(struct render *r) {
 void gfx_close(struct render *r) {
     struct vk *v = V(r);
     if (v->dev) {
-        tomoe_log(LOG_ERROR, "tomoe: vulkan staging chunks %llu (%llu MiB), images %llu, batches %zu, "
+        tomoe_log(LOG_INFO, "tomoe: vulkan staging chunks %llu (%llu MiB), images %llu, batches %zu, "
             "batch waits %llu, levels %llu, imports %llu", (unsigned long long)v->chunks_made,
             (unsigned long long)(v->chunk_bytes >> 20), (unsigned long long)v->images_made,
             v->batch_count, (unsigned long long)v->fence_waits, (unsigned long long)v->levels_made,
