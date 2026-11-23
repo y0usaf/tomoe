@@ -1006,18 +1006,6 @@ static void reclaim(void *data) {
     staging_poll(r, false);
 }
 
-static bool direct(struct gl_texture *t, struct buffer *buffer, const struct rect *rects, int count) {
-    void *data;
-    uint32_t format;
-    size_t stride;
-    if (!buffer_begin_access(buffer, BUFFER_READ, &data, &format, &stride)) return false;
-    bool ok = format == t->format && stride % 4 == 0 && buffer->width == (int)t->base.width &&
-        buffer->height == (int)t->base.height;
-    if (ok) upload(t, data, stride, rects, count);
-    buffer_end_access(buffer);
-    return ok;
-}
-
 static void latch(struct render *r) {
     struct upload *u = r->upload;
     if (!upload_pending(u)) return;
@@ -1025,21 +1013,14 @@ static void latch(struct render *r) {
     uint64_t start = timing_enabled ? timing_now() : 0;
     current(r);
     staging_poll(r, false);
-    bool bound = false, used = false;
-    enum upload_take take;
+    bool used = false;
     struct upload_job *job;
-    while ((job = upload_latch_next(u, &take))) {
+    while ((job = upload_latch_next(u))) {
         struct gl_texture *t = texture_of(job->texture);
-        if (take == UPLOAD_DIRECT) {
-            if (bound) glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-            bound = false;
-            direct(t, job->buffer, job->rects, job->count);
-            continue;
-        }
-        if (!bound) glBindBuffer(GL_PIXEL_UNPACK_BUFFER, g->staging.pbo);
-        bound = used = true;
+        if (!used) glBindBuffer(GL_PIXEL_UNPACK_BUFFER, g->staging.pbo);
+        used = true;
         glBindTexture(GL_TEXTURE_2D, t->tex);
-        uintptr_t at = (uintptr_t)(job->dst - u->base);
+        uintptr_t at = (uintptr_t)(job->src - u->base);
         for (int i = 0; i < job->count; i++) {
             const struct rect *rect = &job->rects[i];
             int width = rect->x2 - rect->x1, height = rect->y2 - rect->y1;
@@ -1048,7 +1029,7 @@ static void latch(struct render *r) {
             at += (uintptr_t)width * (uintptr_t)height * 4;
         }
     }
-    if (bound) glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    if (used) glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
     glBindTexture(GL_TEXTURE_2D, 0);
     if (used) {
         if (g->staging.fences == UPLOAD_FENCES) staging_poll(r, false);
