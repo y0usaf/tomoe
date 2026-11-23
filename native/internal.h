@@ -1663,6 +1663,7 @@ bool screenshot_key(struct tomoe *s, txkb_keysym_t sym, txkb_keysym_t typed,
 bool screenshot_button(struct tomoe *s, uint32_t button, bool pressed);
 void screenshot_motion(struct tomoe *s);
 bool screenshot_render_frozen(struct output *o, struct frame *f);
+bool screenshot_frozen_on(const struct output *o);
 bool screenshot_on(const struct output *o);
 bool screenshot_marks(const struct output *o, struct texture **texture, struct fbox *box,
     const struct screenshot **owner, uint64_t *seq);

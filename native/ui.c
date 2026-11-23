@@ -934,10 +934,11 @@ static bool output_needs_shader_resume(const struct output *o) {
     if (!o || !o->server || !output_is_active(o)) return false;
     const struct tomoe *s = o->server;
     if (!s->ui) return false;
+    bool frozen = screenshot_frozen_on(o);
     for (size_t i = 0; i < s->ui->count; i++) {
         const struct ui_surface *surface = s->ui->surfaces[i];
         if (surface->shader_clocked || !surface_matches_output(surface, o, NULL)) continue;
-        if (surface->layer == UI_LAYER_SCREENSHOT && !screenshot_on(o)) continue;
+        if (surface->layer == UI_LAYER_SCREENSHOT ? !screenshot_on(o) : frozen) continue;
         if (!surface->trail_on) {
             struct ui_asset *shown = shown_backdrop(surface);
             if (!shown || !ui_asset_shader(shown, NULL)) continue;
@@ -1735,14 +1736,15 @@ bool ui_animate_active(struct output *o, double now, bool moved, bool track, boo
     if (!s || !s->ui) return false;
     bool active = moved;
     bool lifting_needed = false;
+    bool frozen = screenshot_frozen_on(o);
     for (size_t i = 0; i < s->ui->count; i++) {
         struct ui_surface *surface = s->ui->surfaces[i];
         if (!surface_matches_output(surface, o, NULL)) continue;
+        if (surface->layer == UI_LAYER_SCREENSHOT ? !screenshot_on(o) : frozen) continue;
         bool occluded = recorded && shader_occluded_on(o, surface);
         if (surface->fps <= 0 && !occluded && background_moving(s, surface, now))
             active = true;
         if (track && surface->fps > 0 && !occluded && !lock_active(s) &&
-                !(surface->layer == UI_LAYER_SCREENSHOT && !screenshot_on(o)) &&
                 !shader_still(s, surface, now)) {
             bool held = s->shader_holding && !surface->shader_clocked;
             if (!held) {
@@ -1762,7 +1764,6 @@ bool ui_animate_active(struct output *o, double now, bool moved, bool track, boo
             }
         }
         if (s->shader_lifting && !surface->shader_clocked && !occluded &&
-                !(surface->layer == UI_LAYER_SCREENSHOT && !screenshot_on(o)) &&
                 !shader_settled(surface, now) && !shader_still(s, surface, now)) {
             if (surface->trail_on || ui_asset_shader(shown_backdrop(surface), NULL))
                 lifting_needed = true;

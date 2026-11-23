@@ -1336,6 +1336,11 @@ bool screenshot_render_frozen(struct output *o, struct frame *f) {
     return true;
 }
 
+bool screenshot_frozen_on(const struct output *o) {
+    return o && o->server->screenshot && o->server->screenshot->output == o &&
+        o->server->screenshot->frozen_texture != NULL;
+}
+
 bool screenshot_on(const struct output *o) {
     return o && o->server->screenshot && o->server->screenshot->output == o;
 }
