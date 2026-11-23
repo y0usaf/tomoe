@@ -129,6 +129,7 @@ struct vk {
     size_t batch_count;
     struct batch *open;
     uint64_t serial, done;
+    uint64_t chunks_made, chunk_bytes, images_made, fence_waits;
     struct grave *graves;
     struct chunk *spare;
     VkDescriptorSetLayout image_layout, sampler_layout;
@@ -287,6 +288,8 @@ static struct chunk *chunk_new(struct vk *v, VkDeviceSize size, VkBufferUsageFla
     }
     c->map = map;
     c->size = size;
+    v->chunks_made++;
+    v->chunk_bytes += size;
     return c;
 }
 
@@ -399,6 +402,7 @@ static struct batch *batch_free(struct vk *v) {
         }
     }
     vkWaitForFences(v->dev, 1, &pick->fence, VK_TRUE, UINT64_MAX);
+    v->fence_waits++;
     retire(v, false);
     return pick->busy ? NULL : pick;
 }
@@ -707,6 +711,7 @@ static struct vk_image *image_new(struct vk *v, VkFormat format, int width, int 
         image_free(image);
         return NULL;
     }
+    v->images_made++;
     image_barrier(b->pre, image->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
         VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
     if (usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) {
@@ -1859,6 +1864,10 @@ void gfx_drop_images(struct render *r) {
 void gfx_close(struct render *r) {
     struct vk *v = V(r);
     if (v->dev) {
+        tomoe_log(LOG_ERROR, "tomoe: vulkan staging chunks %llu (%llu MiB), images %llu, batches %zu, "
+            "batch waits %llu", (unsigned long long)v->chunks_made,
+            (unsigned long long)(v->chunk_bytes >> 20), (unsigned long long)v->images_made,
+            v->batch_count, (unsigned long long)v->fence_waits);
         vkDeviceWaitIdle(v->dev);
         retire(v, true);
         if (v->dummy) image_free(v->dummy);
