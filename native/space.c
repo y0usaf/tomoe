@@ -742,11 +742,11 @@ static bool render_scene_prepared(struct output *o, struct buffer *buffer,
     transform_coords(data.transform, &data.width, &data.height);
     bool locked = lock_active(o->server);
     bool moving = false, ui_moved = false;
-    if (!pre_recorded) {
+    if (track && !pre_recorded) {
         moving = windows_animate(o->server, data.sample);
         ui_moved = ui_animate_step(o->server, data.sample);
         if (screenshot_animate(o->server, data.sample)) moving = true;
-        if (track && cursor_motion_advance(o->server, animation_now())) moving = true;
+        if (cursor_motion_advance(o->server, animation_now())) moving = true;
     }
     struct region changed, clip;
     region_init(&changed);
@@ -757,9 +757,9 @@ static bool render_scene_prepared(struct output *o, struct buffer *buffer,
         recorded = pre_complete;
         partial = track && scene_commit_damage(o, buffer, &changed, &clip, pre_complete,
             o->ops.len + o->cursor_ops.len);
-    } else {
-        partial = track && scene_damage(o, &data, locked, &changed, &clip, &recorded);
-        if (ui_animate_active(o, data.sample, ui_moved, track, recorded)) moving = true;
+    } else if (track) {
+        partial = scene_damage(o, &data, locked, &changed, &clip, &recorded);
+        if (ui_animate_active(o, data.sample, ui_moved, true, recorded)) moving = true;
         o->animating = o->animating || moving;
     }
     size_t slot = track ? ring_slot(&o->ring, buffer) : RING_SLOTS;
