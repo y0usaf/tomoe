@@ -20,6 +20,7 @@ enum {
     SCENE_RESERVE = 4096,
     BATCH_WAITS = 16,
     BATCH_LIMIT = 16,
+    LEVEL_POOL = 24,
 };
 
 struct vk;
@@ -146,12 +147,16 @@ struct vk {
     struct wl_list images;
     struct vk_image *dummy;
     struct vk_image *target, *bound;
+    struct vk_image *pool[LEVEL_POOL];
+    int pooled;
     bool rendering;
     struct scene scene;
 };
 
 static uint64_t serials;
 static struct vk *current_vk;
+
+static void level_pool_drain(struct vk *v);
 
 enum { LEVEL_FORMAT = VK_FORMAT_B8G8R8A8_UNORM };
 
@@ -425,6 +430,7 @@ static struct batch *batch(struct vk *v) {
             vkBeginCommandBuffer(b->main, &begin) != VK_SUCCESS) return NULL;
     b->serial = ++v->serial;
     v->open = b;
+    full_barrier(v, b->pre);
     return b;
 }
 
@@ -1872,6 +1878,7 @@ void gfx_close(struct render *r) {
             (unsigned long long)v->imports_made);
         vkDeviceWaitIdle(v->dev);
         retire(v, true);
+        level_pool_drain(v);
         if (v->dummy) image_free(v->dummy);
         v->dummy = NULL;
         graves_sweep(v, true);
@@ -1922,6 +1929,7 @@ void gfx_flush(struct render *r) {
 
 void gfx_upload_trim(struct render *r) {
     struct vk *v = V(r);
+    level_pool_drain(v);
     while (v->spare) {
         struct chunk *c = v->spare;
         v->spare = c->next;
@@ -1995,16 +2003,41 @@ bool gfx_prog_reads(const struct gfx_prog *p, enum gfx_input input) {
     return false;
 }
 
+static void level_pool_put(struct vk *v, struct vk_image *image) {
+    if (v->pooled == LEVEL_POOL) {
+        image_free(v->pool[0]);
+        memmove(v->pool, v->pool + 1, sizeof(v->pool[0]) * (LEVEL_POOL - 1));
+        v->pooled--;
+    }
+    v->pool[v->pooled++] = image;
+}
+
+static struct vk_image *level_pool_take(struct vk *v, int width, int height) {
+    for (int i = v->pooled - 1; i >= 0; i--) {
+        struct vk_image *image = v->pool[i];
+        if (image->width != width || image->height != height) continue;
+        memmove(v->pool + i, v->pool + i + 1, sizeof(v->pool[0]) * (size_t)(v->pooled - i - 1));
+        v->pooled--;
+        return image;
+    }
+    return NULL;
+}
+
+static void level_pool_drain(struct vk *v) {
+    while (v->pooled > 0) image_free(v->pool[--v->pooled]);
+}
+
 bool gfx_level_ensure(struct gfx_level *level, int width, int height) {
     struct vk *v = current_vk;
     if (!v || width < 1 || height < 1) return false;
     struct vk_image *image = level_image(level);
     if (image && level->width == width && level->height == height) return true;
-    if (image) image_free(image);
+    if (image) level_pool_put(v, image);
     level->token = 0;
-    image = image_new(v, (VkFormat)LEVEL_FORMAT, width, height, VK_IMAGE_USAGE_SAMPLED_BIT |
-        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-        VK_IMAGE_USAGE_TRANSFER_DST_BIT, true);
+    image = level_pool_take(v, width, height);
+    if (!image) image = image_new(v, (VkFormat)LEVEL_FORMAT, width, height,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, true);
     if (!image) {
         *level = (struct gfx_level){0};
         return false;
@@ -2018,7 +2051,7 @@ bool gfx_level_ensure(struct gfx_level *level, int width, int height) {
 
 void gfx_level_release(struct gfx_level *level) {
     struct vk_image *image = level_image(level);
-    if (image) image_free(image);
+    if (image && current_vk) level_pool_put(current_vk, image);
     *level = (struct gfx_level){0};
 }
 
