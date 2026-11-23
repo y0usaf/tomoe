@@ -976,12 +976,18 @@ static void staging_init(struct render *r) {
 
 static struct upload *staging(struct render *r) {
     if (!r->upload) return NULL;
-    current(r);
-    if (!G(r)->staging.pbo && !G(r)->staging.failed &&
-            !staging_alloc(r, upload_wanted(r->upload)))
-        G(r)->staging.failed = true;
-    staging_poll(r, false);
+    if (!G(r)->staging.pbo && !G(r)->staging.failed) {
+        current(r);
+        if (!staging_alloc(r, upload_wanted(r->upload))) G(r)->staging.failed = true;
+    }
     return r->upload;
+}
+
+static void reclaim(void *data) {
+    struct render *r = data;
+    if (!G(r)->staging.fences) return;
+    current(r);
+    staging_poll(r, false);
 }
 
 static bool direct(struct gl_texture *t, struct buffer *buffer, const struct rect *rects, int count) {
@@ -1044,10 +1050,7 @@ static void latch(struct render *r) {
         u->stats.resizes++;
         staging_alloc(r, want);
     }
-    if (timing_enabled) {
-        if (!g->staging.channel) g->staging.channel = tomoe_timing_channel("upload-latch") + 1;
-        if (g->staging.channel > 0) tomoe_timing_sample(g->staging.channel - 1, timing_now() - start);
-    }
+    if (timing_enabled) timing_add(TIMING_UPLOAD_LATCH, timing_now() - start);
 }
 
 static bool stage(struct gl_texture *t, struct buffer *buffer, const struct region *damage) {
@@ -1062,7 +1065,8 @@ static bool stage(struct gl_texture *t, struct buffer *buffer, const struct regi
         bool ok = format == t->format && stride % 4 == 0 && buffer->width == (int)t->base.width &&
             buffer->height == (int)t->base.height;
         if (ok && upload_full(u)) latch(t->r);
-        if (ok && upload_stage(u, &t->base, buffer, view, offset, stride, damage)) return true;
+        if (ok && upload_stage(u, &t->base, buffer, view, offset, stride, damage, reclaim, t->r))
+            return true;
         wl_shm_view_unref(view);
     }
     u->stats.sync++;

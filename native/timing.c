@@ -32,7 +32,7 @@ static const char *const channel_names[TIMING_CHANNELS] = {
     "cursor-newest", "cursor-oldest", "loop-tick", "loop-tick-cpu", "loop-tick-frame",
     "loop-tick-idle", "loop-tick-commit", "loop-tick-noncommit", "loop-tick-noncommit-frame",
     "loop-tick-noncommit-idle", "loop-tick-commit-frame", "loop-tick-commit-idle", "commit-request", "upload",
-    "upload-bytes", "stage-dispatch", "stage-step-post", "stage-gestures", "stage-policy",
+    "upload-bytes", "upload-latch", "stage-dispatch", "stage-step-post", "stage-gestures", "stage-policy",
     "stage-bus", "stage-log", "stage-control", "stage-ipc", "stage-lisp-end", "stage-retire",
     "stage-outputs", "stage-scene", "stage-frame", "stage-flush", "stage-idle-frames",
     "stage-idle-dispatch",

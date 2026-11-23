@@ -166,13 +166,9 @@ static bool reserve(const struct upload *u, uint64_t bytes, uint64_t *start) {
     return true;
 }
 
-bool upload_fits(const struct upload *u, uint64_t bytes) {
-    uint64_t start;
-    return reserve(u, bytes, &start);
-}
-
 bool upload_stage(struct upload *u, struct texture *texture, struct buffer *buffer,
-        struct wl_shm_view *view, size_t offset, size_t stride, const struct region *damage) {
+        struct wl_shm_view *view, size_t offset, size_t stride, const struct region *damage,
+        void (*reclaim)(void *data), void *data) {
     if (upload_full(u)) return false;
     int count = 0;
     const struct rect *rects = region_rectangles(damage, &count);
@@ -195,6 +191,10 @@ bool upload_stage(struct upload *u, struct texture *texture, struct buffer *buff
     job->fault = job->superseded = job->latched = job->released = false;
     uint64_t start = 0;
     job->staged = reserve(u, bytes, &start);
+    if (!job->staged && u->base && reclaim) {
+        reclaim(data);
+        job->staged = reserve(u, bytes, &start);
+    }
     if (job->staged) {
         job->start = start;
         job->end = start + bytes;

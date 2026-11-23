@@ -48,10 +48,10 @@ struct upload {
 struct upload *upload_create(void);
 void upload_destroy(struct upload *u);
 bool upload_full(const struct upload *u);
-bool upload_fits(const struct upload *u, uint64_t bytes);
 uint64_t upload_bytes(const struct rect *rects, int count);
 bool upload_stage(struct upload *u, struct texture *texture, struct buffer *buffer,
-    struct wl_shm_view *view, size_t offset, size_t stride, const struct region *damage);
+    struct wl_shm_view *view, size_t offset, size_t stride, const struct region *damage,
+    void (*reclaim)(void *data), void *data);
 bool upload_pending(const struct upload *u);
 struct upload_job *upload_latch_next(struct upload *u, enum upload_take *take);
 void upload_latch_end(struct upload *u);
