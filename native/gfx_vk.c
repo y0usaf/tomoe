@@ -343,9 +343,15 @@ static void stage_barrier(VkCommandBuffer cb, VkPipelineStageFlags2 src_stage,
     vkCmdPipelineBarrier2(cb, &info);
 }
 
-static void full_barrier(struct vk *v, VkCommandBuffer cb) {
+static void memory_barrier(struct vk *v, VkCommandBuffer cb,
+        VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
+        VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
     (void)v;
-    stage_barrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+    stage_barrier(cb, src_stage, src_access, dst_stage, dst_access);
+}
+
+static void full_barrier(struct vk *v, VkCommandBuffer cb) {
+    memory_barrier(v, cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
         VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
         VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
 }
@@ -662,12 +668,17 @@ static void *stage_alloc(struct vk *v, VkDeviceSize size, VkBuffer *buffer, VkDe
     return at;
 }
 
-static void rendering_end(struct vk *v) {
+static void rendering_close(struct vk *v) {
     if (!v->rendering) return;
     vkCmdEndRendering(v->open->main);
-    full_barrier(v, v->open->main);
     v->rendering = false;
     v->bound = NULL;
+}
+
+static void rendering_end(struct vk *v) {
+    if (!v->rendering) return;
+    rendering_close(v);
+    full_barrier(v, v->open->main);
 }
 
 static bool image_use(struct vk *v, struct vk_image *image) {
@@ -3601,7 +3612,7 @@ void gfx_blur_copy_in(struct render *r, struct buffer *buffer, struct gfx_level 
 
 static void sample_pass(struct vk *v, VkPipeline pipeline, struct vk_image *from,
         struct vk_image *to, double offset, const struct region *where, float grain,
-        float vibrancy) {
+        float vibrancy, bool sample_next) {
     int count = 0;
     const struct rect *rects = region_rectangles(where, &count);
     if (!count || !from->set) return;
@@ -3641,7 +3652,14 @@ static void sample_pass(struct vk *v, VkPipeline pipeline, struct vk_image *from
         vkCmdDraw(cb, 4, 1, 0, 0);
         v->base.gl_calls += 2;
     }
-    rendering_end(v);
+    if (sample_next) {
+        rendering_close(v);
+        memory_barrier(v, cb, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    } else {
+        rendering_end(v);
+    }
 }
 
 void gfx_blur_passes(struct render *r, struct gfx_level *const *levels, int passes,
@@ -3651,12 +3669,12 @@ void gfx_blur_passes(struct render *r, struct gfx_level *const *levels, int pass
     if (!v->down || !v->up) return;
     for (int i = 1; i <= passes; i++) {
         struct vk_image *from = level_image(levels[i - 1]), *to = level_image(levels[i]);
-        if (from && to) sample_pass(v, v->down, from, to, offset, &down[i], 0, 1);
+        if (from && to) sample_pass(v, v->down, from, to, offset, &down[i], 0, 1, i < passes);
     }
     for (int i = passes - 1; i >= 0; i--) {
         struct vk_image *from = level_image(levels[i + 1]), *to = level_image(levels[i]);
         if (from && to) sample_pass(v, v->up, from, to, offset, &up[i], i ? 0 : noise,
-            i ? 1 : vibrancy);
+            i ? 1 : vibrancy, false);
     }
 }
 
