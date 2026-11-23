@@ -52,7 +52,7 @@
           opt ? "-O2",
           lto ? false,
           portal ? true,
-          gfx ? "gles",
+          gfx ? "vk",
         }:
         let
           glslangValidator =
@@ -293,7 +293,6 @@
       packages = nixpkgs.lib.mapAttrs (_: pkgs: rec {
         default = package pkgs { };
         tomoe = default;
-        tomoe-vk = package pkgs { gfx = "vk"; };
         znver4 = package pkgs {
           cpu = "znver4";
           opt = "-O3";
@@ -305,7 +304,6 @@
       }) pkgsFor;
       checks = nixpkgs.lib.mapAttrs (_: pkgs: {
         tomoe = package pkgs { };
-        tomoe-vk = package pkgs { gfx = "vk"; };
         gfx-seam = pkgs.runCommand "tomoe-gfx-seam" { } ''
           cd ${./native}
           if grep -nE 'GL[a-z]|gl[A-Z]|EGL|GLES' *.c *.h | grep -vE '^gfx_gles(\.h|\.c|_effects\.c):'; then
