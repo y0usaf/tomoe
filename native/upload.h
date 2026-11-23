@@ -24,11 +24,11 @@ struct upload_job {
     uint64_t start, end;
     int count;
     struct rect rects[UPLOAD_RECTS];
-    bool staged, fault, superseded, latched, released;
+    bool fault, superseded, latched, released;
 };
 
 struct upload_stats {
-    uint64_t jobs, staged_bytes, stolen, raced, direct, sync, faults, resizes;
+    uint64_t jobs, staged_bytes, stolen, raced, sync, trims, faults, resizes;
     _Atomic uint64_t worker_ns, worker_jobs;
 };
 
@@ -39,7 +39,7 @@ struct upload {
     int fd;
     pthread_t thread;
     unsigned char *base;
-    uint64_t size, alloc, gpu_done, frame_bytes, peak, window_max, window_peak;
+    uint64_t size, alloc, gpu_done, frame_bytes, peak, window_max, window_peak, resume;
     uint32_t window_latches;
     bool calm;
     struct upload_stats stats;

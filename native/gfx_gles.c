@@ -983,6 +983,13 @@ static struct upload *staging(struct render *r) {
     return r->upload;
 }
 
+void gfx_upload_trim(struct render *r) {
+    if (!G(r)->staging.pbo) return;
+    current(r);
+    staging_free(r);
+    r->upload->stats.trims++;
+}
+
 static void reclaim(void *data) {
     struct render *r = data;
     if (!G(r)->staging.fences) return;

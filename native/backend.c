@@ -66,10 +66,18 @@ static bool create_scene_trees(struct tomoe *s) {
     }
     return s->window_tree && s->fullscreen_tree && s->popup_tree && s->drag_icon_tree;
 }
+static int upload_trim(void *data) {
+    struct tomoe *s = data;
+    render_upload_trim(s->renderer);
+    return 0;
+}
+
 static int upload_ready(int fd, uint32_t mask, void *data) {
     (void)fd;
     (void)mask;
-    render_upload_drain(data);
+    struct tomoe *s = data;
+    render_upload_drain(s->renderer);
+    if (s->upload_trim) wl_event_source_timer_update(s->upload_trim, UPLOAD_TRIM_MS);
     return 0;
 }
 
@@ -126,9 +134,12 @@ struct tomoe *tomoe_create(const char *socket_name) {
     s->renderer = render_create(drm_fd);
     if (s->backend == SCREEN_NESTED && drm_fd >= 0) close(drm_fd);
     if (!s->renderer || !effects_create(s) || !buffers_listen(s)) goto failed;
-    if (render_upload_fd(s->renderer) >= 0)
-        s->upload_source = wl_event_loop_add_fd(wl_display_get_event_loop(s->display),
-            render_upload_fd(s->renderer), WL_EVENT_READABLE, upload_ready, s->renderer);
+    if (render_upload_fd(s->renderer) >= 0) {
+        struct wl_event_loop *loop = wl_display_get_event_loop(s->display);
+        s->upload_source = wl_event_loop_add_fd(loop, render_upload_fd(s->renderer),
+            WL_EVENT_READABLE, upload_ready, s);
+        s->upload_trim = wl_event_loop_add_timer(loop, upload_trim, s);
+    }
     if (!capture_listen(s)) goto failed;
     if (!surfaces_listen(s)) goto failed;
     s->scene = node_create(NULL);
@@ -218,7 +229,8 @@ void tomoe_destroy(struct tomoe *s) {
     settings_finish(&s->settings);
     if (s->render_timeline) timeline_unref(s->render_timeline);
     if (s->upload_source) wl_event_source_remove(s->upload_source);
-    s->upload_source = NULL;
+    if (s->upload_trim) wl_event_source_remove(s->upload_trim);
+    s->upload_source = s->upload_trim = NULL;
     if (s->renderer) render_destroy(s->renderer);
     if (s->grab_release) wl_event_source_remove(s->grab_release);
     buffers_finish();

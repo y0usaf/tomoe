@@ -1060,6 +1060,10 @@ void render_upload_drain(struct render *r) {
     if (r && r->upload) upload_drain(r->upload);
 }
 
+void render_upload_trim(struct render *r) {
+    if (r && r->upload && upload_idle(r->upload) && !upload_pending(r->upload)) gfx_upload_trim(r);
+}
+
 struct render *render_create(int drm_fd) {
     struct render *r = render_open(render_node_name(drm_fd));
     if (!r) return NULL;

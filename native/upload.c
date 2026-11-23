@@ -154,13 +154,8 @@ static bool reserve(const struct upload *u, uint64_t bytes, uint64_t *start) {
     if (off + bytes > u->size) at += u->size - off;
     uint64_t low = u->gpu_done;
     uint32_t head = atomic_load(&u->head);
-    for (uint32_t i = u->tail; i != head; i++) {
-        const struct upload_job *job = &u->jobs[i % UPLOAD_JOBS];
-        if (job->staged) {
-            if (job->start < low) low = job->start;
-            break;
-        }
-    }
+    if (u->tail != head && slot((struct upload *)u, u->tail)->start < low)
+        low = slot((struct upload *)u, u->tail)->start;
     if (at + bytes - low > u->size) return false;
     *start = at;
     return true;
@@ -183,34 +178,29 @@ bool upload_stage(struct upload *u, struct texture *texture, struct buffer *buff
         job->count = count;
     }
     uint64_t bytes = upload_bytes(job->rects, job->count);
+    u->frame_bytes += bytes;
+    uint64_t start = 0;
+    bool fits = reserve(u, bytes, &start);
+    if (!fits && u->base && reclaim) {
+        reclaim(data);
+        fits = reserve(u, bytes, &start);
+    }
+    if (!fits) return false;
     job->texture = texture;
     job->buffer = buffer_lock(buffer);
     job->view = view;
     job->offset = offset;
     job->stride = stride;
     job->fault = job->superseded = job->latched = job->released = false;
-    uint64_t start = 0;
-    job->staged = reserve(u, bytes, &start);
-    if (!job->staged && u->base && reclaim) {
-        reclaim(data);
-        job->staged = reserve(u, bytes, &start);
-    }
-    if (job->staged) {
-        job->start = start;
-        job->end = start + bytes;
-        job->dst = u->base + start % u->size;
-        u->alloc = job->end;
-        u->stats.staged_bytes += bytes;
-    } else {
-        job->start = job->end = u->alloc;
-        job->dst = NULL;
-    }
-    u->frame_bytes += bytes;
+    job->start = start;
+    job->end = start + bytes;
+    job->dst = u->base + start % u->size;
+    u->alloc = job->end;
+    u->stats.staged_bytes += bytes;
     u->stats.jobs++;
-    atomic_store_explicit(&job->state, job->staged ? UPLOAD_QUEUED : UPLOAD_MAIN,
-        memory_order_release);
+    atomic_store_explicit(&job->state, UPLOAD_QUEUED, memory_order_release);
     atomic_store(&u->head, head + 1);
-    if (job->staged && atomic_load(&u->sleeping))
+    if (atomic_load(&u->sleeping))
         syscall(SYS_futex, (uint32_t *)&u->head, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
     return true;
 }
@@ -225,13 +215,10 @@ struct upload_job *upload_latch_next(struct upload *u, enum upload_take *take) {
         struct upload_job *job = slot(u, u->latch++);
         job->latched = true;
         int state = UPLOAD_QUEUED;
-        bool claimed = !job->staged ||
-            atomic_compare_exchange_strong(&job->state, &state, UPLOAD_MAIN);
+        bool claimed = atomic_compare_exchange_strong(&job->state, &state, UPLOAD_MAIN);
         if (!claimed && state == UPLOAD_WORKER) job->superseded = true;
         if (!job->texture) continue;
-        if (!job->staged) {
-            u->stats.direct++;
-        } else if (claimed) {
+        if (claimed) {
             u->stats.stolen++;
         } else if (job->superseded) {
             u->stats.raced++;
@@ -281,6 +268,7 @@ bool upload_idle(const struct upload *u) {
 }
 
 void upload_set_staging(struct upload *u, unsigned char *base, uint64_t size) {
+    if (!base && u->size) u->resume = u->size;
     u->base = base;
     u->size = size;
     u->alloc = u->gpu_done = 0;
@@ -290,7 +278,7 @@ void upload_set_staging(struct upload *u, unsigned char *base, uint64_t size) {
 }
 
 uint64_t upload_wanted(const struct upload *u) {
-    uint64_t need = u->size && u->peak > u->size ? u->peak : u->calm ? u->window_peak : 0;
+    uint64_t need = !u->size ? u->resume : u->peak > u->size ? u->peak : u->calm ? u->window_peak : 0;
     uint64_t want = UPLOAD_MIN_STAGING;
     while (want < need && want < UPLOAD_MAX_STAGING) want <<= 1;
     if (!u->size || want > u->size || (u->calm && want < u->size)) return want;
@@ -303,22 +291,22 @@ void upload_describe(FILE *out) {
         fputs("nil", out);
         return;
     }
-    fprintf(out, "(:jobs %llu :staged-bytes %llu :stolen %llu :raced %llu :direct %llu :sync %llu "
+    fprintf(out, "(:jobs %llu :staged-bytes %llu :stolen %llu :raced %llu :sync %llu :trims %llu "
         ":faults %llu :resizes %llu :worker-jobs %llu :worker-ns %llu :staging-bytes %llu)",
         (unsigned long long)u->stats.jobs, (unsigned long long)u->stats.staged_bytes,
         (unsigned long long)u->stats.stolen, (unsigned long long)u->stats.raced,
-        (unsigned long long)u->stats.direct, (unsigned long long)u->stats.sync,
+        (unsigned long long)u->stats.sync, (unsigned long long)u->stats.trims,
         (unsigned long long)u->stats.faults, (unsigned long long)u->stats.resizes,
         (unsigned long long)atomic_load(&u->stats.worker_jobs),
         (unsigned long long)atomic_load(&u->stats.worker_ns), (unsigned long long)u->size);
 }
 
 void upload_report(const struct upload *u) {
-    tomoe_log(LOG_INFO, "tomoe: shm upload jobs %llu staged-mib %.1f stolen %llu raced %llu direct %llu "
-        "sync %llu faults %llu resizes %llu worker-jobs %llu worker-ms %.1f staging-mib %llu",
+    tomoe_log(LOG_INFO, "tomoe: shm upload jobs %llu staged-mib %.1f stolen %llu raced %llu sync %llu trims %llu "
+        "faults %llu resizes %llu worker-jobs %llu worker-ms %.1f staging-mib %llu",
         (unsigned long long)u->stats.jobs, (double)u->stats.staged_bytes / 1048576.0,
         (unsigned long long)u->stats.stolen, (unsigned long long)u->stats.raced,
-        (unsigned long long)u->stats.direct, (unsigned long long)u->stats.sync,
+        (unsigned long long)u->stats.sync, (unsigned long long)u->stats.trims,
         (unsigned long long)u->stats.faults, (unsigned long long)u->stats.resizes,
         (unsigned long long)atomic_load(&u->stats.worker_jobs),
         (double)atomic_load(&u->stats.worker_ns) / 1e6, (unsigned long long)(u->size >> 20));
