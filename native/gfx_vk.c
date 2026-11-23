@@ -608,7 +608,6 @@ static struct batch *batch(struct vk *v) {
             vkBeginCommandBuffer(b->main, &begin) != VK_SUCCESS) return NULL;
     b->serial = ++v->serial;
     v->open = b;
-    full_barrier(v, b->pre);
     return b;
 }
 
