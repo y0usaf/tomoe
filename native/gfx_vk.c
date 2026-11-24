@@ -50,7 +50,7 @@ struct vk_image {
     uint32_t drm_format;
     int width, height;
     bool foreign, target, owned, used;
-    uint64_t batch, written, copied;
+    uint64_t batch, written, copied, sync_rw;
     int fd, yuv;
 };
 
@@ -238,6 +238,7 @@ struct vk {
     struct wl_list images;
     struct vk_image *dummy;
     struct vk_image *target, *bound;
+    VkRect2D render_area;
     struct vk_image *pool[LEVEL_POOL];
     int pooled;
     struct {
@@ -747,10 +748,19 @@ static void rendering_end(struct vk *v) {
             VK_ACCESS_2_TRANSFER_WRITE_BIT);
 }
 
-static bool image_use(struct vk *v, struct vk_image *image) {
+static bool image_use_mode(struct vk *v, struct vk_image *image, bool write) {
     struct batch *b = batch(v);
     if (!b) return false;
-    if (!image->foreign || image->batch == b->serial) return true;
+    if (!image->foreign) return true;
+    if (image->batch == b->serial) {
+        if (write && !image->owned && image->fd >= 0 && v->sync_fd && image->sync_rw != b->serial) {
+            struct dma_buf_export_sync_file exported = { .flags = DMA_BUF_SYNC_RW, .fd = -1 };
+            if (ioctl(image->fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &exported) == 0 && exported.fd >= 0)
+                wait_fd(v, exported.fd);
+            image->sync_rw = b->serial;
+        }
+        return true;
+    }
     if (b->acquired_len == b->acquired_cap) {
         size_t cap = b->acquired_cap ? b->acquired_cap * 2 : 16;
         struct vk_image **grown = realloc(b->acquired, cap * sizeof(*grown));
@@ -766,11 +776,23 @@ static bool image_use(struct vk *v, struct vk_image *image) {
         VK_QUEUE_FAMILY_FOREIGN_EXT, v->family);
     image->used = true;
     if (!image->owned && image->fd >= 0 && v->sync_fd) {
-        struct dma_buf_export_sync_file exported = { .flags = DMA_BUF_SYNC_READ, .fd = -1 };
+        struct dma_buf_export_sync_file exported = {
+            .flags = write ? DMA_BUF_SYNC_RW : DMA_BUF_SYNC_READ,
+            .fd = -1,
+        };
         if (ioctl(image->fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &exported) == 0 && exported.fd >= 0)
             wait_fd(v, exported.fd);
+        if (write) image->sync_rw = b->serial;
     }
     return true;
+}
+
+static bool image_use(struct vk *v, struct vk_image *image) {
+    return image_use_mode(v, image, false);
+}
+
+static bool image_use_write(struct vk *v, struct vk_image *image) {
+    return image_use_mode(v, image, true);
 }
 
 static void release_foreign(struct vk *v, struct batch *b) {
@@ -1883,12 +1905,45 @@ static struct target_pipelines *pipelines_find(struct vk *v, VkFormat format) {
     return NULL;
 }
 
+static VkRect2D clamp_area(const struct vk_image *target, VkRect2D area) {
+    int32_t x1 = area.offset.x < 0 ? 0 : area.offset.x;
+    int32_t y1 = area.offset.y < 0 ? 0 : area.offset.y;
+    int64_t x2 = (int64_t)area.offset.x + (int64_t)area.extent.width;
+    int64_t y2 = (int64_t)area.offset.y + (int64_t)area.extent.height;
+    if (x2 > target->width) x2 = target->width;
+    if (y2 > target->height) y2 = target->height;
+    if (x2 <= x1 || y2 <= y1) return (VkRect2D){ { 0, 0 }, { 0, 0 } };
+    return (VkRect2D){ { x1, y1 }, { (uint32_t)(x2 - x1), (uint32_t)(y2 - y1) } };
+}
+
+static bool area_inside(VkRect2D inner, VkRect2D outer) {
+    return inner.offset.x >= outer.offset.x && inner.offset.y >= outer.offset.y &&
+        (int64_t)inner.offset.x + inner.extent.width <= (int64_t)outer.offset.x + outer.extent.width &&
+        (int64_t)inner.offset.y + inner.extent.height <= (int64_t)outer.offset.y + outer.extent.height;
+}
+
+static VkRect2D pass_area(const struct pass *pass, const struct vk_image *target) {
+    VkRect2D full = { { 0, 0 }, { (uint32_t)target->width, (uint32_t)target->height } };
+    if (!pass || !pass->clip) return full;
+    const struct rect *e = region_extents((struct region *)pass->clip);
+    if (!e || e->x2 <= e->x1 || e->y2 <= e->y1) return full;
+    return clamp_area(target, (VkRect2D){ { e->x1, e->y1 },
+        { (uint32_t)(e->x2 - e->x1), (uint32_t)(e->y2 - e->y1) } });
+}
+
 static bool rendering_begin_area(struct vk *v, struct vk_image *target, VkRect2D area,
         VkAttachmentLoadOp load_op, const float clear[4]) {
     if (!target) return false;
+    area = clamp_area(target, area);
+    if (!area.extent.width || !area.extent.height) return false;
+    if (v->rendering && v->bound == target) {
+        if (area_inside(area, v->render_area)) return true;
+        load_op = VK_ATTACHMENT_LOAD_OP_LOAD;
+        clear = NULL;
+    }
     rendering_end(v);
     struct batch *b = batch(v);
-    if (!b || !image_use(v, target)) return false;
+    if (!b || !image_use_write(v, target)) return false;
     VkRenderingAttachmentInfo color = {
         .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
         .imageView = target->view,
@@ -1905,27 +1960,22 @@ static bool rendering_begin_area(struct vk *v, struct vk_image *target, VkRect2D
         .colorAttachmentCount = 1,
         .pColorAttachments = &color,
     };
-    if (!target->owned && target->fd >= 0 && v->sync_fd && target->written != b->serial) {
-        struct dma_buf_export_sync_file exported = { .flags = DMA_BUF_SYNC_RW, .fd = -1 };
-        if (ioctl(target->fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &exported) == 0 && exported.fd >= 0)
-            wait_fd(v, exported.fd);
-    }
     vkCmdBeginRendering(b->main, &info);
     target->written = b->serial;
     VkViewport viewport = { 0, 0, (float)target->width, (float)target->height, 0, 1 };
     vkCmdSetViewport(b->main, 0, 1, &viewport);
     v->rendering = true;
     v->bound = target;
+    v->render_area = area;
     v->base.gl_calls += 2;
     return true;
 }
 
 static bool rendering_begin_op(struct vk *v, struct vk_image *target, VkAttachmentLoadOp load_op,
         const float clear[4]) {
-    if (v->rendering && v->bound == target) return true;
     if (!target) return false;
-    VkRect2D area = { { 0, 0 }, { (uint32_t)target->width, (uint32_t)target->height } };
-    return rendering_begin_area(v, target, area, load_op, clear);
+    VkRect2D full = { { 0, 0 }, { (uint32_t)target->width, (uint32_t)target->height } };
+    return rendering_begin_area(v, target, full, load_op, clear);
 }
 
 static bool rendering_begin(struct vk *v, struct vk_image *target) {
@@ -2014,13 +2064,12 @@ struct scene_run {
 };
 
 static void run_draw(struct vk *v, VkCommandBuffer cb, struct target_pipelines *pipes,
-        const struct scene_run *run, int *blend, VkDescriptorSet *set, int *filter) {
+        const struct scene_run *run, int *blend, VkDescriptorSet *set, int *filter,
+        VkRect2D *last_scissor) {
     struct render *r = &v->base;
     if (*blend != run->blend) {
         vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipes->blend[run->blend]);
         *blend = run->blend;
-        *set = VK_NULL_HANDLE;
-        *filter = -1;
         r->gl_calls++;
     }
     VkDescriptorSet want = run->image ? run->image->set : v->dummy->set;
@@ -2045,9 +2094,13 @@ static void run_draw(struct vk *v, VkCommandBuffer cb, struct target_pipelines *
         if (x2 <= x1 || y2 <= y1) return;
         scissor = (VkRect2D){ { x1, y1 }, { (uint32_t)(x2 - x1), (uint32_t)(y2 - y1) } };
     }
-    vkCmdSetScissor(cb, 0, 1, &scissor);
+    if (memcmp(last_scissor, &scissor, sizeof(scissor))) {
+        vkCmdSetScissor(cb, 0, 1, &scissor);
+        *last_scissor = scissor;
+        r->gl_calls++;
+    }
     vkCmdDraw(cb, 6, (uint32_t)run->count, 0, (uint32_t)run->first);
-    r->gl_calls += 2;
+    r->gl_calls++;
     r->runs++;
     r->quads += run->count;
 }
@@ -2107,12 +2160,15 @@ void pass_flush(struct pass *pass) {
     for (size_t i = 0; i < n; i++) out[i] = items[i].in;
     r->uploads++;
     r->upload_bytes += n * sizeof(*out);
-    if (!rendering_begin_op(v, v->target, load_op, clear)) return;
+    VkRect2D area = load_op == VK_ATTACHMENT_LOAD_OP_LOAD ? pass_area(pass, v->target) :
+        (VkRect2D){ { 0, 0 }, { (uint32_t)v->target->width, (uint32_t)v->target->height } };
+    if (!rendering_begin_area(v, v->target, area, load_op, clear)) return;
     VkCommandBuffer cb = v->open->main;
     vkCmdBindVertexBuffers(cb, 0, 1, &buffer, &offset);
     r->gl_calls++;
     int blend = -1, filter = -1;
     VkDescriptorSet set = VK_NULL_HANDLE;
+    VkRect2D last_scissor = { { -1, -1 }, { 0, 0 } };
     struct scene_run run = {0};
     for (size_t i = 0; i < n; i++) {
         const struct scene_item *in = &items[i];
@@ -2127,12 +2183,12 @@ void pass_flush(struct pass *pass) {
             run.count++;
             continue;
         }
-        if (run.count) run_draw(v, cb, pipes, &run, &blend, &set, &filter);
+        if (run.count) run_draw(v, cb, pipes, &run, &blend, &set, &filter, &last_scissor);
         run = (struct scene_run){ .first = i, .count = 1, .image = in->image,
             .filter = in->filter, .blend = in->blend };
         memcpy(run.scissor, in->scissor, sizeof(run.scissor));
     }
-    if (run.count) run_draw(v, cb, pipes, &run, &blend, &set, &filter);
+    if (run.count) run_draw(v, cb, pipes, &run, &blend, &set, &filter, &last_scissor);
 }
 
 void pass_trail(struct pass *pass, const struct trail_cell *cells, size_t count, uint64_t pixels) {
@@ -2170,17 +2226,16 @@ void gfx_texture_draw(struct pass *pass, const struct texture_options *options,
         for (int i = 0; i < 4; i++) quad.tint[i] = options->tint[i];
     memcpy(quad.pos, pos, sizeof(quad.pos));
     memcpy(quad.tex, texcoords, sizeof(quad.tex));
+    if (!t->external && !options->lut) {
+        pass_scene(pass, &quad);
+        return;
+    }
     pass_flush(pass);
     if (t->external) {
         struct ext_push push = { .alpha = alpha, .opaque = t->alpha ? 0 : 1 };
         memcpy(push.tint, quad.tint, sizeof(push.tint));
         external_quad(pass, t, pos, NULL, texcoords, options->clip ? options->clip : pass->clip,
             &push);
-        return;
-    }
-    if (!options->lut) {
-        pass_scene(pass, &quad);
-        pass_flush(pass);
         return;
     }
     struct vk *v = V(pass->r);
@@ -2192,7 +2247,7 @@ void gfx_texture_draw(struct pass *pass, const struct texture_options *options,
     VkBuffer buffer;
     VkDeviceSize offset;
     struct scene_instance *in = stage_alloc(v, sizeof(*in), &buffer, &offset);
-    if (!in || !rendering_begin(v, v->target)) return;
+    if (!in || !rendering_begin_area(v, v->target, pass_area(pass, v->target), VK_ATTACHMENT_LOAD_OP_LOAD, NULL)) return;
     memset(in, 0, sizeof(*in));
     memcpy(in->pos, pos, sizeof(in->pos));
     memcpy(in->tex, texcoords, sizeof(in->tex));
@@ -3064,7 +3119,7 @@ static void external_quad(struct pass *pass, struct vk_texture *t, const float p
     VkBuffer buffer;
     VkDeviceSize offset;
     struct scene_instance *in = stage_alloc(v, sizeof(*in), &buffer, &offset);
-    if (!in || !rendering_begin(v, v->target)) return;
+    if (!in || !rendering_begin_area(v, v->target, pass_area(pass, v->target), VK_ATTACHMENT_LOAD_OP_LOAD, NULL)) return;
     memset(in, 0, sizeof(*in));
     memcpy(in->pos, pos, sizeof(in->pos));
     if (local) memcpy(in->local, local, sizeof(in->local));
@@ -3713,14 +3768,9 @@ bool gfx_buffer_copy(struct pass *pass, struct buffer *src, const struct region 
     if (!(from->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ||
             !(to->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT)) return false;
     pass_flush(pass);
-    if (!image_use(v, from) || !image_use(v, to)) return false;
+    if (!image_use(v, from) || !image_use_write(v, to)) return false;
     struct batch *b = batch(v);
     if (!b) return false;
-    if (!to->owned && to->fd >= 0 && v->sync_fd && to->written != b->serial) {
-        struct dma_buf_export_sync_file exported = { .flags = DMA_BUF_SYNC_RW, .fd = -1 };
-        if (ioctl(to->fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &exported) == 0 && exported.fd >= 0)
-            wait_fd(v, exported.fd);
-    }
     VkCommandBuffer cb = transfer_begin(v);
     if (!cb) return false;
     if (!from->foreign || from->written == b->serial)
@@ -3918,6 +3968,7 @@ static void sample_pass(struct vk *v, VkPipeline pipeline, struct vk_image *from
     const struct rect *rects = region_rectangles(where, &count);
     if (!count || !from->set) return;
     int32_t min_x = to->width, min_y = to->height, max_x = 0, max_y = 0;
+    int valid = 0;
     for (int i = 0; i < count; i++) {
         int32_t x1 = rects[i].x1 < 0 ? 0 : rects[i].x1;
         int32_t y1 = rects[i].y1 < 0 ? 0 : rects[i].y1;
@@ -3928,12 +3979,12 @@ static void sample_pass(struct vk *v, VkPipeline pipeline, struct vk_image *from
         if (y1 < min_y) min_y = y1;
         if (x2 > max_x) max_x = x2;
         if (y2 > max_y) max_y = y2;
+        valid++;
     }
-    if (max_x <= min_x || max_y <= min_y) return;
+    if (!valid) return;
     VkRect2D area = { { min_x, min_y }, { (uint32_t)(max_x - min_x), (uint32_t)(max_y - min_y) } };
-    VkAttachmentLoadOp load_op = (count == 1 && min_x == 0 && min_y == 0 &&
-            max_x == to->width && max_y == to->height)
-        ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : VK_ATTACHMENT_LOAD_OP_LOAD;
+    VkAttachmentLoadOp load_op = valid == 1 ? VK_ATTACHMENT_LOAD_OP_DONT_CARE :
+        VK_ATTACHMENT_LOAD_OP_LOAD;
     if (!rendering_begin_area(v, to, area, load_op, NULL)) return;
     VkCommandBuffer cb = v->open->main;
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
@@ -4148,7 +4199,7 @@ void gfx_shader_draw(struct pass *pass, struct gfx_prog *p, const struct gfx_sha
     VkBuffer buffer;
     VkDeviceSize offset;
     struct scene_instance *in = stage_alloc(v, sizeof(*in), &buffer, &offset);
-    if (!ubo || !in || !rendering_begin(v, v->target)) return;
+    if (!ubo || !in || !rendering_begin_area(v, v->target, pass_area(pass, v->target), VK_ATTACHMENT_LOAD_OP_LOAD, NULL)) return;
     memset(in, 0, sizeof(*in));
     memcpy(in->pos, pos, sizeof(in->pos));
     memcpy(in->local, local, sizeof(in->local));
@@ -4201,7 +4252,7 @@ void gfx_glass_draw(struct pass *pass, struct gfx_prog *p, struct texture *map,
     VkBuffer buffer;
     VkDeviceSize offset;
     struct scene_instance *in = stage_alloc(v, sizeof(*in), &buffer, &offset);
-    if (!in || !rendering_begin(v, v->target)) return;
+    if (!in || !rendering_begin_area(v, v->target, pass_area(pass, v->target), VK_ATTACHMENT_LOAD_OP_LOAD, NULL)) return;
     memset(in, 0, sizeof(*in));
     memcpy(in->pos, pos, sizeof(in->pos));
     memcpy(in->local, local, sizeof(in->local));
