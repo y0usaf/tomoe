@@ -1,7 +1,6 @@
 #ifndef TOMOE_PORTAL_H
 #define TOMOE_PORTAL_H
 
-#include <gbm.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -35,10 +34,11 @@
 #define FRAME_RETRY_MS 50
 #define FAILURE_BUDGET_MS 2000
 #define ALLOC_SHM 0
-#define ALLOC_GBM 1
+#define ALLOC_VK 1
 #define ALLOC_UDMABUF 2
 
 struct stream;
+struct portal_vk_bo;
 
 struct output_info {
     struct wl_list link;
@@ -62,7 +62,7 @@ struct toplevel_info {
 
 struct slot {
     struct wl_buffer *buffer;
-    struct gbm_bo *bo;
+    struct portal_vk_bo *vk_bo;
     int fds[PLANES_MAX];
     int planes;
     uint32_t offset[PLANES_MAX];

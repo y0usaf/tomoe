@@ -196,6 +196,8 @@ struct vk {
     uint32_t vendor_id, device_id;
     uint8_t cache_uuid[VK_UUID_SIZE];
     PFN_vkGetMemoryFdPropertiesKHR memory_fd_properties;
+    PFN_vkGetMemoryFdKHR memory_fd;
+    PFN_vkGetImageDrmFormatModifierPropertiesEXT image_modifier;
     PFN_vkGetSemaphoreFdKHR semaphore_fd;
     PFN_vkImportSemaphoreFdKHR import_semaphore;
     bool sync_fd;
@@ -2218,10 +2220,13 @@ static bool device_init(struct vk *v) {
     vkGetDeviceQueue(v->dev, v->family, 0, &v->queue);
     v->memory_fd_properties = (PFN_vkGetMemoryFdPropertiesKHR)
         vkGetDeviceProcAddr(v->dev, "vkGetMemoryFdPropertiesKHR");
+    v->memory_fd = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(v->dev, "vkGetMemoryFdKHR");
+    v->image_modifier = (PFN_vkGetImageDrmFormatModifierPropertiesEXT)
+        vkGetDeviceProcAddr(v->dev, "vkGetImageDrmFormatModifierPropertiesEXT");
     v->semaphore_fd = (PFN_vkGetSemaphoreFdKHR)vkGetDeviceProcAddr(v->dev, "vkGetSemaphoreFdKHR");
     v->import_semaphore = (PFN_vkImportSemaphoreFdKHR)
         vkGetDeviceProcAddr(v->dev, "vkImportSemaphoreFdKHR");
-    if (!v->memory_fd_properties) return false;
+    if (!v->memory_fd_properties || !v->memory_fd || !v->image_modifier) return false;
     VkPhysicalDeviceExternalSemaphoreInfo semaphore = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO,
         .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
@@ -2246,7 +2251,7 @@ static bool device_init(struct vk *v) {
 }
 
 static bool modifier_usable(struct vk *v, VkFormat format, uint64_t modifier,
-        VkImageUsageFlags usage) {
+        VkImageUsageFlags usage, VkExternalMemoryFeatureFlags need) {
     VkPhysicalDeviceImageDrmFormatModifierInfoEXT mod = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_DRM_FORMAT_MODIFIER_INFO_EXT,
         .drmFormatModifier = modifier,
@@ -2274,8 +2279,32 @@ static bool modifier_usable(struct vk *v, VkFormat format, uint64_t modifier,
     };
     if (vkGetPhysicalDeviceImageFormatProperties2(v->phys, &info, &props) != VK_SUCCESS)
         return false;
-    return external_props.externalMemoryProperties.externalMemoryFeatures &
-        VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
+    return (external_props.externalMemoryProperties.externalMemoryFeatures & need) == need;
+}
+
+static uint32_t modifier_planes(struct vk *v, VkFormat format, uint64_t modifier) {
+    VkDrmFormatModifierPropertiesListEXT list = {
+        .sType = VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT,
+    };
+    VkFormatProperties2 props = {
+        .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
+        .pNext = &list,
+    };
+    vkGetPhysicalDeviceFormatProperties2(v->phys, format, &props);
+    if (!list.drmFormatModifierCount) return 0;
+    VkDrmFormatModifierPropertiesEXT *mods = calloc(list.drmFormatModifierCount, sizeof(*mods));
+    if (!mods) return 0;
+    list.pDrmFormatModifierProperties = mods;
+    vkGetPhysicalDeviceFormatProperties2(v->phys, format, &props);
+    uint32_t planes = 0;
+    for (uint32_t i = 0; i < list.drmFormatModifierCount; i++) {
+        if (mods[i].drmFormatModifier == modifier) {
+            planes = mods[i].drmFormatModifierPlaneCount;
+            break;
+        }
+    }
+    free(mods);
+    return planes;
 }
 
 static bool formats_init(struct vk *v) {
@@ -2305,11 +2334,14 @@ static bool formats_init(struct vk *v) {
                 (features & VK_FORMAT_FEATURE_TRANSFER_DST_BIT) &&
                 (features & VK_FORMAT_FEATURE_BLIT_SRC_BIT);
             if (sample && modifier_usable(v, p->vk, modifier,
-                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT))
+                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                    VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT))
                 format_set_add(&r->texture_formats, p->drm, modifier);
             if (sample && render && modifier_usable(v, p->vk, modifier,
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT))
+                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                    VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT |
+                    VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT))
                 format_set_add(&r->render_formats, p->drm, modifier);
         }
         free(mods);
@@ -2336,7 +2368,8 @@ static bool formats_init(struct vk *v) {
             bool cosited = features & VK_FORMAT_FEATURE_COSITED_CHROMA_SAMPLES_BIT;
             if (!(features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) || (!midpoint && !cosited) ||
                     !modifier_usable(v, yuv_formats[i].vk, mods[j].drmFormatModifier,
-                    VK_IMAGE_USAGE_SAMPLED_BIT)) continue;
+                    VK_IMAGE_USAGE_SAMPLED_BIT,
+                    VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT)) continue;
             if (y->modifier_count < 32) y->modifiers[y->modifier_count++] = mods[j].drmFormatModifier;
             y->supported = true;
             all_midpoint = all_midpoint && midpoint;
@@ -2821,6 +2854,195 @@ void gfx_drop_images(struct render *r) {
     struct vk_image *image, *next;
     wl_list_for_each_safe(image, next, &v->images, link) import_destroy(image);
     graves_sweep(v, true);
+}
+
+
+struct gfx_bo {
+    VkImage image;
+    VkDeviceMemory memory;
+};
+
+struct gfx_bo *gfx_bo_alloc(struct render *r, int width, int height,
+        const struct format *format, struct dmabuf_attributes *dmabuf) {
+    struct vk *v = V(r);
+    if (!v || !v->dev || !format || !dmabuf || width < 1 || height < 1 ||
+            (uint32_t)width > v->max_extent || (uint32_t)height > v->max_extent)
+        return NULL;
+    const struct pixel *p = pixel_for(format->format);
+    if (!p) return NULL;
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    const struct format *fallback = format_set_get(&r->render_formats, format->format);
+    size_t cap = format->len + (fallback ? fallback->len : 0) + 1;
+    uint64_t *mods = calloc(cap, sizeof(*mods));
+    if (!mods) return NULL;
+    uint32_t mod_count = 0;
+    for (size_t i = 0; i < format->len; i++) {
+        uint64_t m = format->modifiers[i];
+        if (m == DRM_FORMAT_MOD_INVALID) continue;
+        bool dup = false;
+        for (uint32_t k = 0; k < mod_count; k++)
+            if (mods[k] == m) { dup = true; break; }
+        if (dup) continue;
+        if (!modifier_usable(v, p->vk, m, usage, VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT))
+            continue;
+        mods[mod_count++] = m;
+    }
+    if (!mod_count && format_has(format, DRM_FORMAT_MOD_INVALID)) {
+        if (modifier_usable(v, p->vk, DRM_FORMAT_MOD_LINEAR, usage,
+                VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT)) {
+            mods[mod_count++] = DRM_FORMAT_MOD_LINEAR;
+        } else if (fallback) {
+            for (size_t i = 0; i < fallback->len; i++) {
+                uint64_t m = fallback->modifiers[i];
+                if (m == DRM_FORMAT_MOD_INVALID) continue;
+                if (modifier_usable(v, p->vk, m, usage, VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT))
+                    mods[mod_count++] = m;
+            }
+        }
+    }
+    if (!mod_count) {
+        free(mods);
+        return NULL;
+    }
+    VkImageDrmFormatModifierListCreateInfoEXT mod_list = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT,
+        .drmFormatModifierCount = mod_count,
+        .pDrmFormatModifiers = mods,
+    };
+    VkExternalMemoryImageCreateInfo external = {
+        .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+        .pNext = &mod_list,
+        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+    };
+    VkImageCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .pNext = &external,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = p->vk,
+        .extent = { (uint32_t)width, (uint32_t)height, 1 },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT,
+        .usage = usage,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    VkImage image = VK_NULL_HANDLE;
+    VkResult result = vkCreateImage(v->dev, &info, NULL, &image);
+    free(mods);
+    if (result != VK_SUCCESS) return NULL;
+    VkImageDrmFormatModifierPropertiesEXT chosen = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_PROPERTIES_EXT,
+    };
+    if (v->image_modifier(v->dev, image, &chosen) != VK_SUCCESS) {
+        vkDestroyImage(v->dev, image, NULL);
+        return NULL;
+    }
+    uint32_t planes = modifier_planes(v, p->vk, chosen.drmFormatModifier);
+    if (planes < 1 || planes > DMABUF_MAX_PLANES) {
+        vkDestroyImage(v->dev, image, NULL);
+        return NULL;
+    }
+    VkMemoryDedicatedRequirements dreq = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS,
+    };
+    VkMemoryRequirements2 req = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,
+        .pNext = &dreq,
+    };
+    VkImageMemoryRequirementsInfo2 req_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2,
+        .image = image,
+    };
+    vkGetImageMemoryRequirements2(v->dev, &req_info, &req);
+    int type = memory_type(v, req.memoryRequirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
+    if (type < 0) type = memory_type(v, req.memoryRequirements.memoryTypeBits, 0, 0);
+    if (type < 0) {
+        vkDestroyImage(v->dev, image, NULL);
+        return NULL;
+    }
+    VkMemoryDedicatedAllocateInfo dedicated = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+        .image = image,
+    };
+    VkExportMemoryAllocateInfo export_info = {
+        .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+        .pNext = &dedicated,
+        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+    };
+    VkMemoryAllocateInfo alloc = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .pNext = &export_info,
+        .allocationSize = req.memoryRequirements.size,
+        .memoryTypeIndex = (uint32_t)type,
+    };
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    if (vkAllocateMemory(v->dev, &alloc, NULL, &memory) != VK_SUCCESS) {
+        vkDestroyImage(v->dev, image, NULL);
+        return NULL;
+    }
+    if (vkBindImageMemory(v->dev, image, memory, 0) != VK_SUCCESS) {
+        vkFreeMemory(v->dev, memory, NULL);
+        vkDestroyImage(v->dev, image, NULL);
+        return NULL;
+    }
+    VkMemoryGetFdInfoKHR fd_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
+        .memory = memory,
+        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+    };
+    int fd0 = -1;
+    if (v->memory_fd(v->dev, &fd_info, &fd0) != VK_SUCCESS || fd0 < 0) {
+        vkFreeMemory(v->dev, memory, NULL);
+        vkDestroyImage(v->dev, image, NULL);
+        return NULL;
+    }
+    fcntl(fd0, F_SETFD, FD_CLOEXEC);
+    *dmabuf = (struct dmabuf_attributes){
+        .width = width,
+        .height = height,
+        .format = format->format,
+        .n_planes = (int)planes,
+        .modifier = chosen.drmFormatModifier,
+    };
+    for (int i = 0; i < DMABUF_MAX_PLANES; i++) dmabuf->fd[i] = -1;
+    for (uint32_t i = 0; i < planes; i++) {
+        VkImageSubresource sub = {
+            .aspectMask = VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT << i,
+            .mipLevel = 0,
+            .arrayLayer = 0,
+        };
+        VkSubresourceLayout layout = {0};
+        vkGetImageSubresourceLayout(v->dev, image, &sub, &layout);
+        if (layout.offset > UINT32_MAX || layout.rowPitch == 0 || layout.rowPitch > UINT32_MAX)
+            goto fail_fd;
+        dmabuf->offset[i] = (uint32_t)layout.offset;
+        dmabuf->stride[i] = (uint32_t)layout.rowPitch;
+        dmabuf->fd[i] = (i == 0) ? fd0 : fcntl(fd0, F_DUPFD_CLOEXEC, 0);
+        if (dmabuf->fd[i] < 0) goto fail_fd;
+    }
+    struct gfx_bo *bo = calloc(1, sizeof(*bo));
+    if (!bo) goto fail_fd;
+    bo->image = image;
+    bo->memory = memory;
+    return bo;
+fail_fd:
+    if (dmabuf->fd[0] < 0 && fd0 >= 0) close(fd0);
+    dmabuf_attributes_finish(dmabuf);
+    vkFreeMemory(v->dev, memory, NULL);
+    vkDestroyImage(v->dev, image, NULL);
+    return NULL;
+}
+
+void gfx_bo_destroy(struct render *r, struct gfx_bo *bo) {
+    if (!bo) return;
+    struct vk *v = V(r);
+    if (v && v->dev)
+        bury(v, (struct grave){ .image = bo->image, .memory = bo->memory });
+    free(bo);
 }
 
 void gfx_close(struct render *r) {

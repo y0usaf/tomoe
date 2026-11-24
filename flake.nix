@@ -12,31 +12,6 @@
       ];
       pkgsFor = nixpkgs.lib.genAttrs systems (system: import nixpkgs { inherit system; });
       version = "0.1.0";
-      lean =
-        pkgs:
-        let
-          libdrm = pkgs.libdrm.override { withIntel = false; };
-          libgbm = (pkgs.libgbm.override { inherit libdrm; }).overrideAttrs (old: {
-            propagatedBuildInputs = [ ];
-            buildInputs = [ libdrm ];
-            patches = (old.patches or [ ]) ++ [ ./support/patches/gbm-drm-version.patch ];
-            postFixup = (old.postFixup or "") + ''
-              lib=$out/lib/libgbm.so.1
-              if nm -D --undefined-only $lib | grep -w 'drm[A-Za-z0-9_]*'; then
-                echo "libgbm still calls libdrm"
-                exit 1
-              fi
-              patchelf --remove-needed libdrm.so.2 --remove-needed libgcc_s.so.1 --remove-needed libm.so.6 $lib
-              patchelf --shrink-rpath $lib
-            '';
-          });
-        in
-        {
-          inherit
-            libdrm
-            libgbm
-            ;
-        };
       packageFrom =
         root: pkgs:
         {
@@ -91,7 +66,6 @@
               rm -f $out/lib/*.la
             '';
           });
-          libs = lean pkgs;
           dropIn =
             {
               name,
@@ -207,7 +181,6 @@
           ];
           buildInputs = [
             libinput
-            libs.libgbm
             pkgs.wayland-protocols
             pkgs.wlr-protocols
             freetype

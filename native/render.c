@@ -3,7 +3,6 @@
 #include "drm.h"
 #include "ui.h"
 #include <fcntl.h>
-#include <gbm.h>
 #include <malloc.h>
 #include <poll.h>
 #include <pthread.h>
@@ -38,7 +37,8 @@ static void pass_give(struct pass *pass) {
 struct bo {
     struct buffer base;
     struct wl_list link;
-    struct gbm_bo *bo;
+    struct render *r;
+    struct gfx_bo *bo;
     struct dmabuf_attributes dmabuf;
 };
 
@@ -922,13 +922,13 @@ static void render_free(struct render *r) {
     gfx_drop_images(r);
     struct bo *b, *next_bo;
     wl_list_for_each_safe(b, next_bo, &r->bos, link) {
-        gbm_bo_destroy(b->bo);
+        if (b->bo) gfx_bo_destroy(r, b->bo);
         b->bo = NULL;
+        b->r = NULL;
         wl_list_remove(&b->link);
         wl_list_init(&b->link);
     }
     gfx_close(r);
-    if (r->gbm) gbm_device_destroy(r->gbm);
     if (r->fd >= 0) close(r->fd);
     format_set_finish(&r->texture_formats);
     format_set_finish(&r->render_formats);
@@ -950,7 +950,8 @@ static void bo_destroy(struct buffer *base) {
     struct bo *b = bo_of(base);
     buffer_finish(base);
     dmabuf_attributes_finish(&b->dmabuf);
-    if (b->bo) gbm_bo_destroy(b->bo);
+    if (b->bo && b->r) gfx_bo_destroy(b->r, b->bo);
+    b->bo = NULL;
     wl_list_remove(&b->link);
     free(b);
 }
@@ -968,39 +969,19 @@ bool render_owns(const struct buffer *buffer) {
 
 struct buffer *render_allocate(struct render *r, int width, int height,
         const struct format *format) {
-    bool linear = format->len == 1 && format->modifiers[0] == DRM_FORMAT_MOD_LINEAR;
-    bool implicit = format->len == 1 && format->modifiers[0] == DRM_FORMAT_MOD_INVALID;
-    struct gbm_bo *bo = linear || implicit ? NULL : gbm_bo_create_with_modifiers(r->gbm, width,
-        height, format->format, format->modifiers, format->len);
-    bool explicit = bo != NULL;
-    if (!bo && (linear || format_has(format, DRM_FORMAT_MOD_INVALID)))
-        bo = gbm_bo_create(r->gbm, width, height, format->format,
-            GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING | (linear ? GBM_BO_USE_LINEAR : 0));
-    struct bo *b = bo ? calloc(1, sizeof(*b)) : NULL;
-    if (!b) {
+    struct bo *b = calloc(1, sizeof(*b));
+    if (!b) return NULL;
+    for (int i = 0; i < DMABUF_MAX_PLANES; i++) b->dmabuf.fd[i] = -1;
+    b->bo = gfx_bo_alloc(r, width, height, format, &b->dmabuf);
+    if (!b->bo) {
         tomoe_log(LOG_ERROR, "tomoe: cannot allocate %dx%d buffer format 0x%08x", width, height,
             format->format);
-        if (bo) gbm_bo_destroy(bo);
+        free(b);
         return NULL;
     }
     buffer_init(&b->base, &bo_impl, width, height);
     wl_list_insert(&r->bos, &b->link);
-    b->bo = bo;
-    b->dmabuf = (struct dmabuf_attributes){ .width = width, .height = height,
-        .format = format->format, .n_planes = gbm_bo_get_plane_count(bo),
-        .modifier = explicit ? gbm_bo_get_modifier(bo) :
-            linear ? DRM_FORMAT_MOD_LINEAR : DRM_FORMAT_MOD_INVALID };
-    for (int i = 0; i < DMABUF_MAX_PLANES; i++) b->dmabuf.fd[i] = -1;
-    for (int i = 0; i < b->dmabuf.n_planes && i < DMABUF_MAX_PLANES; i++) {
-        b->dmabuf.fd[i] = gbm_bo_get_fd_for_plane(bo, i);
-        b->dmabuf.offset[i] = gbm_bo_get_offset(bo, i);
-        b->dmabuf.stride[i] = gbm_bo_get_stride_for_plane(bo, i);
-        if (b->dmabuf.fd[i] < 0) {
-            tomoe_log(LOG_ERROR, "tomoe: cannot export buffer plane %d", i);
-            buffer_drop(&b->base);
-            return NULL;
-        }
-    }
+    b->r = r;
     return &b->base;
 }
 
@@ -1049,11 +1030,6 @@ struct render *render_open(char *node) {
     r->fd = node ? open(node, O_RDWR | O_CLOEXEC) : -1;
     if (r->fd < 0) {
         if (node) tomoe_log(LOG_ERROR, "tomoe: cannot open %s: %s", node, strerror(errno));
-        goto failed;
-    }
-    r->gbm = gbm_create_device(r->fd);
-    if (!r->gbm) {
-        tomoe_log(LOG_ERROR, "tomoe: cannot create a GBM device");
         goto failed;
     }
     if (!gfx_open(r)) goto failed;

@@ -4,7 +4,7 @@
 #include "internal.h"
 #include <math.h>
 
-struct gbm_device;
+struct gfx_bo;
 
 enum { PASS_POOL = 4 };
 
@@ -38,7 +38,6 @@ struct render {
     int stall_capture_write, stall_capture_delay_ms;
     size_t textures;
     uint64_t texture_bytes;
-    struct gbm_device *gbm;
     struct format_set texture_formats, render_formats, shm_formats;
     struct wl_list bos;
     bool read_bgra;
@@ -104,6 +103,9 @@ bool gfx_fences(struct render *r);
 void gfx_stop(struct render *r);
 void gfx_drop_images(struct render *r);
 void gfx_close(struct render *r);
+struct gfx_bo *gfx_bo_alloc(struct render *r, int width, int height,
+    const struct format *format, struct dmabuf_attributes *dmabuf);
+void gfx_bo_destroy(struct render *r, struct gfx_bo *bo);
 size_t gfx_image_count(struct render *r);
 void gfx_current(struct render *r);
 void gfx_flush(struct render *r);

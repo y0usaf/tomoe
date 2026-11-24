@@ -9,9 +9,9 @@ WLR ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wlr-protocols)/unstable
 WP ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols)
 WAYLAND_XML ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-scanner)/wayland.xml
 
-LIBS = freetype2 libinput vulkan gbm
+LIBS = freetype2 libinput vulkan
 LINK = $(shell $(PKG_CONFIG) --libs $(LIBS))
-PORTAL_LIBS = gbm
+PORTAL_LIBS = vulkan
 SUPPORT = executions watches notifications mpris backlight battery network system
 PROTOCOLS = \
 	$(WLR)/wlr-layer-shell-unstable-v1.xml \

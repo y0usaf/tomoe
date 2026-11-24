@@ -482,7 +482,7 @@ output baseline, while later explicit `configure-output` effects can override it
 
 The policy runs in `tomoe-policy`, a supervised sidecar holding the Lisp runtime,
 the control socket and the JSON socket; the C core holds no Lisp. The core speaks
-the Wayland wire protocol itself, renders with Vulkan on GBM buffers, and drives
+the Wayland wire protocol itself, renders with Vulkan on DMA-BUF buffers, and drives
 DRM/KMS through the kernel's own ioctls, libinput and seatd; it can also run
 nested in another compositor or headless. The two talk over a versioned binary
 protocol on a socket pair: the core sends batched events and answers the
@@ -829,10 +829,7 @@ binary with its own flags, so the split adds no call, copy or library at
 run time.
 
 The libraries Tomoe still links are rebuilt in `flake.nix` with what it does not
-use left out. `libgbm` picks its backend by the kernel driver's name, which
-`support/patches/gbm-drm-version.patch` reads with `DRM_IOCTL_VERSION` itself, so
-libdrm is not among the libraries the binary links; a GBM driver plugin Mesa opens
-at run time may still bring it in. A library that stands in for one a dependency
+use left out. A library that stands in for one a dependency
 links is built by `dropIn` as a static archive under the upstream name, with a
 pkg-config file to match, so the dependency links Tomoe's code into itself:
 libinput takes `lib/mtdev`, `lib/evdev` and `lib/udev` in place of libmtdev,

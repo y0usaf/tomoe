@@ -11,7 +11,26 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
+#include <vulkan/vulkan.h>
+
+struct portal_vk_bo {
+    VkImage image;
+    VkDeviceMemory memory;
+};
+
+struct portal_vk {
+    VkInstance instance;
+    VkPhysicalDevice phys;
+    VkDevice dev;
+    VkPhysicalDeviceMemoryProperties memory;
+    PFN_vkGetMemoryFdKHR memory_fd;
+    VkFormat format;
+    uint64_t mod_values[PWV_MAX_MODIFIERS];
+    int mod_planes[PWV_MAX_MODIFIERS];
+    size_t mod_count;
+};
 
 struct stream {
     struct portal *portal;
@@ -36,8 +55,7 @@ struct stream {
     bool modifier_fixated;
     int alloc;
     int udmabuf;
-    int drm_fd;
-    struct gbm_device *gbm;
+    struct portal_vk vk;
     uint64_t modifier;
     uint64_t *modifiers;
     size_t modifier_count;
@@ -128,26 +146,113 @@ static uint64_t monotonic_ms(void) {
     return (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000;
 }
 
-static int open_render_node(dev_t wanted) {
-    const char *named = getenv("TOMOE_SCREENCAST_RENDER_NODE");
-    if (named && *named) return open(named, O_RDWR | O_CLOEXEC);
-    char path[64];
-    int fallback = -1;
-    for (int index = 128; index < 200; index++) {
-        snprintf(path, sizeof(path), "/dev/dri/renderD%d", index);
-        struct stat status;
-        if (stat(path, &status) < 0) continue;
-        int fd = open(path, O_RDWR | O_CLOEXEC);
-        if (fd < 0) continue;
-        if (status.st_rdev == wanted) return fd;
-        if (fallback < 0) fallback = fd;
-        else close(fd);
+static const VkImageUsageFlags PORTAL_VK_USAGE =
+    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+    VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+
+static VkFormat vk_format_of(uint32_t fourcc) {
+    switch (fourcc) {
+    case DRM_FORMAT_ARGB8888:
+    case DRM_FORMAT_XRGB8888: return VK_FORMAT_B8G8R8A8_UNORM;
+    case DRM_FORMAT_ABGR8888:
+    case DRM_FORMAT_XBGR8888: return VK_FORMAT_R8G8B8A8_UNORM;
+    default: return VK_FORMAT_UNDEFINED;
     }
-    return fallback;
+}
+
+static bool vk_has_ext(const VkExtensionProperties *list, uint32_t count, const char *name) {
+    for (uint32_t i = 0; i < count; i++)
+        if (strcmp(list[i].extensionName, name) == 0) return true;
+    return false;
+}
+
+static void vk_teardown(struct stream *s) {
+    if (s->vk.dev != VK_NULL_HANDLE) vkDestroyDevice(s->vk.dev, NULL);
+    if (s->vk.instance != VK_NULL_HANDLE) vkDestroyInstance(s->vk.instance, NULL);
+    memset(&s->vk, 0, sizeof(s->vk));
+}
+
+static void vk_bo_destroy(struct stream *s, struct portal_vk_bo *bo) {
+    if (!bo) return;
+    if (s->vk.dev != VK_NULL_HANDLE) {
+        if (bo->image != VK_NULL_HANDLE) vkDestroyImage(s->vk.dev, bo->image, NULL);
+        if (bo->memory != VK_NULL_HANDLE) vkFreeMemory(s->vk.dev, bo->memory, NULL);
+    }
+    free(bo);
+}
+
+static int vk_modifier_planes(const struct stream *s, uint64_t modifier) {
+    for (size_t i = 0; i < s->vk.mod_count; i++)
+        if (s->vk.mod_values[i] == modifier) return s->vk.mod_planes[i];
+    return 0;
+}
+
+static bool vk_modifier_exportable(VkPhysicalDevice phys, VkFormat format, uint64_t modifier) {
+    VkPhysicalDeviceImageDrmFormatModifierInfoEXT mod = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_DRM_FORMAT_MODIFIER_INFO_EXT,
+        .drmFormatModifier = modifier,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    VkPhysicalDeviceExternalImageFormatInfo ext = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO,
+        .pNext = &mod,
+        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+    };
+    VkPhysicalDeviceImageFormatInfo2 info = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
+        .pNext = &ext,
+        .format = format,
+        .type = VK_IMAGE_TYPE_2D,
+        .tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT,
+        .usage = PORTAL_VK_USAGE,
+    };
+    VkExternalImageFormatProperties eprops = {
+        .sType = VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES,
+    };
+    VkImageFormatProperties2 props = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2,
+        .pNext = &eprops,
+    };
+    if (vkGetPhysicalDeviceImageFormatProperties2(phys, &info, &props) != VK_SUCCESS)
+        return false;
+    return (eprops.externalMemoryProperties.externalMemoryFeatures &
+        VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT) != 0;
+}
+
+static bool vk_device_matches(VkPhysicalDevice phys, dev_t wanted) {
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(phys, &props);
+    if (props.apiVersion < VK_API_VERSION_1_1) return false;
+    uint32_t count = 0;
+    vkEnumerateDeviceExtensionProperties(phys, NULL, &count, NULL);
+    VkExtensionProperties *list = calloc(count ? count : 1, sizeof(*list));
+    if (!list) return false;
+    vkEnumerateDeviceExtensionProperties(phys, NULL, &count, list);
+    bool ok = vk_has_ext(list, count, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) &&
+        vk_has_ext(list, count, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME) &&
+        vk_has_ext(list, count, VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME) &&
+        vk_has_ext(list, count, VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME);
+    free(list);
+    if (!ok) return false;
+    VkPhysicalDeviceDrmPropertiesEXT drm = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT,
+    };
+    VkPhysicalDeviceProperties2 props2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        .pNext = &drm,
+    };
+    vkGetPhysicalDeviceProperties2(phys, &props2);
+    return (drm.hasRender && (dev_t)makedev(drm.renderMajor, drm.renderMinor) == wanted) ||
+        (drm.hasPrimary && (dev_t)makedev(drm.primaryMajor, drm.primaryMinor) == wanted);
 }
 
 static bool udmabuf_setup(struct stream *s) {
     if (!s->portal->dmabuf || !s->have_device || !s->modifier_count) return false;
+    bool has_linear = false;
+    for (size_t i = 0; i < s->modifier_count; i++) {
+        if (s->modifiers[i] == DRM_FORMAT_MOD_LINEAR) { has_linear = true; break; }
+    }
+    if (!has_linear) return false;
     s->udmabuf = open("/dev/udmabuf", O_RDWR | O_CLOEXEC);
     if (s->udmabuf < 0) return false;
     s->modifier = DRM_FORMAT_MOD_LINEAR;
@@ -160,21 +265,68 @@ static bool udmabuf_setup(struct stream *s) {
 }
 
 static bool dmabuf_setup(struct stream *s) {
-    if (!s->portal->dmabuf || !s->have_device) return false;
-    s->drm_fd = open_render_node(s->device);
-    if (s->drm_fd < 0) {
-        portal_log("no render node for the compositor's device; capturing through memory");
-        s->drm_fd = -1;
+    if (!s->portal->dmabuf || !s->have_device || !s->modifier_count) return false;
+    VkFormat vk_format = vk_format_of(s->format);
+    if (vk_format == VK_FORMAT_UNDEFINED) return false;
+    dev_t wanted = s->device;
+    const char *named = getenv("TOMOE_SCREENCAST_RENDER_NODE");
+    if (named && *named) {
+        struct stat st;
+        if (stat(named, &st) < 0) return false;
+        wanted = st.st_rdev;
+    }
+    VkApplicationInfo app = {
+        .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        .pApplicationName = "tomoe-portal",
+        .pEngineName = "tomoe",
+        .apiVersion = VK_API_VERSION_1_1,
+    };
+    VkInstanceCreateInfo inst_info = {
+        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        .pApplicationInfo = &app,
+    };
+    if (vkCreateInstance(&inst_info, NULL, &s->vk.instance) != VK_SUCCESS) {
+        s->vk.instance = VK_NULL_HANDLE;
         return false;
     }
-    s->gbm = gbm_create_device(s->drm_fd);
-    if (!s->gbm) {
-        portal_log("cannot open the render node through GBM; capturing through memory");
-        close(s->drm_fd);
-        s->drm_fd = -1;
+    uint32_t dev_count = 0;
+    vkEnumeratePhysicalDevices(s->vk.instance, &dev_count, NULL);
+    VkPhysicalDevice *devs = calloc(dev_count ? dev_count : 1, sizeof(*devs));
+    if (!devs) {
+        vk_teardown(s);
         return false;
     }
+    vkEnumeratePhysicalDevices(s->vk.instance, &dev_count, devs);
+    for (uint32_t i = 0; i < dev_count && s->vk.phys == VK_NULL_HANDLE; i++)
+        if (vk_device_matches(devs[i], wanted)) s->vk.phys = devs[i];
+    free(devs);
+    if (s->vk.phys == VK_NULL_HANDLE) {
+        vk_teardown(s);
+        return false;
+    }
+    VkDrmFormatModifierPropertiesListEXT mod_list = {
+        .sType = VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT,
+    };
+    VkFormatProperties2 fprops = {
+        .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
+        .pNext = &mod_list,
+    };
+    vkGetPhysicalDeviceFormatProperties2(s->vk.phys, vk_format, &fprops);
+    if (!mod_list.drmFormatModifierCount) {
+        vk_teardown(s);
+        return false;
+    }
+    VkDrmFormatModifierPropertiesEXT *dev_mods = calloc(mod_list.drmFormatModifierCount,
+        sizeof(*dev_mods));
+    if (!dev_mods) {
+        vk_teardown(s);
+        return false;
+    }
+    mod_list.pDrmFormatModifierProperties = dev_mods;
+    vkGetPhysicalDeviceFormatProperties2(s->vk.phys, vk_format, &fprops);
+
     s->offered_modifier_count = 0;
+    s->vk.mod_count = 0;
     int first_planes = 0;
     bool linear_ok = false;
     int linear_planes = 0;
@@ -185,53 +337,109 @@ static bool dmabuf_setup(struct stream *s) {
         for (size_t k = 0; k < s->offered_modifier_count; k++)
             if (s->offered_modifiers[k] == modifier) { duplicate = true; break; }
         if (duplicate || (modifier == DRM_FORMAT_MOD_LINEAR && linear_ok)) continue;
-        struct gbm_bo *bo = gbm_bo_create_with_modifiers2(s->gbm, s->width, s->height,
-            s->format, &modifier, 1, GBM_BO_USE_RENDERING);
-        if (!bo) continue;
-        int planes = gbm_bo_get_plane_count(bo);
-        gbm_bo_destroy(bo);
+        int planes = 0;
+        for (uint32_t j = 0; j < mod_list.drmFormatModifierCount; j++) {
+            if (dev_mods[j].drmFormatModifier == modifier) {
+                planes = (int)dev_mods[j].drmFormatModifierPlaneCount;
+                break;
+            }
+        }
         if (planes < 1 || planes > PLANES_MAX) continue;
+        if (!vk_modifier_exportable(s->vk.phys, vk_format, modifier)) continue;
         if (modifier == DRM_FORMAT_MOD_LINEAR) {
             linear_ok = true;
             linear_planes = planes;
         } else if (s->offered_modifier_count + 1 < PWV_MAX_MODIFIERS) {
             if (!s->offered_modifier_count) first_planes = planes;
-            s->offered_modifiers[s->offered_modifier_count++] = modifier;
+            s->offered_modifiers[s->offered_modifier_count] = modifier;
+            s->vk.mod_values[s->vk.mod_count] = modifier;
+            s->vk.mod_planes[s->vk.mod_count] = planes;
+            s->offered_modifier_count++;
+            s->vk.mod_count++;
         }
     }
+    free(dev_mods);
     if (linear_ok && s->offered_modifier_count < PWV_MAX_MODIFIERS) {
         if (!s->offered_modifier_count) first_planes = linear_planes;
-        s->offered_modifiers[s->offered_modifier_count++] = DRM_FORMAT_MOD_LINEAR;
+        s->offered_modifiers[s->offered_modifier_count] = DRM_FORMAT_MOD_LINEAR;
+        s->vk.mod_values[s->vk.mod_count] = DRM_FORMAT_MOD_LINEAR;
+        s->vk.mod_planes[s->vk.mod_count] = linear_planes;
+        s->offered_modifier_count++;
+        s->vk.mod_count++;
     }
     if (!s->offered_modifier_count) {
         portal_log("no offered modifier allocates on this device; capturing through memory");
-        gbm_device_destroy(s->gbm);
-        s->gbm = NULL;
-        close(s->drm_fd);
-        s->drm_fd = -1;
+        vk_teardown(s);
         return false;
     }
+    uint32_t qcount = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(s->vk.phys, &qcount, NULL);
+    if (!qcount) {
+        vk_teardown(s);
+        return false;
+    }
+    float prio = 1.0f;
+    VkDeviceQueueCreateInfo qinfo = {
+        .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+        .queueFamilyIndex = 0,
+        .queueCount = 1,
+        .pQueuePriorities = &prio,
+    };
+    const char *exts[] = {
+        VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
+        VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
+        VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
+    };
+    VkDeviceCreateInfo dev_info = {
+        .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .queueCreateInfoCount = 1,
+        .pQueueCreateInfos = &qinfo,
+        .enabledExtensionCount = sizeof(exts) / sizeof(exts[0]),
+        .ppEnabledExtensionNames = exts,
+    };
+    if (vkCreateDevice(s->vk.phys, &dev_info, NULL, &s->vk.dev) != VK_SUCCESS) {
+        s->vk.dev = VK_NULL_HANDLE;
+        vk_teardown(s);
+        return false;
+    }
+    s->vk.memory_fd = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(s->vk.dev, "vkGetMemoryFdKHR");
+    if (!s->vk.memory_fd) {
+        vk_teardown(s);
+        return false;
+    }
+    vkGetPhysicalDeviceMemoryProperties(s->vk.phys, &s->vk.memory);
+    s->vk.format = vk_format;
     s->modifier = s->offered_modifiers[0];
     s->modifier_fixated = false;
     s->planes = first_planes;
-    s->alloc = ALLOC_GBM;
+    s->alloc = ALLOC_VK;
     return true;
 }
 
 static void slot_free(struct stream *s, struct slot *slot) {
     if (slot->buffer) wl_buffer_destroy(slot->buffer);
-    if (slot->bo) gbm_bo_destroy(slot->bo);
-    for (int plane = 0; plane < slot->planes; plane++)
-        if (slot->fds[plane] >= 0) close(slot->fds[plane]);
+    if (slot->vk_bo) vk_bo_destroy(s, slot->vk_bo);
+    for (int plane = 0; plane < PLANES_MAX; plane++)
+        if (slot->fds[plane] >= 0 && slot->fds[plane] != slot->memfd) close(slot->fds[plane]);
     if (slot->memfd >= 0) close(slot->memfd);
     free(slot);
+}
+
+static int vk_memory_type(const struct portal_vk *vk, uint32_t bits) {
+    for (uint32_t i = 0; i < vk->memory.memoryTypeCount; i++)
+        if ((bits & (1u << i)) &&
+                (vk->memory.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+            return (int)i;
+    for (uint32_t i = 0; i < vk->memory.memoryTypeCount; i++)
+        if (bits & (1u << i)) return (int)i;
+    return -1;
 }
 
 static struct slot *slot_create(struct stream *s, bool want_dmabuf) {
     struct slot *slot = calloc(1, sizeof(*slot));
     if (!slot) return NULL;
     slot->memfd = -1;
-    slot->fds[0] = -1;
+    for (int plane = 0; plane < PLANES_MAX; plane++) slot->fds[plane] = -1;
     slot->width = s->width;
     slot->height = s->height;
     if (!want_dmabuf) goto memory;
@@ -240,8 +448,9 @@ static struct slot *slot_create(struct stream *s, bool want_dmabuf) {
         size_t stride = (size_t)s->width * 4;
         size_t size = stride * (size_t)s->height;
         size_t mapped = page > 0 ? (size + (size_t)page - 1) / (size_t)page * (size_t)page : size;
-        slot->memfd = memfd_create("tomoe-portal-udmabuf", MFD_CLOEXEC);
+        slot->memfd = memfd_create("tomoe-portal-udmabuf", MFD_CLOEXEC | MFD_ALLOW_SEALING);
         if (slot->memfd < 0 || ftruncate(slot->memfd, (off_t)mapped) < 0) goto failed;
+        if (fcntl(slot->memfd, F_ADD_SEALS, F_SEAL_SHRINK) < 0) goto failed;
         void *pages = mmap(NULL, mapped, PROT_READ | PROT_WRITE, MAP_SHARED, slot->memfd, 0);
         if (pages == MAP_FAILED) goto failed;
         memset(pages, 0, mapped);
@@ -256,6 +465,7 @@ static struct slot *slot_create(struct stream *s, bool want_dmabuf) {
         if (slot->fds[0] < 0) goto failed;
         struct zwp_linux_buffer_params_v1 *params = zwp_linux_dmabuf_v1_create_params(
             s->portal->dmabuf);
+        if (!params) goto failed;
         zwp_linux_buffer_params_v1_add(params, slot->fds[0], 0, 0, (int32_t)stride,
             (uint32_t)(s->modifier >> 32), (uint32_t)s->modifier);
         slot->buffer = zwp_linux_buffer_params_v1_create_immed(params, s->width, s->height,
@@ -269,35 +479,130 @@ static struct slot *slot_create(struct stream *s, bool want_dmabuf) {
         slot->kind = SPA_DATA_DMABUF;
         return slot;
     }
-    if (s->alloc == ALLOC_GBM) {
-        struct gbm_bo *bo = gbm_bo_create_with_modifiers2(s->gbm, s->width, s->height, s->format,
-            &s->modifier, 1, GBM_BO_USE_RENDERING);
-        if (!bo) goto failed;
-        int planes = gbm_bo_get_plane_count(bo);
-        if (planes < 1 || planes > PLANES_MAX) {
-            gbm_bo_destroy(bo);
+    if (s->alloc == ALLOC_VK) {
+        int planes = vk_modifier_planes(s, s->modifier);
+        if (planes < 1 || planes > PLANES_MAX || s->vk.dev == VK_NULL_HANDLE) goto failed;
+        VkImageDrmFormatModifierListCreateInfoEXT mod_list = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT,
+            .drmFormatModifierCount = 1,
+            .pDrmFormatModifiers = &s->modifier,
+        };
+        VkExternalMemoryImageCreateInfo ext = {
+            .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+            .pNext = &mod_list,
+            .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+        };
+        VkImageCreateInfo info = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .pNext = &ext,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = s->vk.format,
+            .extent = { (uint32_t)s->width, (uint32_t)s->height, 1 },
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT,
+            .usage = PORTAL_VK_USAGE,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+        VkImage image = VK_NULL_HANDLE;
+        if (vkCreateImage(s->vk.dev, &info, NULL, &image) != VK_SUCCESS) goto failed;
+        VkMemoryDedicatedRequirements dreq = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS,
+        };
+        VkMemoryRequirements2 req = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,
+            .pNext = &dreq,
+        };
+        VkImageMemoryRequirementsInfo2 req_info = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2,
+            .image = image,
+        };
+        vkGetImageMemoryRequirements2(s->vk.dev, &req_info, &req);
+        int mtype = vk_memory_type(&s->vk, req.memoryRequirements.memoryTypeBits);
+        if (mtype < 0) {
+            vkDestroyImage(s->vk.dev, image, NULL);
             goto failed;
         }
+        VkMemoryDedicatedAllocateInfo dedicated = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+            .image = image,
+        };
+        VkExportMemoryAllocateInfo export_info = {
+            .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+            .pNext = &dedicated,
+            .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+        };
+        VkMemoryAllocateInfo alloc = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .pNext = &export_info,
+            .allocationSize = req.memoryRequirements.size,
+            .memoryTypeIndex = (uint32_t)mtype,
+        };
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        if (vkAllocateMemory(s->vk.dev, &alloc, NULL, &memory) != VK_SUCCESS) {
+            vkDestroyImage(s->vk.dev, image, NULL);
+            goto failed;
+        }
+        if (vkBindImageMemory(s->vk.dev, image, memory, 0) != VK_SUCCESS) {
+            vkFreeMemory(s->vk.dev, memory, NULL);
+            vkDestroyImage(s->vk.dev, image, NULL);
+            goto failed;
+        }
+        struct portal_vk_bo *bo = calloc(1, sizeof(*bo));
+        if (!bo) {
+            vkFreeMemory(s->vk.dev, memory, NULL);
+            vkDestroyImage(s->vk.dev, image, NULL);
+            goto failed;
+        }
+        bo->image = image;
+        bo->memory = memory;
+        slot->vk_bo = bo;
+        VkMemoryGetFdInfoKHR fd_info = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
+            .memory = memory,
+            .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+        };
+        int fd0 = -1;
+        if (s->vk.memory_fd(s->vk.dev, &fd_info, &fd0) != VK_SUCCESS || fd0 < 0) goto failed;
+        fcntl(fd0, F_SETFD, FD_CLOEXEC);
         struct zwp_linux_buffer_params_v1 *params = zwp_linux_dmabuf_v1_create_params(
             s->portal->dmabuf);
+        if (!params) {
+            close(fd0);
+            goto failed;
+        }
         for (int plane = 0; plane < planes; plane++) {
-            slot->fds[plane] = gbm_bo_get_fd_for_plane(bo, plane);
+            slot->fds[plane] = (plane == 0) ? fd0 : fcntl(fd0, F_DUPFD_CLOEXEC, 0);
             if (slot->fds[plane] < 0) {
                 zwp_linux_buffer_params_v1_destroy(params);
                 goto failed;
             }
-            slot->offset[plane] = gbm_bo_get_offset(bo, plane);
-            slot->stride[plane] = gbm_bo_get_stride_for_plane(bo, plane);
-            slot->size[plane] = slot->stride[plane] * (uint32_t)s->height;
-            zwp_linux_buffer_params_v1_add(params, slot->fds[plane], plane, slot->offset[plane],
-                slot->stride[plane], (uint32_t)(s->modifier >> 32), (uint32_t)s->modifier);
+            VkImageSubresource sub = {
+                .aspectMask = VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT << plane,
+                .mipLevel = 0,
+                .arrayLayer = 0,
+            };
+            VkSubresourceLayout layout = {0};
+            vkGetImageSubresourceLayout(s->vk.dev, image, &sub, &layout);
+            if (layout.offset > UINT32_MAX || layout.rowPitch == 0 || layout.rowPitch > UINT32_MAX) {
+                zwp_linux_buffer_params_v1_destroy(params);
+                goto failed;
+            }
+            slot->offset[plane] = (uint32_t)layout.offset;
+            slot->stride[plane] = (uint32_t)layout.rowPitch;
+            slot->size[plane] = (layout.size > 0 && layout.size <= UINT32_MAX)
+                ? (uint32_t)layout.size : slot->stride[plane] * (uint32_t)s->height;
+            zwp_linux_buffer_params_v1_add(params, slot->fds[plane], (uint32_t)plane,
+                slot->offset[plane], slot->stride[plane],
+                (uint32_t)(s->modifier >> 32), (uint32_t)s->modifier);
+            slot->planes = plane + 1;
         }
         slot->buffer = zwp_linux_buffer_params_v1_create_immed(params, s->width, s->height,
             s->format, 0);
         zwp_linux_buffer_params_v1_destroy(params);
         if (!slot->buffer) goto failed;
-        slot->bo = bo;
-        slot->planes = planes;
         slot->kind = SPA_DATA_DMABUF;
         return slot;
     }
@@ -493,7 +798,7 @@ static void stream_format(void *data, const struct pwv_video *video) {
         s->modifier_fixated = false;
         return;
     }
-    bool dmabuf = video->modifier_set && (s->gbm || s->udmabuf >= 0);
+    bool dmabuf = video->modifier_set && (s->vk.dev != VK_NULL_HANDLE || s->udmabuf >= 0);
     s->dmabuf = dmabuf;
     if (!dmabuf) {
         s->modifier_fixated = false;
@@ -501,16 +806,11 @@ static void stream_format(void *data, const struct pwv_video *video) {
     }
     s->modifier = video->modifier;
     bool republish = !video->modifier_fixated && !s->modifier_fixated;
-    if (s->alloc == ALLOC_GBM && s->gbm) {
-        struct gbm_bo *probe = gbm_bo_create_with_modifiers2(s->gbm, s->width, s->height,
-            s->format, &s->modifier, 1, GBM_BO_USE_RENDERING);
-        if (probe) {
-            int planes = gbm_bo_get_plane_count(probe);
-            gbm_bo_destroy(probe);
-            if (planes >= 1 && planes <= PLANES_MAX && planes != s->planes) {
-                s->planes = planes;
-                republish = true;
-            }
+    if (s->alloc == ALLOC_VK && s->vk.dev != VK_NULL_HANDLE) {
+        int planes = vk_modifier_planes(s, s->modifier);
+        if (planes >= 1 && planes <= PLANES_MAX && planes != s->planes) {
+            s->planes = planes;
+            republish = true;
         }
     }
     if (republish) {
@@ -944,9 +1244,8 @@ void stream_free(struct stream *s) {
     if (s->cursor_buffer) wl_buffer_destroy(s->cursor_buffer);
     if (s->cursor_pool) wl_shm_pool_destroy(s->cursor_pool);
     if (s->cursor_map) munmap(s->cursor_map, s->cursor_map_size);
-    if (s->gbm) gbm_device_destroy(s->gbm);
+    vk_teardown(s);
     if (s->udmabuf >= 0) close(s->udmabuf);
-    if (s->drm_fd >= 0) close(s->drm_fd);
     free(s->bitmap);
     free(s->modifiers);
     free(s);
@@ -964,7 +1263,6 @@ struct stream *stream_start(struct session *session) {
     s->session = session;
     s->arming = true;
     s->source_type = session->choice.type;
-    s->drm_fd = -1;
     s->udmabuf = -1;
     s->wants_cursor = session->cursor_mode == CURSOR_METADATA;
     if (s->source_type == SOURCE_MONITOR) {
@@ -1030,7 +1328,7 @@ struct stream *stream_start(struct session *session) {
     s->dmabuf = s->alloc != ALLOC_SHM;
     if (s->dmabuf)
         portal_log("capturing %dx%d through DMA-BUF (%s) with modifier 0x%llx", s->width,
-            s->height, s->alloc == ALLOC_GBM ? "GBM" : "udmabuf",
+            s->height, s->alloc == ALLOC_VK ? "Vulkan" : "udmabuf",
             (unsigned long long)s->modifier);
     else
         portal_log("capturing %dx%d through memory", s->width, s->height);
