@@ -518,7 +518,7 @@ static inline lisp_value apply_fast(lisp_value fn, int argc, lisp_value *argv)
 }
 void lisp_closure_info(struct lisp_function *fn);
 void lisp_compile_closure(struct lisp_function *fn);
-void lisp_compile_cleanup(void);
+void lisp_compile_cleanup(int target_ctl);
 lisp_value lisp_vm_apply(struct lisp_function *fn, int argc, lisp_value *argv);
 lisp_value lisp_vm_call1(lisp_value fn, lisp_value arg);
 lisp_value lisp_vm_call2(lisp_value fn, lisp_value a, lisp_value b);

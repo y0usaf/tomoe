@@ -202,10 +202,16 @@ static void mark_failed(struct tomoe_mpris *mpris, int result) {
     mpris->failed = 1;
     mpris->failure = positive_error(result);
     mpris->available = 0;
+    for (size_t index = 0; index < MPRIS_MAX_ALIASES; index++) {
+        free(mpris->aliases[index]);
+        mpris->aliases[index] = NULL;
+    }
+    for (size_t index = 0; index < MPRIS_MAX_PLAYERS; index++) {
+        free(mpris->players[index]);
+        mpris->players[index] = NULL;
+    }
     mpris->alias_count = 0;
     mpris->player_count = 0;
-    memset(mpris->aliases, 0, sizeof(mpris->aliases));
-    memset(mpris->players, 0, sizeof(mpris->players));
     revision_bump(mpris);
 }
 

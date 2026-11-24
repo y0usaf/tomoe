@@ -2747,6 +2747,7 @@ static bool cc_parse_params(struct cc_fn *cc, lisp_value params, struct vm_param
 
 struct cc_scratch {
     struct cc_scratch *prev;
+    int ctl_top;
     uint32_t ins_buf[CC_MAX_INS];
     lisp_value const_buf[CC_MAX_CONSTS];
     const struct lisp_code *proto_buf[CC_MAX_PROTOS];
@@ -2756,9 +2757,9 @@ struct cc_scratch {
 
 static struct cc_scratch *cc_active;
 
-void lisp_compile_cleanup(void)
+void lisp_compile_cleanup(int target_ctl)
 {
-    while (cc_active) {
+    while (cc_active && cc_active->ctl_top > target_ctl) {
         struct cc_scratch *sc = cc_active;
         cc_active = sc->prev;
         free(sc);
@@ -2772,6 +2773,7 @@ static const struct lisp_code *cc_compile_fn(struct cc_fn *parent, struct lisp_r
     if (!sc)
         return NULL;
     sc->prev = cc_active;
+    sc->ctl_top = lisp.ctl_top;
     cc_active = sc;
     struct cc_fn *cc = &sc->cc;
     cc->parent = parent;

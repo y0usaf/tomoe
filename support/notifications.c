@@ -97,6 +97,10 @@ static void mark_bus_failed(struct tomoe_notifications *notifications,
     notifications->failed = 1;
     notifications->failure = positive_error(result);
     notifications->available = 0;
+    for (size_t index = 0; index < notifications->count; index++) {
+        free(notifications->records[index]);
+        notifications->records[index] = NULL;
+    }
     notifications->count = 0;
     revision_bump(notifications);
 }

@@ -87,14 +87,12 @@ static int load_source_internal(const char *name, const char *text, size_t lengt
     lisp.cur_package = package;
     lisp.load_depth++;
 
-    struct {
-        lisp_value *forms;
-        int *lines;
-    } lb = { NULL, NULL };
+    lisp_value *volatile forms = NULL;
+    int *volatile lines = NULL;
     int index = push_ctl(CTL_CATCH);
     if (setjmp(lisp.ctl[index].jb) != 0) {
-        free(lb.forms);
-        free(lb.lines);
+        free((void *)forms);
+        free((void *)lines);
         lisp.ctl_top = index;
         if (error && error_size) {
             lisp_value message = condition_message(lisp_escape_condition());
@@ -119,47 +117,47 @@ static int load_source_internal(const char *name, const char *text, size_t lengt
     reader_init(&rd, name, text, length, package, allow_backquote);
 
     int cap = 256;
-    lb.forms = malloc(sizeof(lisp_value) * (size_t)cap);
-    lb.lines = malloc(sizeof(int) * (size_t)cap);
-    if (!lb.forms || !lb.lines)
+    forms = malloc(sizeof(lisp_value) * (size_t)cap);
+    lines = malloc(sizeof(int) * (size_t)cap);
+    if (!forms || !lines)
         lisp_oom();
     int count = 0;
     while (!reader_done(&rd)) {
         if (count >= cap) {
             int bigger = cap * 2;
-            lisp_value *nf = realloc(lb.forms, sizeof(lisp_value) * (size_t)bigger);
+            lisp_value *nf = realloc((void *)forms, sizeof(lisp_value) * (size_t)bigger);
             if (!nf)
                 lisp_oom();
-            lb.forms = nf;
-            int *nl = realloc(lb.lines, sizeof(int) * (size_t)bigger);
+            forms = nf;
+            int *nl = realloc((void *)lines, sizeof(int) * (size_t)bigger);
             if (!nl)
                 lisp_oom();
-            lb.lines = nl;
+            lines = nl;
             cap = bigger;
         }
         int line = 0;
-        lb.forms[count] = reader_next(&rd, false, &line);
-        lb.lines[count] = line;
+        forms[count] = reader_next(&rd, false, &line);
+        lines[count] = line;
         count++;
     }
 
     lisp_value funcs = NIL_VAL, func_tail = NIL_VAL;
     lisp_value vars = NIL_VAL, var_tail = NIL_VAL;
     for (int i = 0; i < count; i++)
-        collect_definitions(lb.forms[i], &funcs, &func_tail, &vars, &var_tail);
+        collect_definitions(forms[i], &funcs, &func_tail, &vars, &var_tail);
 
     lisp_value results = NIL_VAL, result_tail = NIL_VAL;
     for (int i = 0; i < count; i++) {
-        lisp_set_error_location(name, lb.lines[i]);
+        lisp_set_error_location(name, lines[i]);
         if (analyse && analyse_on)
-            lisp_analyse_form(lb.forms[i], funcs, vars);
-        lisp_value value = eval(lb.forms[i], NULL);
+            lisp_analyse_form(forms[i], funcs, vars);
+        lisp_value value = eval(forms[i], NULL);
         lisp_clear_location();
         list_append_cell(&results, &result_tail, value);
     }
 
-    free(lb.forms);
-    free(lb.lines);
+    free((void *)forms);
+    free((void *)lines);
     lisp.ctl_top = index;
     lisp.cur_region = saved_region;
     lisp.cur_package = saved_package;
