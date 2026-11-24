@@ -640,15 +640,7 @@ bool pass_record_blur(struct pass *pass, struct box box, struct box reach, struc
     if (grid) op->grid = *grid;
     op->blur = blur;
     if (!seeds) return true;
-    uint64_t layout = mix(0xcbf29ce484222325ull, seed, seeds * sizeof(*seed));
-    for (size_t i = 0; i < below; i++) {
-        const struct op *under = &list->ops[i];
-        struct box overlap;
-        if (!box_intersection(&overlap, &under->box, &reach)) continue;
-        layout = mix(layout, &under->hash, sizeof(under->hash));
-        layout = mix(layout, &under->box, sizeof(under->box));
-    }
-    op->backdrop = layout | 1;
+    op->backdrop = mix(0xcbf29ce484222325ull, seed, seeds * sizeof(*seed)) | 1;
     return true;
 }
 
@@ -700,36 +692,59 @@ static void damage_content(struct region *out, const struct op *was, const struc
     if (box_intersection(&mapped, &mapped, &op->box)) damage_box(out, mapped);
 }
 
-static bool backdrop_moved(const struct oplist *old, const struct oplist *now,
-        const size_t *match, size_t i) {
-    const struct op *op = &now->ops[i], *was = &old->ops[match[i]];
-    if (!was->key || op->backdrop != was->backdrop) return true;
-    struct rect reach = { op->reach.x, op->reach.y, op->reach.x + op->reach.width,
-        op->reach.y + op->reach.height };
-    for (size_t j = 0; j < i; j++) {
-        const struct op *under = &now->ops[j];
-        struct box overlap;
-        if (!box_intersection(&overlap, &under->box, &op->reach)) continue;
-        if (match[j] == SIZE_MAX) return true;
-        const struct op *before = &old->ops[match[j]];
-        if (under->blur && under->key != before->key) return true;
-        bool differs = under->surface ? under->seq != before->seq :
-            (under->content_seq || under->marks) && under->content_seq != before->content_seq;
-        if (!differs) continue;
-        struct region changed;
-        region_init(&changed);
-        damage_content(&changed, before, under);
-        bool moved = region_contains_rectangle(&changed, &reach) != REGION_OUT;
-        region_fini(&changed);
-        if (moved) return true;
-    }
-    return false;
-}
-
 static bool region_same(const struct region *a, const struct region *b) {
     int na = 0, nb = 0;
     const struct rect *ra = region_rectangles(a, &na), *rb = region_rectangles(b, &nb);
     return na == nb && (!na || !memcmp(ra, rb, (size_t)na * sizeof(*ra)));
+}
+
+static void backdrop_region(const struct oplist *list, const struct op *op, struct region *out) {
+    if (op->grid.passes) {
+        region_init(out);
+        region_copy(out, &op->need);
+        return;
+    }
+    struct box clipped;
+    if (box_intersection(&clipped, &op->reach, &list->bounds))
+        region_init_rect(out, clipped.x, clipped.y, clipped.width, clipped.height);
+    else region_init(out);
+}
+
+static bool backdrop_moved(const struct oplist *old, const struct oplist *now,
+        const size_t *match, size_t i) {
+    const struct op *op = &now->ops[i], *was = &old->ops[match[i]];
+    if (!was->key || was->hidden || op->backdrop != was->backdrop) return true;
+    struct region exposed, changed;
+    backdrop_region(now, op, &exposed);
+    region_init(&changed);
+    bool moved = false;
+    for (size_t j = i; j-- > 0 && region_not_empty(&exposed);) {
+        const struct op *under = &now->ops[j];
+        if (!box_empty(&under->box)) {
+            struct rect ub = { under->box.x, under->box.y,
+                under->box.x + under->box.width, under->box.y + under->box.height };
+            if (region_contains_rectangle(&exposed, &ub) != REGION_OUT) {
+                if (match[j] == SIZE_MAX) { moved = true; break; }
+                const struct op *before = &old->ops[match[j]];
+                if (under->blur && under->key != before->key) { moved = true; break; }
+                if (!region_same(&under->opaque, &before->opaque)) { moved = true; break; }
+                bool differs = under->surface ? under->seq != before->seq :
+                    (under->content_seq || under->marks) &&
+                    under->content_seq != before->content_seq;
+                if (differs) {
+                    region_clear(&changed);
+                    damage_content(&changed, before, under);
+                    region_intersect(&changed, &changed, &exposed);
+                    if (region_not_empty(&changed)) { moved = true; break; }
+                }
+            }
+        }
+        if (region_not_empty(&under->opaque))
+            region_subtract(&exposed, &exposed, &under->opaque);
+    }
+    region_fini(&changed);
+    region_fini(&exposed);
+    return moved;
 }
 
 static void visibility(struct oplist *list) {
@@ -767,6 +782,28 @@ static void visibility(struct oplist *list) {
         region_union(&covered, &covered, &op->opaque);
     }
     region_fini(&covered);
+    for (size_t i = 0; i < list->len; i++) {
+        struct op *op = &list->ops[i];
+        if (!op->blur || !op->backdrop || op->hidden) continue;
+        struct region exposed;
+        backdrop_region(list, op, &exposed);
+        uint64_t layout = op->backdrop;
+        for (size_t j = i; j-- > 0 && region_not_empty(&exposed);) {
+            const struct op *under = &list->ops[j];
+            if (!box_empty(&under->box)) {
+                struct rect ub = { under->box.x, under->box.y,
+                    under->box.x + under->box.width, under->box.y + under->box.height };
+                if (region_contains_rectangle(&exposed, &ub) != REGION_OUT) {
+                    layout = mix(layout, &under->hash, sizeof(under->hash));
+                    layout = mix(layout, &under->box, sizeof(under->box));
+                }
+            }
+            if (region_not_empty(&under->opaque))
+                region_subtract(&exposed, &exposed, &under->opaque);
+        }
+        op->backdrop = layout | 1;
+        region_fini(&exposed);
+    }
     list->valid = true;
 }
 
@@ -801,9 +838,9 @@ bool oplist_damage(struct oplist *old, struct oplist *now, struct region *out) {
         struct op *op = &now->ops[i];
         if (op->blur && op->backdrop) {
             static uint64_t generation;
-            bool kept = match[i] != SIZE_MAX && !backdrop_moved(old, now, match, i) &&
+            bool kept = !op->hidden && match[i] != SIZE_MAX && !backdrop_moved(old, now, match, i) &&
                 (!op->grid.passes || region_same(&op->visible, &old->ops[match[i]].visible));
-            op->key = kept ? old->ops[match[i]].key : ++generation;
+            op->key = op->hidden ? 0 : (kept ? old->ops[match[i]].key : ++generation);
         }
         if (match[i] == SIZE_MAX) region_union(out, out, &op->visible);
         else if (op->key != old->ops[match[i]].key || (op->blur && !op->key))
