@@ -134,8 +134,8 @@ struct public_values {
 struct tomoe_mpris {
     struct tomoe_bus *bus;
     tomoe_bus_slot *matches[3];
-    struct mpris_alias aliases[MPRIS_MAX_ALIASES];
-    struct mpris_player players[MPRIS_MAX_PLAYERS];
+    struct mpris_alias *aliases[MPRIS_MAX_ALIASES];
+    struct mpris_player *players[MPRIS_MAX_PLAYERS];
     struct mpris_call *calls;
     size_t alias_count;
     size_t player_count;
@@ -351,18 +351,18 @@ const char *tomoe_mpris_snapshot(struct tomoe_mpris *mpris) {
 static struct mpris_alias *find_alias(struct tomoe_mpris *mpris,
                                       const char *name) {
     for (size_t index = 0; index < MPRIS_MAX_ALIASES; index++)
-        if (mpris->aliases[index].used &&
-            !strcmp(mpris->aliases[index].name, name))
-            return &mpris->aliases[index];
+        if (mpris->aliases[index] && mpris->aliases[index]->used &&
+            !strcmp(mpris->aliases[index]->name, name))
+            return mpris->aliases[index];
     return NULL;
 }
 
 static struct mpris_player *find_player_owner(struct tomoe_mpris *mpris,
                                               const char *owner) {
     for (size_t index = 0; index < MPRIS_MAX_PLAYERS; index++)
-        if (mpris->players[index].used &&
-            !strcmp(mpris->players[index].owner, owner))
-            return &mpris->players[index];
+        if (mpris->players[index] && mpris->players[index]->used &&
+            !strcmp(mpris->players[index]->owner, owner))
+            return mpris->players[index];
     return NULL;
 }
 
@@ -383,8 +383,8 @@ static void player_recompute_name(struct tomoe_mpris *mpris,
     char best[MPRIS_MAX_NAME + 1U] = "";
     uint64_t best_order = UINT64_MAX;
     for (size_t index = 0; index < MPRIS_MAX_ALIASES; index++) {
-        struct mpris_alias *alias = &mpris->aliases[index];
-        if (!alias->used || strcmp(alias->owner, player->owner)) continue;
+        struct mpris_alias *alias = mpris->aliases[index];
+        if (!alias || !alias->used || strcmp(alias->owner, player->owner)) continue;
         if (alias->order < best_order ||
             (alias->order == best_order && strcmp(alias->name, best) < 0)) {
             best_order = alias->order;
@@ -398,7 +398,13 @@ static void player_recompute_name(struct tomoe_mpris *mpris,
 static void remove_player(struct tomoe_mpris *mpris,
                            struct mpris_player *player) {
     if (!player || !player->used) return;
-    memset(player, 0, sizeof(*player));
+    for (size_t index = 0; index < MPRIS_MAX_PLAYERS; index++) {
+        if (mpris->players[index] == player) {
+            mpris->players[index] = NULL;
+            break;
+        }
+    }
+    free(player);
     if (mpris->player_count) mpris->player_count--;
 }
 
@@ -421,9 +427,10 @@ static struct mpris_player *create_player(struct tomoe_mpris *mpris,
     if (!valid_unique_name(owner) || mpris->player_count >= MPRIS_MAX_PLAYERS)
         return NULL;
     for (size_t index = 0; index < MPRIS_MAX_PLAYERS; index++) {
-        struct mpris_player *player = &mpris->players[index];
-        if (player->used) continue;
-        memset(player, 0, sizeof(*player));
+        if (mpris->players[index]) continue;
+        struct mpris_player *player = calloc(1, sizeof(*player));
+        if (!player) return NULL;
+        mpris->players[index] = player;
         player->used = 1;
         memcpy(player->owner, owner, strlen(owner) + 1U);
         player->generation = ++mpris->next_generation;
@@ -468,9 +475,10 @@ static struct mpris_alias *create_alias(struct tomoe_mpris *mpris,
     if (!valid_alias_name(name) || mpris->alias_count >= MPRIS_MAX_ALIASES)
         return NULL;
     for (size_t index = 0; index < MPRIS_MAX_ALIASES; index++) {
-        alias = &mpris->aliases[index];
-        if (alias->used) continue;
-        memset(alias, 0, sizeof(*alias));
+        if (mpris->aliases[index]) continue;
+        alias = calloc(1, sizeof(*alias));
+        if (!alias) return NULL;
+        mpris->aliases[index] = alias;
         alias->used = 1;
         memcpy(alias->name, name, strlen(name) + 1U);
         alias->epoch = ++mpris->alias_epoch;
@@ -906,8 +914,8 @@ static int parse_list_names(tomoe_bus_message *message,
 static struct mpris_player *selected_player(struct tomoe_mpris *mpris) {
     struct mpris_player *selected = NULL;
     for (size_t index = 0; index < MPRIS_MAX_PLAYERS; index++) {
-        struct mpris_player *candidate = &mpris->players[index];
-        if (!candidate->used) continue;
+        struct mpris_player *candidate = mpris->players[index];
+        if (!candidate || !candidate->used) continue;
         int candidate_playing = !strcmp(candidate->status, "Playing");
         int selected_playing = selected && !strcmp(selected->status, "Playing");
         if (!selected || candidate_playing > selected_playing ||
@@ -982,7 +990,13 @@ static void retire_alias(struct tomoe_mpris *mpris,
                          struct mpris_alias *alias) {
     if (!alias || !alias->used) return;
     remove_alias_from_player(mpris, alias);
-    memset(alias, 0, sizeof(*alias));
+    for (size_t index = 0; index < MPRIS_MAX_ALIASES; index++) {
+        if (mpris->aliases[index] == alias) {
+            mpris->aliases[index] = NULL;
+            break;
+        }
+    }
+    free(alias);
     if (mpris->alias_count) mpris->alias_count--;
 }
 
@@ -1209,14 +1223,14 @@ static int async_reply(tomoe_bus_message *message, void *userdata) {
 
 static void service_pending_needs(struct tomoe_mpris *mpris) {
     for (size_t index = 0; index < MPRIS_MAX_ALIASES; index++) {
-        struct mpris_alias *alias = &mpris->aliases[index];
-        if (!alias->used || !alias->need_owner) continue;
+        struct mpris_alias *alias = mpris->aliases[index];
+        if (!alias || !alias->used || !alias->need_owner) continue;
         (void)queue_get_owner(mpris, alias);
         if (mpris->pending_count >= MPRIS_MAX_PENDING) return;
     }
     for (size_t index = 0; index < MPRIS_MAX_PLAYERS; index++) {
-        struct mpris_player *player = &mpris->players[index];
-        if (!player->used) continue;
+        struct mpris_player *player = mpris->players[index];
+        if (!player || !player->used) continue;
         if (player->need_all) (void)queue_get_all(mpris, player);
         if (player->need_position) (void)queue_position(mpris, player);
         if (mpris->pending_count >= MPRIS_MAX_PENDING) break;
@@ -1362,6 +1376,8 @@ int tomoe_mpris_control(struct tomoe_mpris *mpris, const char *method) {
 void tomoe_mpris_close(struct tomoe_mpris *mpris) {
     if (!mpris) return;
     close_bus(mpris);
+    for (size_t index = 0; index < MPRIS_MAX_ALIASES; index++) free(mpris->aliases[index]);
+    for (size_t index = 0; index < MPRIS_MAX_PLAYERS; index++) free(mpris->players[index]);
     free(mpris->snapshot);
     free(mpris);
 }

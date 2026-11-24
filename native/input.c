@@ -57,7 +57,7 @@ struct keyboard_stage {
     struct txkb_state *xkb_state;
     struct txkb_state *shadow_state;
     struct txkb_state *projection_state;
-    char *keymap_string;
+    uint64_t keymap_hash[2];
     size_t keymap_size;
     int keymap_fd;
     txkb_led_index_t led_indexes[LED_COUNT];
@@ -69,7 +69,6 @@ struct keyboard_stage {
     struct txkb_state *old_xkb_state;
     struct txkb_state *old_shadow_state;
     struct txkb_state *old_projection_state;
-    char *old_keymap_string;
     int old_keymap_fd;
 };
 
@@ -98,14 +97,28 @@ static struct keyboard_modifiers keyboard_modifiers_from_state(
     return modifiers;
 }
 
+static void keymap_hash_bytes(const char *data, size_t size, uint64_t out[2]) {
+    uint64_t h0 = 14695981039346656037ull;
+    uint64_t h1 = 0x9e3779b97f4a7c15ull;
+    for (size_t i = 0; i < size; i++) {
+        uint64_t b = (unsigned char)data[i];
+        h0 = (h0 ^ b) * 1099511628211ull;
+        h1 = (h1 ^ (b + i)) * 0xbf58476d1ce4e5b9ull;
+        h1 ^= h1 >> 31;
+    }
+    out[0] = h0;
+    out[1] = h1;
+}
+
 void keymap_slot_finish(struct keymap_slot *slot) {
     txkb_state_unref(slot->xkb_state);
     txkb_keymap_unref(slot->keymap);
-    free(slot->keymap_string);
     if (slot->keymap_fd >= 0) close(slot->keymap_fd);
     slot->xkb_state = NULL;
     slot->keymap = NULL;
-    slot->keymap_string = NULL;
+    slot->keymap_hash[0] = 0;
+    slot->keymap_hash[1] = 0;
+    slot->keymap_size = 0;
     slot->keymap_fd = -1;
 }
 
@@ -121,10 +134,14 @@ bool keymap_slot_set(struct keymap_slot *slot, struct txkb_keymap *keymap) {
         free(string);
         return false;
     }
+    uint64_t hash[2];
+    keymap_hash_bytes(string, size, hash);
+    free(string);
     keymap_slot_finish(slot);
     slot->keymap = txkb_keymap_ref(keymap);
     slot->xkb_state = state;
-    slot->keymap_string = string;
+    slot->keymap_hash[0] = hash[0];
+    slot->keymap_hash[1] = hash[1];
     slot->keymap_size = size;
     slot->keymap_fd = fd;
     static const char *const leds[LED_COUNT] = { TXKB_LED_NAME_NUM, TXKB_LED_NAME_CAPS,
@@ -217,13 +234,14 @@ static void keyboard_stage_release(struct keyboard_stage *stage) {
     txkb_state_unref(stage->xkb_state);
     txkb_state_unref(stage->shadow_state);
     txkb_state_unref(stage->projection_state);
-    free(stage->keymap_string);
     if (stage->keymap_fd >= 0) close(stage->keymap_fd);
     stage->keymap = NULL;
     stage->xkb_state = NULL;
     stage->shadow_state = NULL;
     stage->projection_state = NULL;
-    stage->keymap_string = NULL;
+    stage->keymap_hash[0] = 0;
+    stage->keymap_hash[1] = 0;
+    stage->keymap_size = 0;
     stage->keymap_fd = -1;
 }
 
@@ -233,13 +251,11 @@ static void keyboard_stage_release_old(struct keyboard_stage *stage) {
     txkb_state_unref(stage->old_xkb_state);
     txkb_state_unref(stage->old_shadow_state);
     txkb_state_unref(stage->old_projection_state);
-    free(stage->old_keymap_string);
     if (stage->old_keymap_fd >= 0) close(stage->old_keymap_fd);
     stage->old_keymap = NULL;
     stage->old_xkb_state = NULL;
     stage->old_shadow_state = NULL;
     stage->old_projection_state = NULL;
-    stage->old_keymap_string = NULL;
     stage->old_keymap_fd = -1;
 }
 
@@ -328,7 +344,8 @@ static void keyboard_stage_take(struct keyboard_stage *stage,
         struct keymap_slot *detached) {
     stage->keymap = detached->keymap;
     stage->xkb_state = detached->xkb_state;
-    stage->keymap_string = detached->keymap_string;
+    stage->keymap_hash[0] = detached->keymap_hash[0];
+    stage->keymap_hash[1] = detached->keymap_hash[1];
     stage->keymap_size = detached->keymap_size;
     stage->keymap_fd = detached->keymap_fd;
     memcpy(stage->led_indexes, detached->led_indexes,
@@ -338,7 +355,8 @@ static void keyboard_stage_take(struct keyboard_stage *stage,
     stage->modifiers = detached->modifiers;
     detached->keymap = NULL;
     detached->xkb_state = NULL;
-    detached->keymap_string = NULL;
+    detached->keymap_hash[0] = 0;
+    detached->keymap_hash[1] = 0;
     detached->keymap_size = 0;
     detached->keymap_fd = -1;
 }
@@ -432,8 +450,9 @@ static struct keyboard_profile *keyboard_profile_prepare(struct tomoe *s,
         struct keyboard_stage *stage = &profile->stages[index++];
         stage->keyboard = keyboard;
         if (!keyboard_stage_prepare_physical(profile, stage, keyboard)) goto error;
-        if (keyboard->xkb.keymap_string && stage->keymap_string &&
-                strcmp(keyboard->xkb.keymap_string, stage->keymap_string) == 0) {
+        if (keyboard->xkb.keymap_size && keyboard->xkb.keymap_size == stage->keymap_size &&
+                keyboard->xkb.keymap_hash[0] == stage->keymap_hash[0] &&
+                keyboard->xkb.keymap_hash[1] == stage->keymap_hash[1]) {
             keyboard_stage_release(stage);
             stage->reuse_keymap = true;
             stage->modifiers = keyboard->xkb.modifiers;
@@ -455,9 +474,9 @@ static struct keyboard_profile *keyboard_profile_prepare(struct tomoe *s,
         if (!keyboard_stage_prepare_logical(s, profile, &profile->logical))
             goto error;
         struct keymap_slot *logical = &s->logical_keyboard->xkb;
-        if (logical->keymap_string && profile->logical.keymap_string &&
-                strcmp(logical->keymap_string,
-                    profile->logical.keymap_string) == 0) {
+        if (logical->keymap_size && logical->keymap_size == profile->logical.keymap_size &&
+                logical->keymap_hash[0] == profile->logical.keymap_hash[0] &&
+                logical->keymap_hash[1] == profile->logical.keymap_hash[1]) {
             keyboard_stage_release(&profile->logical);
             profile->logical.reuse_keymap = true;
             profile->logical.modifiers = logical->modifiers;
@@ -517,12 +536,12 @@ bool keyboard_profile_publish(struct tomoe *s, struct presentation *plan) {
         stage->old_keymap = keyboard->keymap;
         stage->old_xkb_state = keyboard->xkb_state;
         stage->old_shadow_state = keyboard_record->shadow_state;
-        stage->old_keymap_string = keyboard->keymap_string;
         stage->old_keymap_fd = keyboard->keymap_fd;
         keyboard->keymap = stage->keymap;
         keyboard->xkb_state = stage->xkb_state;
         keyboard_record->shadow_state = stage->shadow_state;
-        keyboard->keymap_string = stage->keymap_string;
+        keyboard->keymap_hash[0] = stage->keymap_hash[0];
+        keyboard->keymap_hash[1] = stage->keymap_hash[1];
         keyboard->keymap_size = stage->keymap_size;
         keyboard->keymap_fd = stage->keymap_fd;
         memcpy(keyboard->led_indexes, stage->led_indexes,
@@ -537,7 +556,8 @@ bool keyboard_profile_publish(struct tomoe *s, struct presentation *plan) {
         stage->keymap = NULL;
         stage->xkb_state = NULL;
         stage->shadow_state = NULL;
-        stage->keymap_string = NULL;
+        stage->keymap_hash[0] = 0;
+        stage->keymap_hash[1] = 0;
         stage->keymap_size = 0;
         stage->keymap_fd = -1;
     }
@@ -553,12 +573,12 @@ bool keyboard_profile_publish(struct tomoe *s, struct presentation *plan) {
             stage->old_xkb_state = logical->xkb_state;
             stage->old_projection_state =
                 s->logical_keyboard->projection_state;
-            stage->old_keymap_string = logical->keymap_string;
             stage->old_keymap_fd = logical->keymap_fd;
             logical->keymap = stage->keymap;
             logical->xkb_state = stage->xkb_state;
             s->logical_keyboard->projection_state = stage->projection_state;
-            logical->keymap_string = stage->keymap_string;
+            logical->keymap_hash[0] = stage->keymap_hash[0];
+            logical->keymap_hash[1] = stage->keymap_hash[1];
             logical->keymap_size = stage->keymap_size;
             logical->keymap_fd = stage->keymap_fd;
             memcpy(logical->led_indexes, stage->led_indexes,
@@ -571,7 +591,8 @@ bool keyboard_profile_publish(struct tomoe *s, struct presentation *plan) {
             stage->keymap = NULL;
             stage->xkb_state = NULL;
             stage->projection_state = NULL;
-            stage->keymap_string = NULL;
+            stage->keymap_hash[0] = 0;
+            stage->keymap_hash[1] = 0;
             stage->keymap_size = 0;
             stage->keymap_fd = -1;
             logical_refresh(s, false);

@@ -93,6 +93,7 @@ void ui_hold_resume(struct tomoe *s);
 void ui_backdrops_ready(struct tomoe *s);
 void ui_pointer_moved(struct tomoe *s);
 void ui_set_finish(struct ui_set *set);
+void ui_trim(struct tomoe *s);
 void ui_finish(struct tomoe *s);
 
 void ui_input_finish(struct tomoe *s);

@@ -5,7 +5,7 @@
 #define PWN_MAX_BUFFERS 32
 #define PWN_MAX_TARGETS 16
 #define PWN_MAX_PARAM 4096
-#define PWN_RING 65536u
+#define PWN_RING 8192u
 
 #include <errno.h>
 #include <fcntl.h>

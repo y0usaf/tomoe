@@ -6,6 +6,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdatomic.h>
+#include <sys/stat.h>
 
 #define SOUND_RATE 48000u
 #define SOUND_FILE_LIMIT (16u * 1024u * 1024u)
@@ -15,7 +16,7 @@
 enum sound_state { SOUND_OFF, SOUND_CONNECTING, SOUND_STREAMING, SOUND_RETRYING, SOUND_FAILED };
 
 struct sound_sample {
-    float *frames;
+    int16_t *frames;
     uint32_t count;
 };
 struct sound_cue {
@@ -95,19 +96,25 @@ static const char *sound_decode(const unsigned char *bytes, size_t size, struct 
     }
     size_t width = (size_t)bits / 8 * channels, count = data_size / width;
     if (!count) return "WAV holds no samples";
-    float *frames = malloc(count * 2 * sizeof(*frames));
+    int16_t *frames = malloc(count * 2 * sizeof(*frames));
     if (!frames) return "out of memory";
     for (size_t i = 0; i < count; i++)
         for (size_t c = 0; c < 2; c++) {
             const unsigned char *p = data + i * width + (channels == 2 ? c * bits / 8 : 0);
-            float value;
             if (bits == 16) {
-                value = (float)(int16_t)le16(p) / 32768.0f;
+                frames[i * 2 + c] = (int16_t)le16(p);
             } else {
                 uint32_t raw = le32(p);
+                float value;
                 memcpy(&value, &raw, sizeof(value));
+                if (!isfinite(value)) value = 0.0f;
+                if (value > 1.0f) value = 1.0f;
+                if (value < -1.0f) value = -1.0f;
+                long scaled = lroundf(value * 32767.0f);
+                if (scaled > 32767) scaled = 32767;
+                if (scaled < -32768) scaled = -32768;
+                frames[i * 2 + c] = (int16_t)scaled;
             }
-            frames[i * 2 + c] = isfinite(value) ? value : 0.0f;
         }
     sample->frames = frames;
     sample->count = (uint32_t)count;
@@ -117,8 +124,17 @@ static const char *sound_decode(const unsigned char *bytes, size_t size, struct 
 static const char *sound_load(const char *path, struct sound_sample *sample) {
     FILE *file = fopen(path, "rbe");
     if (!file) return strerror(errno);
-    unsigned char *bytes = malloc(SOUND_FILE_LIMIT + 1);
-    size_t size = bytes ? fread(bytes, 1, SOUND_FILE_LIMIT + 1, file) : 0;
+    struct stat st;
+    size_t alloc = SOUND_FILE_LIMIT + 1;
+    if (fstat(fileno(file), &st) == 0 && S_ISREG(st.st_mode)) {
+        if ((uint64_t)st.st_size > SOUND_FILE_LIMIT) {
+            fclose(file);
+            return "file exceeds 16 MiB";
+        }
+        alloc = (size_t)st.st_size + 1;
+    }
+    unsigned char *bytes = malloc(alloc);
+    size_t size = bytes ? fread(bytes, 1, alloc, file) : 0;
     bool failed = !bytes || ferror(file);
     fclose(file);
     const char *error = failed ? "cannot read the file" :
@@ -252,11 +268,12 @@ static void sound_process(void *data, struct pwn_buffer *buffer) {
         if (!voice->sample) continue;
         uint32_t n = voice->sample->count - voice->position;
         if (n > count) n = count;
-        const float *source = voice->sample->frames + (size_t)voice->position * 2;
+        const int16_t *source = voice->sample->frames + (size_t)voice->position * 2;
+        float scale = voice->gain * (1.0f / 32768.0f);
         for (unsigned c = 0; c < 2; c++) {
             if (!buffer->frames[c]) continue;
             float *out = buffer->frames[c];
-            for (uint32_t f = 0; f < n; f++) out[f] += source[f * 2 + c] * voice->gain;
+            for (uint32_t f = 0; f < n; f++) out[f] += (float)source[f * 2 + c] * scale;
         }
         voice->position += n;
         if (voice->position == voice->sample->count) voice->sample = NULL;

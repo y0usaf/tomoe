@@ -41,7 +41,7 @@ struct notification_record {
 struct tomoe_notifications {
     struct tomoe_bus *bus;
     tomoe_bus_slot *object_slot;
-    struct notification_record records[NOTIFICATION_MAX_RECORDS];
+    struct notification_record *records[NOTIFICATION_MAX_RECORDS];
     size_t count;
     uint32_t next_id;
     uint64_t revision;
@@ -212,7 +212,7 @@ static int build_snapshot(struct tomoe_notifications *notifications,
     if (result < 0) goto failed;
     for (size_t index = 0; index < notifications->count; index++) {
         const struct notification_record *record =
-            &notifications->records[index];
+            notifications->records[index];
         if (index) {
             result = text_buffer_literal(&buffer, " ");
             if (result < 0) goto failed;
@@ -263,7 +263,7 @@ const char *tomoe_notifications_snapshot(
 static int find_record(const struct tomoe_notifications *notifications,
                        uint32_t id) {
     for (size_t index = 0; index < notifications->count; index++)
-        if (notifications->records[index].id == id) return (int)index;
+        if (notifications->records[index]->id == id) return (int)index;
     return -1;
 }
 
@@ -276,7 +276,7 @@ static size_t all_text_bytes(const struct tomoe_notifications *notifications,
     size_t total = 0;
     for (size_t index = 0; index < notifications->count; index++) {
         if ((int)index == skip) continue;
-        size_t bytes = record_text_bytes(&notifications->records[index]);
+        size_t bytes = record_text_bytes(notifications->records[index]);
         if (bytes > SIZE_MAX - total) return SIZE_MAX;
         total += bytes;
     }
@@ -301,13 +301,14 @@ static int allocate_id(struct tomoe_notifications *notifications,
 
 static void erase_record(struct tomoe_notifications *notifications,
                          size_t index) {
+    free(notifications->records[index]);
     if (index + 1U < notifications->count) {
         memmove(&notifications->records[index],
                 &notifications->records[index + 1U],
                 (notifications->count - index - 1U) *
                     sizeof(notifications->records[0]));
     }
-    notifications->count--;
+    notifications->records[--notifications->count] = NULL;
 }
 
 static int emit_closed(struct tomoe_notifications *notifications, uint32_t id,
@@ -327,7 +328,7 @@ static int expire_due(struct tomoe_notifications *notifications,
     int changed = 0;
     size_t index = 0;
     while (index < notifications->count) {
-        struct notification_record *record = &notifications->records[index];
+        struct notification_record *record = notifications->records[index];
         if (!record->deadline_usec || record->deadline_usec > now) {
             index++;
             continue;
@@ -472,7 +473,7 @@ static int method_notify(tomoe_bus_message *message, void *userdata) {
     }
     candidate->urgent = urgent;
     candidate->generation = existing >= 0
-        ? notifications->records[existing].generation + 1U : 1U;
+        ? notifications->records[existing]->generation + 1U : 1U;
     if (!candidate->generation) candidate->generation = 1;
     memcpy(candidate->app, app, strlen(app) + 1U);
     memcpy(candidate->summary, summary, strlen(summary) + 1U);
@@ -490,12 +491,11 @@ static int method_notify(tomoe_bus_message *message, void *userdata) {
     }
 
     if (existing >= 0) erase_record(notifications, (size_t)existing);
-    notifications->records[notifications->count++] = *candidate;
-    free(candidate);
+    notifications->records[notifications->count++] = candidate;
     revision_bump(notifications);
     result = tomoe_reply_method_return(message, "u",
                                         notifications->records[
-                                            notifications->count - 1U].id);
+                                            notifications->count - 1U]->id);
     if (result < 0) {
         mark_bus_failed(notifications, result);
         return result;
@@ -621,7 +621,7 @@ int tomoe_notifications_timeout(
     uint64_t now = monotonic_usec();
     uint64_t best = UINT64_MAX;
     for (size_t index = 0; index < notifications->count; index++) {
-        uint64_t deadline = notifications->records[index].deadline_usec;
+        uint64_t deadline = notifications->records[index]->deadline_usec;
         if (deadline && deadline < best) best = deadline;
     }
     if (best == UINT64_MAX) return max_ms;
@@ -633,6 +633,8 @@ int tomoe_notifications_timeout(
 void tomoe_notifications_close(struct tomoe_notifications *notifications) {
     if (!notifications) return;
     close_bus(notifications);
+    for (size_t index = 0; index < notifications->count; index++)
+        free(notifications->records[index]);
     free(notifications->snapshot);
     free(notifications);
 }

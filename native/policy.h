@@ -152,7 +152,7 @@ void policy_ring_pop(struct tomoe *server);
 void policy_ring_drop_coalescible(struct tomoe *server);
 struct policy_ring_saved {
     struct tomoe_event *ring;
-    size_t capacity, head, count, barrier;
+    size_t capacity, limit, head, count, barrier;
     char *arena;
     size_t used, size;
 };

@@ -365,11 +365,6 @@ static struct ui_canvas *canvas_create(int width, int height, size_t stride, uin
     canvas->height = height;
     canvas->stride = stride;
     canvas->bytes = bytes;
-    canvas->pixels = calloc(1, (size_t)bytes);
-    if (!canvas->pixels) {
-        free(canvas);
-        return NULL;
-    }
     return canvas;
 }
 
@@ -385,7 +380,9 @@ static void canvas_unref(struct ui_canvas *canvas) {
 }
 
 static bool canvas_ready(struct ui_canvas *canvas) {
-    return canvas && canvas->pixels;
+    if (!canvas) return false;
+    if (!canvas->pixels) canvas->pixels = calloc(1, (size_t)canvas->bytes);
+    return canvas->pixels != NULL;
 }
 
 static void op_release(struct ui_op *op) {
@@ -1448,7 +1445,8 @@ static bool surface_commit(struct tomoe *s, struct ui_surface *surface) {
     }
     struct region damage;
     region_init(&damage);
-    bool full = !surface->canvas || surface->canvas->width != surface->width ||
+    bool full = !surface->canvas || !surface->canvas->texture ||
+        surface->canvas->width != surface->width ||
         surface->canvas->height != surface->height;
     if (full) {
         uint64_t bytes = surface->bytes;
@@ -1480,6 +1478,11 @@ static bool surface_commit(struct tomoe *s, struct ui_surface *surface) {
         ok = canvas_replay(surface, &damage) && canvas_upload(s, surface, &damage);
         if (ok) content_record(surface, &damage);
         if (full) ui_redraws++;
+        if (surface->canvas && surface->canvas->pixels &&
+                surface->canvas->bytes > (UINT64_C(2) * 1024 * 1024)) {
+            free(surface->canvas->pixels);
+            surface->canvas->pixels = NULL;
+        }
     }
     region_fini(&damage);
     ops_free(surface->ops, surface->op_count);
@@ -2061,6 +2064,16 @@ const char *tomoe_ui_stats(struct tomoe *s) {
             ui_assets_count(s), ui_assets_bytes(s), ui_assets_loads(s));
     if (written < 0) return unavailable;
     return s->ui_stats_result;
+}
+
+void ui_trim(struct tomoe *s) {
+    if (!s || !s->ui) return;
+    for (size_t i = 0; i < s->ui->count; i++) {
+        struct ui_surface *surface = s->ui->surfaces[i];
+        if (!surface || !surface->canvas || !surface->canvas->pixels) continue;
+        free(surface->canvas->pixels);
+        surface->canvas->pixels = NULL;
+    }
 }
 
 void ui_finish(struct tomoe *s) {

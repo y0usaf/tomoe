@@ -976,8 +976,8 @@ bool effect_glass(struct frame *f, struct gfx_prog *p, struct texture *map, stru
 
 #define TRAIL_STEPS_MAX 8
 #define TRAIL_CELLS_MAX (1u << 20)
-#define TRAIL_CELLS_INIT 1024
-#define TRAIL_CELLS_RESERVE 4096
+#define TRAIL_CELLS_INIT 256
+#define TRAIL_CELLS_RESERVE 512
 
 bool effects_create(struct tomoe *s) {
     s->effects = calloc(1, sizeof(*s->effects));

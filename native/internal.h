@@ -290,7 +290,7 @@ enum {
 struct keymap_slot {
     struct txkb_keymap *keymap;
     struct txkb_state *xkb_state;
-    char *keymap_string;
+    uint64_t keymap_hash[2];
     size_t keymap_size;
     int keymap_fd;
     txkb_led_index_t led_indexes[LED_COUNT];
@@ -1213,7 +1213,7 @@ struct tomoe {
     size_t event_count;
     size_t observation_barrier;
     struct tomoe_event *event_ring;
-    size_t event_capacity, event_head;
+    size_t event_capacity, event_limit, event_head;
     uint64_t event_read_mask, event_dropped, event_drop_log_ns, event_serial;
     bool policy_accepting, policy_capturing;
     struct policy_link *policy_link;

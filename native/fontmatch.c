@@ -1130,7 +1130,17 @@ void fm_init(FT_Library library)
 
     for (int i = 0; i < fm_dir_count; i++) {
         fm_scan_dir(library, fm_dirs[i], 0);
+        free(fm_dirs[i]);
     }
+    free(fm_dirs);
+    fm_dirs = NULL;
+    fm_dir_count = fm_dir_cap = 0;
+    free(fm_seen_files);
+    fm_seen_files = NULL;
+    fm_seen_file_count = fm_seen_file_cap = 0;
+    free(fm_seen_dirs);
+    fm_seen_dirs = NULL;
+    fm_seen_dir_count = fm_seen_dir_cap = 0;
 }
 
 static bool fm_flist_has(char *const *list, int count, const char *val)

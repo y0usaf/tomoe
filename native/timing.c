@@ -38,7 +38,12 @@ static const char *const channel_names[TIMING_CHANNELS] = {
     "stage-idle-dispatch",
 };
 
-static struct channel channels[TIMING_CHANNELS];
+static struct channel *channels;
+
+static struct channel *channels_ready(void) {
+    if (!channels) channels = calloc(TIMING_CHANNELS, sizeof(*channels));
+    return channels;
+}
 static struct stall stalls[TIMING_STALLS];
 static size_t stall_recorded;
 static size_t stall_cursor;
@@ -77,7 +82,7 @@ uint64_t tomoe_timing_now(void) {
 }
 
 void tomoe_timing_reset(void) {
-    memset(channels, 0, sizeof(channels));
+    if (channels) memset(channels, 0, TIMING_CHANNELS * sizeof(*channels));
     memset(stalls, 0, sizeof(stalls));
     stall_recorded = 0;
     stall_cursor = 0;
@@ -128,7 +133,8 @@ void timing_turn_boundary(void *data, uint64_t sleep_ns, uint64_t wake_ns, uint6
         current_turn.stages[STAGE_IDLE_DISPATCH] += sleep_ns - turn_mark;
         current_turn.total = sleep_ns - turn_start;
         current_turn.cpu = sleep_cpu_ns >= turn_start_cpu ? sleep_cpu_ns - turn_start_cpu : 0;
-        current_turn.frame = channels[TIMING_FRAME_TOTAL].recorded != turn_frames;
+        struct channel *ch = channels_ready();
+        current_turn.frame = ch && ch[TIMING_FRAME_TOTAL].recorded != turn_frames;
         timing_add(TIMING_LOOP_TICK, current_turn.total);
         timing_add(TIMING_LOOP_TICK_CPU, current_turn.cpu);
         timing_add(current_turn.frame ? TIMING_LOOP_TICK_FRAME : TIMING_LOOP_TICK_IDLE,
@@ -151,7 +157,8 @@ void timing_turn_boundary(void *data, uint64_t sleep_ns, uint64_t wake_ns, uint6
     turn_active = true;
     turn_start = turn_mark = wake_ns;
     turn_start_cpu = wake_cpu_ns;
-    turn_frames = channels[TIMING_FRAME_TOTAL].recorded;
+    struct channel *ch = channels_ready();
+    turn_frames = ch ? ch[TIMING_FRAME_TOTAL].recorded : 0;
 }
 
 int tomoe_timing_channel(const char *name) {
@@ -172,7 +179,9 @@ uint64_t timing_now(void) {
 
 void timing_add(enum timing_channel channel, uint64_t ns) {
     if (!timing_enabled || channel >= TIMING_CHANNELS || ns > UINT32_MAX) return;
-    struct channel *c = &channels[channel];
+    struct channel *ch = channels_ready();
+    if (!ch) return;
+    struct channel *c = &ch[channel];
     c->samples[c->cursor] = (uint32_t)ns;
     if (++c->cursor == TIMING_SAMPLES) c->cursor = 0;
     c->recorded++;
@@ -317,7 +326,8 @@ static int compare(const void *first, const void *second) {
 }
 
 static void write_channel(FILE *out, enum timing_channel channel, uint32_t *sorted) {
-    struct channel *c = &channels[channel];
+    static const struct channel empty;
+    const struct channel *c = channels ? &channels[channel] : &empty;
     size_t count = c->recorded < TIMING_SAMPLES ? c->recorded : TIMING_SAMPLES;
     fputs("(:name \"", out);
     fputs(channel_names[channel], out);

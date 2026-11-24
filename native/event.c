@@ -5,8 +5,9 @@
 enum {
     GRAB_HOLD_MS = 16,
     EVENT_CAPACITY_BOOTSTRAP = 4096,
+    EVENT_CAPACITY_INIT = 64,
     EVENT_CAPACITY_MAX = 1 << 20,
-    EVENT_ARENA_BOOTSTRAP = 1 << 16,
+    EVENT_ARENA_BOOTSTRAP = 4096,
     EVENT_ARENA_MAX = 32 << 20,
     EVENT_DROP_LOG_NS = 1000000000,
     INPUT_STREAM_MS = 16
@@ -34,22 +35,40 @@ static struct tomoe_event *ring_slot(struct tomoe *s, size_t index) {
 
 static void ring_ready(struct tomoe *s) {
     if (s->event_ring) return;
-    uint64_t capacity = budget_limit(BUDGET_EVENTS);
-    if (capacity < 16) capacity = EVENT_CAPACITY_BOOTSTRAP;
-    if (capacity > EVENT_CAPACITY_MAX) capacity = EVENT_CAPACITY_MAX;
+    uint64_t limit = budget_limit(BUDGET_EVENTS);
+    if (limit < 16) limit = EVENT_CAPACITY_BOOTSTRAP;
+    if (limit > EVENT_CAPACITY_MAX) limit = EVENT_CAPACITY_MAX;
     const char *forced = tomoe_test_flag_value("policy-ring");
-    if (forced && strtoull(forced, NULL, 10) >= 4) capacity = strtoull(forced, NULL, 10);
-    if (!budget_admit(BUDGET_EVENTS, capacity))
+    if (forced && strtoull(forced, NULL, 10) >= 4) limit = strtoull(forced, NULL, 10);
+    if (!budget_admit(BUDGET_EVENTS, limit))
         tomoe_log(LOG_WARNING, "tomoe: event ring exceeds its budget");
-    s->event_ring = calloc((size_t)capacity, sizeof(*s->event_ring));
+    size_t initial = (size_t)limit < EVENT_CAPACITY_INIT ? (size_t)limit : EVENT_CAPACITY_INIT;
+    s->event_ring = calloc(initial, sizeof(*s->event_ring));
     if (!s->event_ring) {
         tomoe_log(LOG_ERROR, "tomoe: event ring allocation failed");
         s->event_capacity = 0;
+        s->event_limit = 0;
         return;
     }
-    s->event_capacity = (size_t)capacity;
+    s->event_capacity = initial;
+    s->event_limit = (size_t)limit;
     s->event_head = 0;
     s->event_count = 0;
+}
+
+static bool event_ring_grow(struct tomoe *s) {
+    if (s->event_capacity >= s->event_limit) return false;
+    size_t next = s->event_capacity * 2;
+    if (next > s->event_limit) next = s->event_limit;
+    struct tomoe_event *grown = calloc(next, sizeof(*grown));
+    if (!grown) return false;
+    for (size_t i = 0; i < s->event_count; i++)
+        grown[i] = *ring_slot(s, i);
+    free(s->event_ring);
+    s->event_ring = grown;
+    s->event_capacity = next;
+    s->event_head = 0;
+    return true;
 }
 
 static uint32_t arena_store(struct tomoe *s, const void *data, size_t length) {
@@ -163,6 +182,7 @@ struct tomoe_event *policy_event_push(struct tomoe *s, enum tomoe_event_type typ
     if (!policy_reads(s, type)) return NULL;
     if (!s->event_ring) ring_ready(s);
     if (!s->event_capacity) return NULL;
+    if (s->event_count == s->event_capacity) event_ring_grow(s);
     if (s->event_count == s->event_capacity && !s->policy_accepting && !s->policy_capturing)
         drop_coalescible(s);
     if (s->event_count == s->event_capacity) {
@@ -203,6 +223,7 @@ void policy_ring_stash(struct tomoe *s, struct policy_ring_saved *saved, struct 
         size_t slots) {
     saved->ring = s->event_ring;
     saved->capacity = s->event_capacity;
+    saved->limit = s->event_limit;
     saved->head = s->event_head;
     saved->count = s->event_count;
     saved->barrier = s->observation_barrier;
@@ -211,6 +232,7 @@ void policy_ring_stash(struct tomoe *s, struct policy_ring_saved *saved, struct 
     saved->size = s->event_arena_size;
     s->event_ring = scratch;
     s->event_capacity = slots;
+    s->event_limit = slots;
     s->event_head = s->event_count = s->observation_barrier = 0;
     s->event_arena = NULL;
     s->event_arena_used = s->event_arena_size = 0;
@@ -220,6 +242,7 @@ void policy_ring_unstash(struct tomoe *s, const struct policy_ring_saved *saved)
     free(s->event_arena);
     s->event_ring = saved->ring;
     s->event_capacity = saved->capacity;
+    s->event_limit = saved->limit;
     s->event_head = saved->head;
     s->event_count = saved->count;
     s->observation_barrier = saved->barrier;
@@ -244,6 +267,13 @@ void policy_ring_consume(struct tomoe *s, size_t consumed) {
         s->event_count = 0;
         s->observation_barrier = 0;
         s->event_arena_used = 0;
+        if (s->event_arena_size > 16384) {
+            char *shrunk = realloc(s->event_arena, EVENT_ARENA_BOOTSTRAP);
+            if (shrunk) {
+                s->event_arena = shrunk;
+                s->event_arena_size = EVENT_ARENA_BOOTSTRAP;
+            }
+        }
         return;
     }
     s->event_head = (s->event_head + consumed) % s->event_capacity;
