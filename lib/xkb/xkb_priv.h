@@ -294,6 +294,7 @@ void txkb_kccgst_free(struct txkb_kccgst *k);
 FILE *txkb_open_config_file(const char *subdir, const char *name, char **path_out);
 
 struct txkb_keymap *txkb_compile_kccgst(const struct txkb_kccgst *kccgst);
+struct txkb_keymap *txkb_compile_builtin_us(void);
 bool txkb_keysym_is_lower(txkb_keysym_t ks);
 bool txkb_keysym_is_upper(txkb_keysym_t ks);
 

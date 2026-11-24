@@ -33,6 +33,7 @@ pkgs.testers.runNixOSTest {
     ];
     environment.pathsToLink = [ "/share/dbus-1" ];
     environment.variables.LP_NUM_THREADS = "4";
+    environment.variables.XKB_CONFIG_ROOT = "${pkgs.xkeyboard_config}/etc/X11/xkb";
     virtualisation.memorySize = 4096;
     virtualisation.cores = 4;
   };

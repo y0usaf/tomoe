@@ -221,7 +221,6 @@
             make -j"$NIX_BUILD_CORES" VERSION=${version} \
               GLSLANG=${glslangValidator}/bin/glslangValidator \
               PATH_PREFIX=$out/bin \
-              XKB_CONFIG_ROOT=${pkgs.xkeyboard_config}/etc/X11/xkb \
               OPT='${opt}' LTO='${pkgs.lib.optionalString lto "-flto=auto"}' \
               CPU='${pkgs.lib.optionalString (cpu != "") "-march=${cpu} -mtune=${cpu}"}' \
               WLR=${pkgs.wlr-protocols}/share/wlr-protocols/unstable \

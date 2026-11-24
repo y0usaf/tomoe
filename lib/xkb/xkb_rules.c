@@ -17,9 +17,10 @@ FILE *txkb_open_config_file(const char *subdir, const char *name, char **path_ou
     if (!extra) extra = TOMOE_XKB_CONFIG_EXTRA_PATH;
     const char *root = getenv("XKB_CONFIG_ROOT");
     if (!root) root = TOMOE_XKB_CONFIG_ROOT;
-    const char *bases[4] = { user_xdg, user_home, extra, root };
-    for (int i = 0; i < 4; i++) {
+    const char *bases[5] = { user_xdg, user_home, extra, root, "/usr/share/X11/xkb" };
+    for (int i = 0; i < 5; i++) {
         if (!bases[i] || !bases[i][0]) continue;
+        if (i == 4 && root && strcmp(root, bases[4]) == 0) continue;
         size_t len = strlen(bases[i]) + 1 + strlen(subdir) + 1 + strlen(name) + 1;
         char *path = malloc(len);
         if (!path) return NULL;

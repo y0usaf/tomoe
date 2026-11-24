@@ -95,6 +95,7 @@ pkgs.testers.runNixOSTest {
         "LP_NUM_THREADS": "4",
         "MESA_LOADER_DRIVER_OVERRIDE": "zink",
         "VK_DRIVER_FILES": "${lavapipe}",
+        "XKB_CONFIG_ROOT": "${pkgs.xkeyboard_config}/etc/X11/xkb",
         "NO_AT_BRIDGE": "1",
     }
     unit_env = " ".join(f"--setenv={k}={v}" for k, v in env_vars.items())

@@ -2861,6 +2861,223 @@ static void apply_sym_scope_to_keymap(struct compile_ctx *cc, struct sym_scope *
     sc->num_modmaps = 0;
 }
 
+
+static const char builtin_us_keycodes[] =
+    "minimum = 8; maximum = 255;\n"
+    "<ESC> = 9; <AE01> = 10; <AE02> = 11; <AE03> = 12; <AE04> = 13;\n"
+    "<AE05> = 14; <AE06> = 15; <AE07> = 16; <AE08> = 17; <AE09> = 18;\n"
+    "<AE10> = 19; <AE11> = 20; <AE12> = 21; <BKSP> = 22; <TAB> = 23;\n"
+    "<AD01> = 24; <AD02> = 25; <AD03> = 26; <AD04> = 27; <AD05> = 28;\n"
+    "<AD06> = 29; <AD07> = 30; <AD08> = 31; <AD09> = 32; <AD10> = 33;\n"
+    "<AD11> = 34; <AD12> = 35; <RTRN> = 36; <LCTL> = 37; <AC01> = 38;\n"
+    "<AC02> = 39; <AC03> = 40; <AC04> = 41; <AC05> = 42; <AC06> = 43;\n"
+    "<AC07> = 44; <AC08> = 45; <AC09> = 46; <AC10> = 47; <AC11> = 48;\n"
+    "<TLDE> = 49; <LFSH> = 50; <BKSL> = 51; <AB01> = 52; <AB02> = 53;\n"
+    "<AB03> = 54; <AB04> = 55; <AB05> = 56; <AB06> = 57; <AB07> = 58;\n"
+    "<AB08> = 59; <AB09> = 60; <AB10> = 61; <RTSH> = 62; <KPMU> = 63;\n"
+    "<LALT> = 64; <SPCE> = 65; <CAPS> = 66; <FK01> = 67; <FK02> = 68;\n"
+    "<FK03> = 69; <FK04> = 70; <FK05> = 71; <FK06> = 72; <FK07> = 73;\n"
+    "<FK08> = 74; <FK09> = 75; <FK10> = 76; <NMLK> = 77; <SCLK> = 78;\n"
+    "<KP7> = 79; <KP8> = 80; <KP9> = 81; <KPSU> = 82; <KP4> = 83;\n"
+    "<KP5> = 84; <KP6> = 85; <KPAD> = 86; <KP1> = 87; <KP2> = 88;\n"
+    "<KP3> = 89; <KP0> = 90; <KPDL> = 91; <LVL3> = 92; <LSGT> = 94;\n"
+    "<FK11> = 95; <FK12> = 96; <KPEN> = 104; <RCTL> = 105; <KPDV> = 106;\n"
+    "<PRSC> = 107; <RALT> = 108; <HOME> = 110; <UP> = 111; <PGUP> = 112;\n"
+    "<LEFT> = 113; <RGHT> = 114; <END> = 115; <DOWN> = 116; <PGDN> = 117;\n"
+    "<INS> = 118; <DELE> = 119; <MUTE> = 121; <VOL-> = 122; <VOL+> = 123;\n"
+    "<POWR> = 124; <KPEQ> = 125; <PAUS> = 127; <LWIN> = 133; <RWIN> = 134;\n"
+    "<COMP> = 135; <LVL5> = 203; <ALT> = 204; <META> = 205; <SUPR> = 206;\n"
+    "<HYPR> = 207; <I255> = 255;\n"
+    "indicator 1 = \"Caps Lock\";\n"
+    "indicator 2 = \"Num Lock\";\n"
+    "indicator 3 = \"Scroll Lock\";\n";
+
+static const char builtin_us_types[] =
+    "virtual_modifiers NumLock,Alt,LevelThree,Super,LevelFive,Meta,Hyper,ScrollLock;\n"
+    "type \"ONE_LEVEL\" { modifiers = none; level_name[1] = \"Any\"; };\n"
+    "type \"TWO_LEVEL\" { modifiers = Shift; map[Shift] = 2; level_name[1] = \"Base\"; level_name[2] = \"Shift\"; };\n"
+    "type \"ALPHABETIC\" { modifiers = Shift+Lock; map[Shift] = 2; map[Lock] = 2; level_name[1] = \"Base\"; level_name[2] = \"Caps\"; };\n"
+    "type \"KEYPAD\" { modifiers = Shift+NumLock; map[Shift] = 2; map[NumLock] = 2; level_name[1] = \"Base\"; level_name[2] = \"Number\"; };\n"
+    "type \"PC_ALT_LEVEL2\" { modifiers = Alt; map[Alt] = 2; level_name[1] = \"Base\"; level_name[2] = \"Alt\"; };\n"
+    "type \"PC_CONTROL_LEVEL2\" { modifiers = Control; map[Control] = 2; level_name[1] = \"Base\"; level_name[2] = \"Control\"; };\n"
+    "type \"CTRL+ALT\" {\n"
+    "  modifiers = Shift+Control+Alt+LevelThree;\n"
+    "  map[Shift] = 2; preserve[Shift] = Shift;\n"
+    "  map[LevelThree] = 3;\n"
+    "  map[Shift+LevelThree] = 4; preserve[Shift+LevelThree] = Shift;\n"
+    "  map[Control] = 1; preserve[Control] = Control;\n"
+    "  map[Shift+Control] = 2; preserve[Shift+Control] = Shift+Control;\n"
+    "  map[Alt] = 1; preserve[Alt] = Alt;\n"
+    "  map[Shift+Alt] = 2; preserve[Shift+Alt] = Shift+Alt;\n"
+    "  map[Control+Alt] = 5;\n"
+    "  map[Shift+Control+Alt] = 2; preserve[Shift+Control+Alt] = Shift+Control+Alt;\n"
+    "  level_name[1] = \"Base\"; level_name[2] = \"Shift\"; level_name[3] = \"AltGr\";\n"
+    "  level_name[4] = \"Shift AltGr\"; level_name[5] = \"Ctrl+Alt\";\n"
+    "};\n";
+
+static const char builtin_us_compat[] =
+    "virtual_modifiers NumLock,Alt,LevelThree,Super,LevelFive,Meta,Hyper,ScrollLock;\n"
+    "interpret.useModMapMods = AnyLevel;\n"
+    "interpret.repeat = False;\n"
+    "interpret Num_Lock+AnyOf(all) { virtualModifier = NumLock; action = LockMods(modifiers=Mod2); };\n"
+    "interpret ISO_Level3_Shift+AnyOf(all) { virtualModifier = LevelThree; useModMapMods = level1; action = SetMods(modifiers=Mod5,clearLocks); };\n"
+    "interpret ISO_Level5_Shift+AnyOf(all) { virtualModifier = LevelFive; useModMapMods = level1; action = SetMods(modifiers=Mod3,clearLocks); };\n"
+    "interpret Alt_L+AnyOf(all) { virtualModifier = Alt; action = SetMods(modifiers=modMapMods,clearLocks); };\n"
+    "interpret Alt_R+AnyOf(all) { virtualModifier = Alt; action = SetMods(modifiers=modMapMods,clearLocks); };\n"
+    "interpret Meta_L+AnyOf(all) { virtualModifier = Meta; action = SetMods(modifiers=modMapMods,clearLocks); };\n"
+    "interpret Meta_R+AnyOf(all) { virtualModifier = Meta; action = SetMods(modifiers=modMapMods,clearLocks); };\n"
+    "interpret Super_L+AnyOf(all) { virtualModifier = Super; action = SetMods(modifiers=modMapMods,clearLocks); };\n"
+    "interpret Super_R+AnyOf(all) { virtualModifier = Super; action = SetMods(modifiers=modMapMods,clearLocks); };\n"
+    "interpret Hyper_L+AnyOf(all) { virtualModifier = Hyper; action = SetMods(modifiers=modMapMods,clearLocks); };\n"
+    "interpret Hyper_R+AnyOf(all) { virtualModifier = Hyper; action = SetMods(modifiers=modMapMods,clearLocks); };\n"
+    "interpret Scroll_Lock+AnyOf(all) { virtualModifier = ScrollLock; action = LockMods(modifiers=modMapMods); };\n"
+    "interpret Caps_Lock+AnyOfOrNone(all) { action = LockMods(modifiers=Lock); };\n"
+    "interpret Any+Exactly(Lock) { action = LockMods(modifiers=Lock); };\n"
+    "interpret Any+AnyOf(all) { action = SetMods(modifiers=modMapMods,clearLocks); };\n"
+    "interpret XF86Switch_VT_1+AnyOfOrNone(all) { repeat = True; action = SwitchScreen(screen=1,!same); };\n"
+    "interpret XF86Switch_VT_2+AnyOfOrNone(all) { repeat = True; action = SwitchScreen(screen=2,!same); };\n"
+    "interpret XF86Switch_VT_3+AnyOfOrNone(all) { repeat = True; action = SwitchScreen(screen=3,!same); };\n"
+    "interpret XF86Switch_VT_4+AnyOfOrNone(all) { repeat = True; action = SwitchScreen(screen=4,!same); };\n"
+    "interpret XF86Switch_VT_5+AnyOfOrNone(all) { repeat = True; action = SwitchScreen(screen=5,!same); };\n"
+    "interpret XF86Switch_VT_6+AnyOfOrNone(all) { repeat = True; action = SwitchScreen(screen=6,!same); };\n"
+    "interpret XF86Switch_VT_7+AnyOfOrNone(all) { repeat = True; action = SwitchScreen(screen=7,!same); };\n"
+    "interpret XF86Switch_VT_8+AnyOfOrNone(all) { repeat = True; action = SwitchScreen(screen=8,!same); };\n"
+    "interpret XF86Switch_VT_9+AnyOfOrNone(all) { repeat = True; action = SwitchScreen(screen=9,!same); };\n"
+    "interpret XF86Switch_VT_10+AnyOfOrNone(all) { repeat = True; action = SwitchScreen(screen=10,!same); };\n"
+    "interpret XF86Switch_VT_11+AnyOfOrNone(all) { repeat = True; action = SwitchScreen(screen=11,!same); };\n"
+    "interpret XF86Switch_VT_12+AnyOfOrNone(all) { repeat = True; action = SwitchScreen(screen=12,!same); };\n"
+    "indicator \"Caps Lock\" { !allowExplicit; whichModState = locked; modifiers = Lock; };\n"
+    "indicator \"Num Lock\" { !allowExplicit; whichModState = locked; modifiers = Mod2; };\n"
+    "indicator \"Scroll Lock\" { whichModState = locked; modifiers = ScrollLock; };\n";
+
+static const char builtin_us_symbols[] =
+    "name[group1] = \"English (US)\";\n"
+    "key <ESC> { [ Escape ] };\n"
+    "key <AE01> { [ 1, exclam ] };\n"
+    "key <AE02> { [ 2, at ] };\n"
+    "key <AE03> { [ 3, numbersign ] };\n"
+    "key <AE04> { [ 4, dollar ] };\n"
+    "key <AE05> { [ 5, percent ] };\n"
+    "key <AE06> { [ 6, asciicircum ] };\n"
+    "key <AE07> { [ 7, ampersand ] };\n"
+    "key <AE08> { [ 8, asterisk ] };\n"
+    "key <AE09> { [ 9, parenleft ] };\n"
+    "key <AE10> { [ 0, parenright ] };\n"
+    "key <AE11> { [ minus, underscore ] };\n"
+    "key <AE12> { [ equal, plus ] };\n"
+    "key <BKSP> { [ BackSpace, BackSpace ] };\n"
+    "key <TAB> { [ Tab, ISO_Left_Tab ] };\n"
+    "key <AD01> { [ q, Q ] }; key <AD02> { [ w, W ] }; key <AD03> { [ e, E ] };\n"
+    "key <AD04> { [ r, R ] }; key <AD05> { [ t, T ] }; key <AD06> { [ y, Y ] };\n"
+    "key <AD07> { [ u, U ] }; key <AD08> { [ i, I ] }; key <AD09> { [ o, O ] };\n"
+    "key <AD10> { [ p, P ] };\n"
+    "key <AD11> { [ bracketleft, braceleft ] };\n"
+    "key <AD12> { [ bracketright, braceright ] };\n"
+    "key <RTRN> { [ Return ] };\n"
+    "key <LCTL> { [ Control_L ] };\n"
+    "key <AC01> { [ a, A ] }; key <AC02> { [ s, S ] }; key <AC03> { [ d, D ] };\n"
+    "key <AC04> { [ f, F ] }; key <AC05> { [ g, G ] }; key <AC06> { [ h, H ] };\n"
+    "key <AC07> { [ j, J ] }; key <AC08> { [ k, K ] }; key <AC09> { [ l, L ] };\n"
+    "key <AC10> { [ semicolon, colon ] };\n"
+    "key <AC11> { [ apostrophe, quotedbl ] };\n"
+    "key <TLDE> { [ grave, asciitilde ] };\n"
+    "key <LFSH> { [ Shift_L ] };\n"
+    "key <BKSL> { [ backslash, bar ] };\n"
+    "key <AB01> { [ z, Z ] }; key <AB02> { [ x, X ] }; key <AB03> { [ c, C ] };\n"
+    "key <AB04> { [ v, V ] }; key <AB05> { [ b, B ] }; key <AB06> { [ n, N ] };\n"
+    "key <AB07> { [ m, M ] };\n"
+    "key <AB08> { [ comma, less ] };\n"
+    "key <AB09> { [ period, greater ] };\n"
+    "key <AB10> { [ slash, question ] };\n"
+    "key <RTSH> { [ Shift_R ] };\n"
+    "key <KPMU> { [ KP_Multiply ] };\n"
+    "key <LALT> { [ Alt_L, Meta_L ] };\n"
+    "key <SPCE> { [ space ] };\n"
+    "key <CAPS> { [ Caps_Lock ] };\n"
+    "key <FK01> { type = \"CTRL+ALT\", [ F1, F1, F1, F1, XF86Switch_VT_1 ] };\n"
+    "key <FK02> { type = \"CTRL+ALT\", [ F2, F2, F2, F2, XF86Switch_VT_2 ] };\n"
+    "key <FK03> { type = \"CTRL+ALT\", [ F3, F3, F3, F3, XF86Switch_VT_3 ] };\n"
+    "key <FK04> { type = \"CTRL+ALT\", [ F4, F4, F4, F4, XF86Switch_VT_4 ] };\n"
+    "key <FK05> { type = \"CTRL+ALT\", [ F5, F5, F5, F5, XF86Switch_VT_5 ] };\n"
+    "key <FK06> { type = \"CTRL+ALT\", [ F6, F6, F6, F6, XF86Switch_VT_6 ] };\n"
+    "key <FK07> { type = \"CTRL+ALT\", [ F7, F7, F7, F7, XF86Switch_VT_7 ] };\n"
+    "key <FK08> { type = \"CTRL+ALT\", [ F8, F8, F8, F8, XF86Switch_VT_8 ] };\n"
+    "key <FK09> { type = \"CTRL+ALT\", [ F9, F9, F9, F9, XF86Switch_VT_9 ] };\n"
+    "key <FK10> { type = \"CTRL+ALT\", [ F10, F10, F10, F10, XF86Switch_VT_10 ] };\n"
+    "key <FK11> { type = \"CTRL+ALT\", [ F11, F11, F11, F11, XF86Switch_VT_11 ] };\n"
+    "key <FK12> { type = \"CTRL+ALT\", [ F12, F12, F12, F12, XF86Switch_VT_12 ] };\n"
+    "key <NMLK> { [ Num_Lock ] };\n"
+    "key <SCLK> { [ Scroll_Lock ] };\n"
+    "key <KP7> { [ KP_Home, KP_7 ] }; key <KP8> { [ KP_Up, KP_8 ] };\n"
+    "key <KP9> { [ KP_Prior, KP_9 ] }; key <KPSU> { [ KP_Subtract ] };\n"
+    "key <KP4> { [ KP_Left, KP_4 ] }; key <KP5> { [ KP_Begin, KP_5 ] };\n"
+    "key <KP6> { [ KP_Right, KP_6 ] }; key <KPAD> { [ KP_Add ] };\n"
+    "key <KP1> { [ KP_End, KP_1 ] }; key <KP2> { [ KP_Down, KP_2 ] };\n"
+    "key <KP3> { [ KP_Next, KP_3 ] }; key <KP0> { [ KP_Insert, KP_0 ] };\n"
+    "key <KPDL> { [ KP_Delete, KP_Decimal ] };\n"
+    "key <LVL3> { [ ISO_Level3_Shift ] };\n"
+    "key <LSGT> { [ less, greater ] };\n"
+    "key <KPEN> { [ KP_Enter ] };\n"
+    "key <RCTL> { [ Control_R ] };\n"
+    "key <KPDV> { [ KP_Divide ] };\n"
+    "key <PRSC> { type = \"PC_ALT_LEVEL2\", [ Print, Sys_Req ] };\n"
+    "key <RALT> { [ Alt_R, Meta_R ] };\n"
+    "key <HOME> { [ Home ] }; key <UP> { [ Up ] }; key <PGUP> { [ Prior ] };\n"
+    "key <LEFT> { [ Left ] }; key <RGHT> { [ Right ] }; key <END> { [ End ] };\n"
+    "key <DOWN> { [ Down ] }; key <PGDN> { [ Next ] }; key <INS> { [ Insert ] };\n"
+    "key <DELE> { [ Delete ] };\n"
+    "key <MUTE> { [ XF86AudioMute ] }; key <VOL-> { [ XF86AudioLowerVolume ] };\n"
+    "key <VOL+> { [ XF86AudioRaiseVolume ] }; key <POWR> { [ XF86PowerOff ] };\n"
+    "key <KPEQ> { [ KP_Equal ] };\n"
+    "key <PAUS> { type = \"PC_CONTROL_LEVEL2\", [ Pause, Break ] };\n"
+    "key <LWIN> { [ Super_L ] }; key <RWIN> { [ Super_R ] }; key <COMP> { [ Menu ] };\n"
+    "key <LVL5> { [ ISO_Level5_Shift ] };\n"
+    "key <ALT> { [ NoSymbol, Alt_L ] }; key <META> { [ NoSymbol, Meta_L ] };\n"
+    "key <SUPR> { [ NoSymbol, Super_L ] }; key <HYPR> { [ NoSymbol, Hyper_L ] };\n"
+    "modifier_map Shift { <LFSH>, <RTSH> };\n"
+    "modifier_map Lock { <CAPS> };\n"
+    "modifier_map Control { <LCTL>, <RCTL> };\n"
+    "modifier_map Mod1 { <LALT>, <RALT>, <ALT>, <META> };\n"
+    "modifier_map Mod2 { <NMLK> };\n"
+    "modifier_map Mod3 { <LVL5> };\n"
+    "modifier_map Mod4 { <LWIN>, <RWIN>, <SUPR> };\n"
+    "modifier_map Mod5 { <LVL3> };\n";
+
+struct txkb_keymap *txkb_compile_builtin_us(void) {
+    struct txkb_keymap *km = keymap_alloc();
+    if (!km) return NULL;
+    struct compile_ctx cc = { .km = km, .from_kccgst = true };
+
+    km->keycodes_section_name = cstrdup("evdev");
+    km->types_section_name = cstrdup("complete");
+    km->compat_section_name = cstrdup("complete");
+    km->symbols_section_name = cstrdup("pc+us");
+
+    struct lexer lx_kc = { .src = builtin_us_keycodes, .len = sizeof(builtin_us_keycodes) - 1 };
+    compile_keycodes_body(&cc, &lx_kc, TXKB_MERGE_OVERRIDE);
+    token_clear(&lx_kc.cur);
+
+    struct lexer lx_ty = { .src = builtin_us_types, .len = sizeof(builtin_us_types) - 1 };
+    compile_types_body(&cc, &lx_ty, TXKB_MERGE_OVERRIDE);
+    token_clear(&lx_ty.cur);
+
+    struct lexer lx_co = { .src = builtin_us_compat, .len = sizeof(builtin_us_compat) - 1 };
+    compile_compat_body(&cc, &lx_co, TXKB_MERGE_OVERRIDE);
+    token_clear(&lx_co.cur);
+
+    struct sym_scope root_syms;
+    sym_scope_init(&root_syms, 0);
+    struct lexer lx_sy = { .src = builtin_us_symbols, .len = sizeof(builtin_us_symbols) - 1 };
+    compile_symbols_body(&cc, &root_syms, &lx_sy);
+    token_clear(&lx_sy.cur);
+    apply_sym_scope_to_keymap(&cc, &root_syms);
+    sym_scope_clear(&root_syms);
+
+    finalize_keymap(&cc);
+    free(cc.modmaps);
+    return km;
+}
+
 struct txkb_keymap *txkb_compile_kccgst(const struct txkb_kccgst *kccgst) {
     if (!kccgst || !kccgst->keycodes || !kccgst->types || !kccgst->compat || !kccgst->symbols) {
         return NULL;

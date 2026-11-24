@@ -24,13 +24,17 @@ struct txkb_keymap *txkb_keymap_new_from_names(struct txkb_context *ctx,
     (void)flags;
     if (!ctx) return NULL;
     struct txkb_kccgst k = {0};
-    if (!txkb_rules_resolve(ctx, names, &k)) {
-        txkb_kccgst_free(&k);
-        return NULL;
-    }
-    struct txkb_keymap *km = txkb_compile_kccgst(&k);
+    bool resolved = txkb_rules_resolve(ctx, names, &k);
+    struct txkb_keymap *km = resolved ? txkb_compile_kccgst(&k) : NULL;
     txkb_kccgst_free(&k);
-    return km;
+    if (km) return km;
+    FILE *probe = txkb_open_config_file("symbols", "us", NULL);
+    if (probe) {
+        fclose(probe);
+        if (resolved) return NULL;
+    }
+    fprintf(stderr, "tomoe: XKB data not found; using built-in US evdev keymap\n");
+    return txkb_compile_builtin_us();
 }
 
 struct txkb_keymap *txkb_keymap_ref(struct txkb_keymap *km) {
