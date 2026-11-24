@@ -90,10 +90,10 @@ struct fm_test {
 struct fm_rule {
     int kind;
     char *src;
-    struct fm_test tests[FM_MAX_TESTS];
+    struct fm_test *tests;
     int test_count;
     int edit_mode;
-    char *targets[FM_MAX_TARGETS];
+    char **targets;
     int target_count;
 };
 
@@ -230,6 +230,12 @@ static void fm_add_alias_rule(int kind, const char *src, char *const *targets, i
         return;
     }
     int n = count < FM_MAX_TARGETS ? count : FM_MAX_TARGETS;
+    r->targets = calloc((size_t)n, sizeof(*r->targets));
+    if (!r->targets) {
+        free(r->src);
+        fm_rule_count--;
+        return;
+    }
     for (int i = 0; i < n; i++) {
         if (targets[i] && *targets[i]) {
             char *dup = strdup(targets[i]);
@@ -237,8 +243,12 @@ static void fm_add_alias_rule(int kind, const char *src, char *const *targets, i
         }
     }
     if (r->target_count == 0) {
+        free(r->targets);
         free(r->src);
         fm_rule_count--;
+    } else if (r->target_count < n) {
+        char **shrunk = realloc(r->targets, (size_t)r->target_count * sizeof(*r->targets));
+        if (shrunk) r->targets = shrunk;
     }
 }
 
@@ -691,20 +701,27 @@ static void fm_parse_conf_xml(const char *buf, size_t len, const char *cur_file,
                 } else if (strcmp(tag, "match") == 0 && in_match) {
                     if (match_valid_family && match_test_n > 0 && match_test_n == match_total_tests &&
                         match_has_fam_edit && match_fam_target_n > 0) {
-                        struct fm_rule *r = fm_rule_push();
+                        struct fm_test *tests_mem = calloc((size_t)match_test_n, sizeof(*tests_mem));
+                        char **targets_mem = calloc((size_t)match_fam_target_n, sizeof(*targets_mem));
+                        struct fm_rule *r = (tests_mem && targets_mem) ? fm_rule_push() : NULL;
                         if (r) {
                             r->kind = FM_RULE_MATCH_FAMILY;
                             r->edit_mode = match_fam_edit_mode;
+                            r->tests = tests_mem;
                             for (int i = 0; i < match_test_n; i++) {
                                 r->tests[i] = match_tests[i];
                                 match_tests[i].value = NULL;
                             }
                             r->test_count = match_test_n;
+                            r->targets = targets_mem;
                             for (int i = 0; i < match_fam_target_n; i++) {
                                 r->targets[i] = match_fam_targets[i];
                                 match_fam_targets[i] = NULL;
                             }
                             r->target_count = match_fam_target_n;
+                        } else {
+                            free(tests_mem);
+                            free(targets_mem);
                         }
                     }
                     for (int i = 0; i < match_test_n; i++) free(match_tests[i].value);
@@ -1141,6 +1158,20 @@ void fm_init(FT_Library library)
     free(fm_seen_dirs);
     fm_seen_dirs = NULL;
     fm_seen_dir_count = fm_seen_dir_cap = 0;
+    if (fm_rule_count > 0 && fm_rule_cap > fm_rule_count) {
+        struct fm_rule *shrunk = realloc(fm_rules, (size_t)fm_rule_count * sizeof(*shrunk));
+        if (shrunk) {
+            fm_rules = shrunk;
+            fm_rule_cap = fm_rule_count;
+        }
+    }
+    if (fm_font_count > 0 && fm_font_cap > fm_font_count) {
+        struct fm_font *shrunk = realloc(fm_fonts, (size_t)fm_font_count * sizeof(*shrunk));
+        if (shrunk) {
+            fm_fonts = shrunk;
+            fm_font_cap = fm_font_count;
+        }
+    }
 }
 
 static bool fm_flist_has(char *const *list, int count, const char *val)

@@ -489,6 +489,22 @@ static struct keyboard_profile *keyboard_profile_prepare(struct tomoe *s,
         profile->logical.repeat_changed =
             logical->repeat_info.rate != profile->repeat_rate ||
             logical->repeat_info.delay != profile->repeat_delay;
+        if (profile->logical.reuse_keymap && logical->keymap) {
+            bool all_reuse = true;
+            for (size_t i = 0; i < profile->stage_count; i++) {
+                if (!profile->stages[i].reuse_keymap) {
+                    all_reuse = false;
+                    break;
+                }
+            }
+            if (all_reuse) {
+                struct txkb_keymap *shared = txkb_keymap_ref(logical->keymap);
+                if (shared) {
+                    txkb_keymap_unref(profile->keymap);
+                    profile->keymap = shared;
+                }
+            }
+        }
     }
     return profile;
 
