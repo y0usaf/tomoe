@@ -1,7 +1,7 @@
 #include "gfx.h"
 
 #define BLUR_CHAINS 24
-#define FROST_CHAINS 4
+#define FROST_CHAINS 8
 #define BLUR_RESULTS 64
 #define BLUR_IDLE_NS 1000000000LL
 
@@ -398,20 +398,44 @@ void effects_plan(struct tomoe *s, struct oplist *list) {
     struct effects *e = s->effects;
     if (!e) return;
     e->stamp++;
-    int pinned = 0;
+    int pinned = 0, frost_pinned = 0;
     for (size_t i = 0; i < list->len; i++) {
         struct op *op = &list->ops[i];
-        if (!op->blur || op->hidden) continue;
-        for (size_t c = 0; op->key && c < BLUR_CHAINS; c++)
-            if (e->chains[c].used && e->chains[c].key == op->key) e->chains[c].pinned = e->stamp;
-        struct result *result = result_cached(e, op->key);
-        if (!result) continue;
-        if (result->pinned != e->stamp) {
-            if (pinned == BLUR_RESULTS - 1) continue;
-            result->pinned = e->stamp;
-            pinned++;
+        op->cached = false;
+        if (!op->blur || op->hidden || !op->key) continue;
+        if (op->blur_kind == BLUR_PANEL) {
+            for (size_t c = 0; c < BLUR_CHAINS; c++)
+                if (e->chains[c].used && e->chains[c].key == op->key)
+                    e->chains[c].pinned = e->stamp;
+            struct result *result = result_cached(e, op->key);
+            if (!result) continue;
+            if (result->pinned != e->stamp) {
+                if (pinned == BLUR_RESULTS - 1) continue;
+                result->pinned = e->stamp;
+                pinned++;
+            }
+            if (result->chain) result->chain->pinned = e->stamp;
+            op->cached = true;
+        } else if (op->blur_kind == BLUR_FROST) {
+            for (int j = 0; j < FROST_CHAINS; j++) {
+                struct chain *c = &e->frost[j];
+                if (c->key != op->key || !gfx_level_live(&c->level) ||
+                        c->width != list->bounds.width || c->height != list->bounds.height)
+                    continue;
+                if (c->pinned != e->stamp) {
+                    if (frost_pinned >= FROST_CHAINS - 1) break;
+                    c->pinned = e->stamp;
+                    frost_pinned++;
+                }
+                op->cached = true;
+                break;
+            }
+        } else if (op->blur_kind == BLUR_GLASS) {
+            if (e->glass.key == op->key && gfx_level_live(&e->glass.level)) {
+                e->glass.pinned = e->stamp;
+                op->cached = true;
+            }
         }
-        op->cached = true;
     }
     for (size_t r = 0; r < BLUR_RESULTS; r++) {
         struct result *result = &e->results[r];
@@ -443,12 +467,14 @@ void effects_plan(struct tomoe *s, struct oplist *list) {
     }
     int64_t now = monotonic_ns();
     for (int i = 0; i < FROST_CHAINS; i++) {
-        if (gfx_level_live(&e->frost[i].level) && now - e->frost[i].used > BLUR_IDLE_NS) {
+        if (gfx_level_live(&e->frost[i].level) && e->frost[i].pinned != e->stamp &&
+                now - e->frost[i].used > BLUR_IDLE_NS) {
             chain_release(&e->frost[i]);
             if (e->frost_last == i) e->frost_done = 0;
         }
     }
-    if (gfx_level_live(&e->glass.level) && now - e->glass_used > BLUR_IDLE_NS)
+    if (gfx_level_live(&e->glass.level) && e->glass.pinned != e->stamp &&
+            now - e->glass_used > BLUR_IDLE_NS)
         chain_release(&e->glass);
     if (e->scratch_used && now - e->scratch_used > BLUR_IDLE_NS) {
         for (size_t i = 0; i < sizeof(e->scratch) / sizeof(e->scratch[0]); i++)
@@ -640,9 +666,14 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
     double seed[] = { grown.x, grown.y, grown.width, grown.height, passes, offset, f->transform,
         f->width, f->height, f->x, f->y, st->blur_noise, st->blur_vibrancy };
     struct blur_grid grid = { grown, passes, offset };
+    size_t before = pass_record_count(f->pass);
     if (pass_record_blur(f->pass, covered, reach, footprint, &grid, params,
             sizeof(params) / sizeof(params[0]), blur, seed,
-            planes_cross(f, grown) ? 0 : sizeof(seed) / sizeof(seed[0]))) return;
+            planes_cross(f, grown) ? 0 : sizeof(seed) / sizeof(seed[0]))) {
+        struct op *op = pass_recorded(f->pass, before);
+        if (op) op->blur_kind = BLUR_PANEL;
+        return;
+    }
     struct op_clip clip;
     if (!op_begin(f->pass, OP_BLUR, covered, &clip)) return;
     if (box_empty(&footprint) || !pass_touches(f->pass, footprint)) {
@@ -849,7 +880,12 @@ static struct gfx_level *frost_prepare(struct frame *f, struct fbox area,
         }
     }
     for (int i = 0; i < FROST_CHAINS; i++) {
+        if (e->frost[i].pinned == e->stamp) continue;
         if (slot < 0 || e->frost[i].used < e->frost[slot].used) slot = i;
+    }
+    if (slot < 0) {
+        for (int i = 0; i < FROST_CHAINS; i++)
+            if (slot < 0 || e->frost[i].used < e->frost[slot].used) slot = i;
     }
     struct chain *c = &e->frost[slot];
     int passes = st->blur_passes > 1 ? st->blur_passes - 1 : 1;
@@ -908,10 +944,12 @@ void effect_shader(struct frame *f, struct gfx_prog *p, struct fbox area, double
     if (window_count > SHADER_WINDOWS) window_count = SHADER_WINDOWS;
     bool selection = inputs && inputs->selection && gfx_prog_reads(p, GFX_IN_SELECTION);
     bool marks = inputs && inputs->marks && inputs->marks_box && gfx_prog_reads(p, GFX_IN_MARKS);
-    double params[15 + 4 * POINTER_TRAIL + SHADER_DATA + 4 * SHADER_WINDOWS + 16 + 5];
+    double eff_time = gfx_prog_reads(p, GFX_IN_TIME) ? time : 0;
+    double eff_frame = gfx_prog_reads(p, GFX_IN_FRAME) ? (double)frame : 0;
+    double params[16 + 4 * POINTER_TRAIL + SHADER_DATA + 4 * SHADER_WINDOWS + 16 + 5];
     float trail[4 * POINTER_TRAIL];
-    double fields[] = { 7, box.x, box.y, box.width, box.height, (double)(uintptr_t)p, time,
-        mouse_x, mouse_y, count, window_count, drawn.x, drawn.y, drawn.width, drawn.height };
+    double fields[] = { 7, box.x, box.y, box.width, box.height, (double)(uintptr_t)p, eff_time,
+        eff_frame, mouse_x, mouse_y, count, window_count, drawn.x, drawn.y, drawn.width, drawn.height };
     memcpy(params, fields, sizeof(fields));
     size_t used = sizeof(fields) / sizeof(fields[0]);
     if (count) {
@@ -960,15 +998,32 @@ void effect_shader(struct frame *f, struct gfx_prog *p, struct fbox area, double
         struct box reach = { covered.x - r, covered.y - r, covered.width + 2 * r,
             covered.height + 2 * r };
         const struct settings *st = &f->server->settings;
-        double seed[] = { reach.x, reach.y, reach.width, reach.height, f->transform,
-            f->width, f->height, f->x, f->y,
+        double seed[13 + 4 * BLUR_SAMPLES] = { reach.x, reach.y, reach.width, reach.height,
+            f->transform, f->width, f->height, f->x, f->y,
             frosted ? st->blur_passes : 0, frosted ? st->blur_offset : 0,
             frosted ? st->blur_noise : 0, frosted ? st->blur_vibrancy : 0 };
+        size_t seeds = 13;
+        if (frosted && inputs && inputs->frost_ring) {
+            int rn = 0;
+            const struct rect *rr = region_rectangles(inputs->frost_ring, &rn);
+            if (rn > BLUR_SAMPLES) {
+                rr = region_extents(inputs->frost_ring);
+                rn = 1;
+            }
+            for (int ri = 0; ri < rn; ri++) {
+                seed[seeds++] = rr[ri].x1;
+                seed[seeds++] = rr[ri].y1;
+                seed[seeds++] = rr[ri].x2;
+                seed[seeds++] = rr[ri].y2;
+            }
+        }
         if (pass_record_blur(f->pass, covered, reach, (struct box){0}, NULL, params, used,
-                ++f->blurs,
-                seed, planes_cross(f, reach) ? 0 : sizeof(seed) / sizeof(seed[0]))) {
+                ++f->blurs, seed, planes_cross(f, reach) ? 0 : seeds)) {
             struct op *op = pass_recorded(f->pass, before);
-            if (op && inputs) op->ui = inputs->ui;
+            if (op) {
+                op->blur_kind = beneath ? BLUR_BENEATH : BLUR_FROST;
+                if (inputs) op->ui = inputs->ui;
+            }
             if (marks) shader_marks_op(f, op, covered, inputs);
             return;
         }
@@ -1016,9 +1071,14 @@ bool effect_glass(struct frame *f, struct gfx_prog *p, struct texture *map, stru
         (double)map->serial };
     double seed[] = { reach.x, reach.y, reach.width, reach.height, f->transform, f->width,
         f->height, f->x, f->y };
+    size_t before = pass_record_count(f->pass);
     if (pass_record_blur(f->pass, covered, reach, (struct box){0}, NULL, params,
             sizeof(params) / sizeof(params[0]), ++f->blurs, seed,
-            sizeof(seed) / sizeof(seed[0]))) return true;
+            sizeof(seed) / sizeof(seed[0]))) {
+        struct op *op = pass_recorded(f->pass, before);
+        if (op) op->blur_kind = BLUR_GLASS;
+        return true;
+    }
     struct op_clip clip;
     if (!op_begin(f->pass, OP_GLASS, covered, &clip)) return true;
     uint64_t gkey = clip.op ? clip.op->key : 0;

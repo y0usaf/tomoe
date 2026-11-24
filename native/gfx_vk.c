@@ -4346,7 +4346,9 @@ static bool spirv_scan(const uint32_t *code, size_t words, uint32_t *reads) {
                     case TOMOE_VK_WINDOW_COUNT: case TOMOE_VK_WINDOWS: *reads |= 1u << GFX_IN_WINDOWS; break;
                     case TOMOE_VK_DATA: *reads |= 1u << GFX_IN_DATA; break;
                     case TOMOE_VK_SELECTION: *reads |= 1u << GFX_IN_SELECTION; break;
-                    case TOMOE_VK_RESOLUTION: case TOMOE_VK_TIME: case TOMOE_VK_FRAME: break;
+                    case TOMOE_VK_TIME: *reads |= 1u << GFX_IN_TIME; break;
+                    case TOMOE_VK_FRAME: *reads |= 1u << GFX_IN_FRAME; break;
+                    case TOMOE_VK_RESOLUTION: break;
                     default: *reads |= ~0u; break;
                     }
                 }

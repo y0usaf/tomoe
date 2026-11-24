@@ -711,8 +711,8 @@ static void backdrop_region(const struct oplist *list, const struct op *op, stru
 }
 
 static bool backdrop_moved(const struct oplist *old, const struct oplist *now,
-        const size_t *match, size_t i) {
-    const struct op *op = &now->ops[i], *was = &old->ops[match[i]];
+        const size_t *match, size_t i, size_t prev) {
+    const struct op *op = &now->ops[i], *was = &old->ops[prev];
     if (!was->key || was->hidden || op->backdrop != was->backdrop) return true;
     struct region exposed, changed;
     backdrop_region(now, op, &exposed);
@@ -838,9 +838,25 @@ bool oplist_damage(struct oplist *old, struct oplist *now, struct region *out) {
         struct op *op = &now->ops[i];
         if (op->blur && op->backdrop) {
             static uint64_t generation;
-            bool kept = !op->hidden && match[i] != SIZE_MAX && !backdrop_moved(old, now, match, i) &&
-                (!op->grid.passes || region_same(&op->visible, &old->ops[match[i]].visible));
-            op->key = op->hidden ? 0 : (kept ? old->ops[match[i]].key : ++generation);
+            size_t prev = match[i];
+            if (prev == SIZE_MAX && !op->hidden) {
+                for (size_t j = 0; j < old->len; j++) {
+                    const struct op *cand = &old->ops[j];
+                    if (!cand->blur || !cand->key || cand->hidden ||
+                            cand->backdrop != op->backdrop ||
+                            cand->blur_kind != op->blur_kind ||
+                            !box_equal(&cand->reach, &op->reach))
+                        continue;
+                    if (op->grid.passes && !region_same(&op->visible, &cand->visible))
+                        continue;
+                    prev = j;
+                    break;
+                }
+            }
+            bool kept = !op->hidden && prev != SIZE_MAX &&
+                !backdrop_moved(old, now, match, i, prev) &&
+                (!op->grid.passes || region_same(&op->visible, &old->ops[prev].visible));
+            op->key = op->hidden ? 0 : (kept ? old->ops[prev].key : ++generation);
         }
         if (match[i] == SIZE_MAX) region_union(out, out, &op->visible);
         else if (op->key != old->ops[match[i]].key || (op->blur && !op->key))

@@ -1697,12 +1697,20 @@ static bool shader_settled(const struct ui_surface *surface, double now) {
         now - surface->shader_clock >= surface->shader_until;
 }
 
+static bool shader_animates(const struct tomoe *s, struct gfx_prog *shader) {
+    if (!shader) return false;
+    if (gfx_prog_reads(shader, GFX_IN_TIME) || gfx_prog_reads(shader, GFX_IN_FRAME))
+        return true;
+    return gfx_prog_reads(shader, GFX_IN_TRAIL) && s->pointer_trail_count > 0;
+}
+
 static bool background_moving(struct tomoe *s, const struct ui_surface *surface, double now) {
     if (!s || !surface || shader_settled(surface, now)) return false;
     if (s->shader_holding && !surface->shader_clocked) return false;
     if (!surface->trail_on) {
         struct ui_asset *shown = shown_backdrop(surface);
-        if (!shown || !ui_asset_shader(shown, NULL)) return false;
+        struct gfx_prog *shader = shown ? ui_asset_shader(shown, NULL) : NULL;
+        if (!shader_animates(s, shader)) return false;
     }
     if (surface->idle <= 0) return true;
     const struct pointer_sample *last = s->pointer_trail_count ?
@@ -1753,7 +1761,7 @@ bool ui_animate_active(struct output *o, double now, bool moved, bool track, boo
                 double clock = surface_clock(s, surface, now);
                 double shift = surface->shader_clocked ? 0 : s->shader_shift;
                 if (surface->shader_clocked) epoch = surface->shader_clock;
-                if (shader && !shader_settled(surface, clock)) {
+                if (shader_animates(s, shader) && !shader_settled(surface, clock)) {
                     double tick = floor((clock - epoch) * surface->fps);
                     schedule_step(o, epoch + (tick + 1) / surface->fps + shift, now);
                 }
@@ -1765,7 +1773,7 @@ bool ui_animate_active(struct output *o, double now, bool moved, bool track, boo
         }
         if (s->shader_lifting && !surface->shader_clocked && !occluded &&
                 !shader_settled(surface, now) && !shader_still(s, surface, now)) {
-            if (surface->trail_on || ui_asset_shader(shown_backdrop(surface), NULL))
+            if (surface->trail_on || shader_animates(s, ui_asset_shader(shown_backdrop(surface), NULL)))
                 lifting_needed = true;
         }
     }

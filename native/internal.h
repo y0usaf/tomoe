@@ -207,6 +207,7 @@ struct op {
     struct blur_grid grid;
     struct region opaque, visible, need;
     int kind, blur;
+    uint8_t blur_kind;
     bool mapped, hidden, cached;
 };
 struct oplist { struct op *ops; size_t len, cap; struct box bounds; uint64_t ui_epoch; bool lost, valid; };
@@ -346,8 +347,9 @@ struct ui_pointer;
 
 struct timeline;
 struct gfx_prog;
+enum blur_kind { BLUR_NONE = 0, BLUR_PANEL, BLUR_FROST, BLUR_GLASS, BLUR_BENEATH };
 enum gfx_input { GFX_IN_BENEATH, GFX_IN_FROST, GFX_IN_MARKS, GFX_IN_SELECTION, GFX_IN_DATA,
-    GFX_IN_WINDOWS, GFX_IN_MOUSE, GFX_IN_TRAIL };
+    GFX_IN_WINDOWS, GFX_IN_MOUSE, GFX_IN_TRAIL, GFX_IN_TIME, GFX_IN_FRAME };
 bool gfx_prog_reads(const struct gfx_prog *p, enum gfx_input input);
 struct gfx_level { uint64_t token; int width, height; };
 static inline bool gfx_level_live(const struct gfx_level *level) {
