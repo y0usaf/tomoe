@@ -162,15 +162,7 @@ static int eventfd_read1(int fd) {
 
 
 static void port_clear(struct pwn_client *c, unsigned port_id) {
-    for (size_t i = 0; i < c->wire.n_maps;) {
-        if (c->wire.maps[i].keep || c->wire.maps[i].owner != (int)port_id) {
-            i++;
-            continue;
-        }
-        munmap(c->wire.maps[i].ptr, c->wire.maps[i].len);
-        c->wire.maps[i] = c->wire.maps[c->wire.n_maps - 1];
-        c->wire.n_maps--;
-    }
+    pww_unmap_owner(&c->wire, (int)port_id);
     c->ports[port_id].n_slots = 0;
     c->ports[port_id].n_free = 0;
 }
@@ -717,7 +709,7 @@ static uint32_t mix(struct pwn_client *c) {
     for (unsigned i = 0; i < 2; i++) {
         struct pwn_port *port = &c->ports[i];
         if (!port->io || port->n_slots == 0) continue;
-        if (port->io->buffer_id < port->n_slots)
+        if (port->io->buffer_id < port->n_slots && port->n_free < port->n_slots)
             port->free_list[port->n_free++] = port->io->buffer_id;
         if (port->n_free == 0) {
             port->io->buffer_id = SPA_ID_INVALID;
@@ -823,10 +815,16 @@ static int handle_transport(struct pwn_client *c, struct pww_parse *p) {
     if (pww_parse_int(p, &mem_id) || pww_parse_int(p, &offset) || pww_parse_int(p, &size)) return -EPROTO;
     if (ridx < 0 || ridx >= (int64_t)c->wire.n_fds) return -EPROTO;
     if (widx < 0 || widx >= (int64_t)c->wire.n_fds) return -EPROTO;
+    if (ridx == widx || c->wire.fds[ridx] < 0 || c->wire.fds[widx] < 0) return -EPROTO;
+    if (c->process_fd >= 0) close(c->process_fd);
+    if (c->complete_fd >= 0) close(c->complete_fd);
     c->process_fd = c->wire.fds[ridx];
     c->wire.fds[ridx] = -1;
     c->complete_fd = c->wire.fds[widx];
     c->wire.fds[widx] = -1;
+    pww_unmap(&c->wire, c->activation);
+    c->activation = NULL;
+    c->activation_size = 0;
     void *activation = NULL;
     size_t activation_size = 0;
     if (mem_id != SPA_ID_INVALID) {
@@ -845,21 +843,23 @@ static int handle_set_io(struct pwn_client *c, struct pww_parse *p) {
     uint32_t id, memid, offset, size;
     if (pww_parse_id(p, &id) || pww_parse_int(p, &memid) || pww_parse_int(p, &offset) ||
         pww_parse_int(p, &size)) return -EPROTO;
+    void **slot = NULL;
+    if (id == SPA_IO_POSITION) slot = &c->position;
+    else if (id == SPA_IO_CLOCK) slot = &c->clock;
+    else return 0;
+    pww_unmap(&c->wire, *slot);
+    *slot = NULL;
     void *ptr = NULL;
     if (memid != SPA_ID_INVALID) {
         int res = pww_map_mem(&c->wire, memid, offset, size, 1, -1, &ptr, NULL);
         if (res < 0) return res;
     }
-    if (id == SPA_IO_POSITION) {
-        c->position = ptr;
-        if (ptr && c->activation && c->activation_size >= 552) {
-            uint32_t clock_id;
-            memcpy(&clock_id, (uint8_t *)ptr + 4, 4);
-            __atomic_store_n((uint32_t *)((uint8_t *)c->activation + 548), clock_id,
-                    __ATOMIC_RELEASE);
-        }
-    } else if (id == SPA_IO_CLOCK) {
-        c->clock = ptr;
+    *slot = ptr;
+    if (id == SPA_IO_POSITION && ptr && c->activation && c->activation_size >= 552) {
+        uint32_t clock_id;
+        memcpy(&clock_id, (uint8_t *)ptr + 4, 4);
+        __atomic_store_n((uint32_t *)((uint8_t *)c->activation + 548), clock_id,
+                __ATOMIC_RELEASE);
     }
     return 0;
 }
@@ -869,23 +869,39 @@ static int handle_set_activation(struct pwn_client *c, struct pww_parse *p) {
     int64_t idx;
     if (pww_parse_int(p, &node_id) || pww_parse_fd(p, &idx) || pww_parse_int(p, &memid) ||
         pww_parse_int(p, &offset) || pww_parse_int(p, &size)) return -EPROTO;
-    struct pwn_target *t = NULL;
+    size_t ti = c->n_targets;
     for (size_t i = 0; i < c->n_targets; i++)
-        if (c->targets[i].id == node_id) t = &c->targets[i];
+        if (c->targets[i].id == node_id) {
+            ti = i;
+            break;
+        }
     if (memid == SPA_ID_INVALID) {
-        if (t) {
-            t->active = 0;
-            t->activation = NULL;
-            t->fd = -1;
+        if (ti < c->n_targets) {
+            struct pwn_target *t = &c->targets[ti];
+            pww_unmap(&c->wire, t->activation);
+            if (t->fd >= 0) close(t->fd);
+            c->targets[ti] = c->targets[--c->n_targets];
         }
         return 0;
     }
-    if (idx < 0 || idx >= (int64_t)c->wire.n_fds) return -EPROTO;
-    if (!t) {
+    if (idx < 0 || idx >= (int64_t)c->wire.n_fds || c->wire.fds[idx] < 0) return -EPROTO;
+    struct pwn_target *t;
+    if (ti == c->n_targets) {
         if (c->n_targets >= PWN_MAX_TARGETS) return -ENOSPC;
         t = &c->targets[c->n_targets++];
         memset(t, 0, sizeof(*t));
         t->id = node_id;
+        t->fd = -1;
+    } else {
+        t = &c->targets[ti];
+        pww_unmap(&c->wire, t->activation);
+        t->activation = NULL;
+        t->size = 0;
+        if (t->fd >= 0) {
+            close(t->fd);
+            t->fd = -1;
+        }
+        t->active = 0;
     }
     void *ptr = NULL;
     size_t mapped = 0;
@@ -962,7 +978,7 @@ static int handle_command(struct pwn_client *c, struct pww_parse *p) {
         if (c->activation && c->activation_size >= PW_ACT_MINIMUM)
             __atomic_store_n((uint32_t *)((uint8_t *)c->activation + PW_ACT_STATUS),
                     PW_NODE_ACTIVATION_FINISHED, __ATOMIC_RELEASE);
-        if (c->paused) {
+        if (!c->streaming) {
             c->paused = 0;
             c->streaming = 1;
             report(c, PWN_STREAMING, 0);
@@ -1051,10 +1067,12 @@ static int handle_core_event(struct pwn_client *c, uint32_t opcode, struct pww_p
         int64_t idx;
         if (pww_parse_int(p, &id) || pww_parse_id(p, &type) || pww_parse_fd(p, &idx) ||
             pww_parse_int(p, &flags)) return -EPROTO;
-        if (idx < 0 || idx >= (int64_t)c->wire.n_fds) return -EPROTO;
+        if (idx < 0 || idx >= (int64_t)c->wire.n_fds || c->wire.fds[idx] < 0) return -EPROTO;
         int fd = c->wire.fds[idx];
         c->wire.fds[idx] = -1;
-        return pww_mem_add(&c->wire, id, fd);
+        int res = pww_mem_add(&c->wire, id, fd);
+        if (res < 0) close(fd);
+        return res;
     }
     case PW_CORE_EVENT_REMOVE_MEM: {
         uint32_t id;
@@ -1099,13 +1117,21 @@ static int handle_node_event(struct pwn_client *c, uint32_t opcode, struct pww_p
             pww_parse_int(p, &size)) return -EPROTO;
         (void)mix_id;
         if (direction != SPA_DIRECTION_OUTPUT || port_id >= 2) return 0;
+        if (id != SPA_IO_BUFFERS && id != SPA_IO_RATEMATCH) return 0;
+        if (id == SPA_IO_BUFFERS) {
+            pww_unmap(&c->wire, c->ports[port_id].io);
+            c->ports[port_id].io = NULL;
+        } else {
+            pww_unmap(&c->wire, c->ports[port_id].ratematch);
+            c->ports[port_id].ratematch = NULL;
+        }
         void *ptr = NULL;
         if (memid != SPA_ID_INVALID) {
             int res = pww_map_mem(&c->wire, memid, offset, size, 1, -1, &ptr, NULL);
             if (res < 0) return res;
         }
         if (id == SPA_IO_BUFFERS) c->ports[port_id].io = ptr;
-        else if (id == SPA_IO_RATEMATCH) c->ports[port_id].ratematch = ptr;
+        else c->ports[port_id].ratematch = ptr;
         return 0;
     }
     case PW_CLIENT_NODE_EVENT_SET_PARAM:
@@ -1152,9 +1178,12 @@ static void client_reset(struct pwn_client *c) {
     c->n_soft_volumes = 0;
     c->have_soft_volume = 0;
     c->gain[0] = c->gain[1] = 1.0f;
+    for (size_t i = 0; i < c->n_targets; i++)
+        if (c->targets[i].fd >= 0) close(c->targets[i].fd);
     memset(c->targets, 0, sizeof(c->targets));
     c->n_targets = 0;
     c->bound = 0;
+    c->active_sent = 0;
     c->paused = 0;
     c->streaming = 0;
     c->faulted = 0;
@@ -1221,7 +1250,7 @@ static void *client_thread(void *arg) {
         if (res < 0) {
             report(c, PWN_RETRYING, res);
             struct pollfd p = { .fd = c->wake, .events = POLLIN };
-            poll(&p, 1, 1000);
+            if (poll(&p, 1, 1000) > 0 && (p.revents & POLLIN)) eventfd_read1(c->wake);
             client_reset(c);
             continue;
         }
@@ -1254,14 +1283,14 @@ static void *client_thread(void *arg) {
                 process_cycle(c);
             }
             if (c->ops.active) {
-                int want = c->ops.active(c->data) ? 1 : 0;
+                int want = c->streaming ? (c->ops.active(c->data) ? 1 : 0) : 1;
                 if (want != c->active_sent && (res = send_set_active(c, want)) < 0) break;
             }
         }
         if (!c->quit) {
             if (!c->faulted) report(c, PWN_RETRYING, res);
             struct pollfd p = { .fd = c->wake, .events = POLLIN };
-            poll(&p, 1, 1000);
+            if (poll(&p, 1, 1000) > 0 && (p.revents & POLLIN)) eventfd_read1(c->wake);
         }
         client_reset(c);
     }

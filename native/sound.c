@@ -188,14 +188,19 @@ static void sound_report(struct sound *sound, int state, int error) {
 static void sound_changed(void *data, int state, int error) {
     struct sound *sound = data;
     if (state == PWN_STREAMING) {
+        sound->silent = 0;
+        atomic_store(&sound->parked, false);
         atomic_store(&sound->error, 0);
         atomic_store(&sound->state, SOUND_STREAMING);
         sound->reported = false;
     } else if (state == PWN_RETRYING) {
+        atomic_store(&sound->parked, false);
         sound_report(sound, SOUND_RETRYING, error);
     } else if (state == PWN_FAILED) {
+        atomic_store(&sound->parked, false);
         sound_report(sound, SOUND_FAILED, error);
     } else {
+        atomic_store(&sound->parked, false);
         atomic_store(&sound->state, SOUND_CONNECTING);
     }
 }
@@ -294,9 +299,9 @@ static struct sound *sound_start(struct tomoe *s) {
     if (!sound) return NULL;
     double seconds = s->settings.sound_pause_after;
     atomic_store(&sound->pause_frames, seconds > 0 ? (uint32_t)lround(seconds * SOUND_RATE) : 0);
+    atomic_store(&sound->state, SOUND_CONNECTING);
     sound->client = pwn_start("tomoe", "tomoe", SOUND_RATE, 2, &ops, sound);
     if (!sound->client) sound_report(sound, SOUND_FAILED, -ENOMEM);
-    else atomic_store(&sound->state, SOUND_CONNECTING);
     return s->sound = sound;
 }
 
@@ -334,9 +339,15 @@ void sound_publish(struct tomoe *s, struct presentation *plan) {
 
 void sound_play(struct tomoe *s, enum sound_event event) {
     struct sound *sound = s->sound;
-    if (!sound || s->stopping || !sound->bank || atomic_load(&sound->state) != SOUND_STREAMING) return;
+    if (!sound || s->stopping || !sound->bank) return;
     const struct sound_cue *cue = &sound->bank->cues[event];
     if (!cue->count) return;
+    int state = atomic_load(&sound->state);
+    if (state != SOUND_STREAMING) {
+        if ((state == SOUND_CONNECTING || state == SOUND_RETRYING) && sound->client)
+            pwn_wake(sound->client);
+        return;
+    }
     uint32_t head = atomic_load_explicit(&sound->head, memory_order_relaxed);
     if (head - atomic_load_explicit(&sound->tail, memory_order_acquire) >= SOUND_TRIGGERS) {
         atomic_fetch_add(&sound->dropped, 1);

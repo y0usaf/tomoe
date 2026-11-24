@@ -237,6 +237,7 @@ struct pww_mem {
 
 struct pww_map {
     void *ptr;
+    size_t delta;
     size_t len;
     int keep;
     int owner;
@@ -287,6 +288,7 @@ void pww_pod_id(struct pww_build *b, uint32_t v);
 void pww_pod_int(struct pww_build *b, int32_t v);
 void pww_pod_long(struct pww_build *b, int64_t v);
 void pww_pod_fd(struct pww_build *b, int64_t v);
+void pww_unmap(struct pww *w, void *addr);
 void pww_unmap_owner(struct pww *w, int owner);
 void pww_pod_float(struct pww_build *b, float v);
 void pww_pod_array_floats(struct pww_build *b, const float *values, uint32_t n);

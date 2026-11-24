@@ -101,6 +101,17 @@ void pww_pod_fd(struct pww_build *b, int64_t v) {
     pww_pod_end(b, &f, SPA_TYPE_FD);
 }
 
+void pww_unmap(struct pww *w, void *addr) {
+    if (!addr) return;
+    for (size_t i = 0; i < w->n_maps; i++) {
+        if ((uint8_t *)w->maps[i].ptr + w->maps[i].delta != (uint8_t *)addr) continue;
+        munmap(w->maps[i].ptr, w->maps[i].len);
+        w->maps[i] = w->maps[w->n_maps - 1];
+        w->n_maps--;
+        return;
+    }
+}
+
 void pww_unmap_owner(struct pww *w, int owner) {
     for (size_t i = 0; i < w->n_maps;) {
         if (w->maps[i].keep || w->maps[i].owner != owner) {
@@ -376,13 +387,11 @@ void *pww_map_fd(struct pww *w, int fd, uint32_t offset, uint32_t size, int keep
     size_t delta = offset - start;
     size_t len = delta + size;
     len = (len + page - 1) & ~(page - 1);
+    if (w->n_maps >= PWW_MAX_MAPS) return NULL;
     void *ptr = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, (off_t)start);
     if (ptr == MAP_FAILED) return NULL;
-    if (w->n_maps >= PWW_MAX_MAPS) {
-        munmap(ptr, len);
-        return NULL;
-    }
     w->maps[w->n_maps].ptr = ptr;
+    w->maps[w->n_maps].delta = delta;
     w->maps[w->n_maps].len = len;
     w->maps[w->n_maps].keep = keep;
     w->maps[w->n_maps].owner = owner;
@@ -481,7 +490,7 @@ int pww_recv(struct pww *w, pww_dispatch dispatch, void *data) {
         msg.msg_iovlen = 1;
         msg.msg_control = control;
         msg.msg_controllen = sizeof(control);
-        ssize_t n = recvmsg(w->fd, &msg, MSG_DONTWAIT);
+        ssize_t n = recvmsg(w->fd, &msg, MSG_DONTWAIT | MSG_CMSG_CLOEXEC);
         if (n < 0) {
             if (errno == EINTR) continue;
             if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;

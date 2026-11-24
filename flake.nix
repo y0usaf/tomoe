@@ -296,6 +296,9 @@
           fi
           touch $out
         '';
+        sound-pipewire = import ./bench/e2e-sound.nix {
+          inherit pkgs;
+        };
         e2e = import ./bench/e2e.nix {
           inherit pkgs;
           tomoe = package pkgs { };
