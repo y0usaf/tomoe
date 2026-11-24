@@ -15,10 +15,6 @@
 #include <strings.h>
 #include <sys/stat.h>
 
-#ifndef TOMOE_FONT_DIR
-#define TOMOE_FONT_DIR ""
-#endif
-
 #define FM_MAX_FAMILIES 4
 #define FM_MAX_TARGETS 96
 #define FM_MAX_TESTS 4
@@ -1128,7 +1124,6 @@ void fm_init(FT_Library library)
     fm_add_dir("/run/current-system/sw/share/fonts");
     fm_add_dir("/usr/local/share/fonts");
     fm_add_dir("/usr/share/fonts");
-    if (*TOMOE_FONT_DIR) fm_add_dir(TOMOE_FONT_DIR);
 
     fm_add_builtin_rules();
     fm_finalize_render_cfg();

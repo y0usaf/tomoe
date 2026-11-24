@@ -75,7 +75,7 @@ WAYLAND_CLIENT = $(WAYLAND_CORE) build/obj/lib/wayland/client.o
 NATIVE = $(patsubst native/%.c,build/obj/%.o,$(wildcard native/*.c)) $(LIB_OBJECTS) $(NAMES:%=build/obj/%-protocol.o) $(WAYLAND_SERVER) build/obj/lib/wayland/client.o
 CFLAGS_CODE = $(OPT) $(LTO) $(CPU)
 CFLAGS_BASE = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter
-CFLAGS_NATIVE = $(CFLAGS_BASE) -DTOMOE_VERSION='"$(VERSION)"' -DTOMOE_PATH_PREFIX='"$(PATH_PREFIX)"' -DTOMOE_FONT_DIR='"$(FONT_DIR)"' -Ibuild -Inative $(LIB_INCLUDE) $(shell $(PKG_CONFIG) --cflags $(LIBS))
+CFLAGS_NATIVE = $(CFLAGS_BASE) -DTOMOE_VERSION='"$(VERSION)"' -DTOMOE_PATH_PREFIX='"$(PATH_PREFIX)"' -Ibuild -Inative $(LIB_INCLUDE) $(shell $(PKG_CONFIG) --cflags $(LIBS))
 CFLAGS_SUPPORT = $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -DTOMOE_VERSION='"$(VERSION)"' -Ilib/bus/include
 CFLAGS_PORTAL = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild -Ilib/bus/include -Ilib/wayland/include -Ilib/wayland/scanner -Ilib/pipewire/include $(shell $(PKG_CONFIG) --cflags $(PORTAL_LIBS))
 LIB_CFLAGS_bus = $(CFLAGS_SUPPORT)
