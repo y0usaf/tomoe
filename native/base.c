@@ -348,30 +348,35 @@ struct timeline *timeline_ref(struct timeline *timeline) {
 
 void timeline_unref(struct timeline *timeline) {
     if (!timeline || --timeline->refs) return;
+    if (timeline->scratch) drm_syncobj_destroy(timeline->drm_fd, timeline->scratch);
     drm_syncobj_destroy(timeline->drm_fd, timeline->handle);
     free(timeline);
 }
 
+static uint32_t timeline_scratch(struct timeline *timeline) {
+    if (!timeline->scratch && !drm_syncobj_create(timeline->drm_fd, 0, &timeline->scratch))
+        return 0;
+    return timeline->scratch;
+}
+
 int timeline_export_sync_file(struct timeline *timeline, uint64_t point) {
-    uint32_t handle;
+    uint32_t handle = timeline_scratch(timeline);
     int fd = -1;
-    if (!drm_syncobj_create(timeline->drm_fd, 0, &handle)) return -1;
+    if (!handle) return -1;
     if (!drm_syncobj_transfer(timeline->drm_fd, handle, 0, timeline->handle, point, 0) ||
             !drm_syncobj_export_sync_file(timeline->drm_fd, handle, &fd)) {
         tomoe_log(LOG_ERROR, "tomoe: sync file export failed: %s", strerror(errno));
         fd = -1;
     }
-    drm_syncobj_destroy(timeline->drm_fd, handle);
     return fd;
 }
 
 bool timeline_import_sync_file(struct timeline *timeline, uint64_t point, int fd) {
-    uint32_t handle;
-    if (!drm_syncobj_create(timeline->drm_fd, 0, &handle)) return false;
+    uint32_t handle = timeline_scratch(timeline);
+    if (!handle) return false;
     bool ok = drm_syncobj_import_sync_file(timeline->drm_fd, handle, fd) &&
         drm_syncobj_transfer(timeline->drm_fd, timeline->handle, point, handle, 0, 0);
     if (!ok) tomoe_log(LOG_ERROR, "tomoe: sync file import failed: %s", strerror(errno));
-    drm_syncobj_destroy(timeline->drm_fd, handle);
     return ok;
 }
 

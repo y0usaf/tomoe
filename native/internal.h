@@ -120,7 +120,7 @@ void format_set_finish(struct format_set *set);
 
 struct timeline {
     int drm_fd;
-    uint32_t handle;
+    uint32_t handle, scratch;
     size_t refs;
 };
 struct timeline_waiter {

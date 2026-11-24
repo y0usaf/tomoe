@@ -921,7 +921,7 @@ static void finish(struct vk *v) {
 enum { IDLE_SUBMIT_BYTES = 64 << 20 };
 
 static void idle_submit(struct vk *v) {
-    if (v->open && (!v->target || v->open->staged > IDLE_SUBMIT_BYTES)) submit(v, false);
+    if (v->open && v->open->staged > IDLE_SUBMIT_BYTES) submit(v, false);
 }
 
 static VkDescriptorSet descriptor_new(struct vk *v, VkImageView view, VkDescriptorPool *from) {
@@ -1396,7 +1396,8 @@ static bool upload_rects(struct vk_texture *t, const void *data, size_t stride,
         unsigned char *dst = stage_alloc(v, row * rows, &buffer, &offset);
         if (!dst) return false;
         const unsigned char *src = (const unsigned char *)data + (size_t)y * stride + (size_t)x * 4;
-        for (size_t j = 0; j < rows; j++) memcpy(dst + j * row, src + j * stride, row);
+        if (stride == row) memcpy(dst, src, row * rows);
+        else for (size_t j = 0; j < rows; j++) memcpy(dst + j * row, src + j * stride, row);
         VkBufferImageCopy copy = {
             .bufferOffset = offset,
             .bufferRowLength = (uint32_t)(x2 - x),
@@ -1469,15 +1470,21 @@ static struct upload *staging(struct vk *v) {
     return v->staging.chunk ? r->upload : NULL;
 }
 
+static void latch_jobs(struct vk *v, bool ready);
+
 static void reclaim(void *data) {
     struct vk *v = data;
-    if (v->staging.fences) staging_poll(v, false);
+    if (v->base.upload && upload_pending(v->base.upload)) latch_jobs(v, true);
+    if (v->staging.fences) {
+        if (v->open && !v->target && v->staging.serial[0] >= v->open->serial) submit(v, false);
+        staging_poll(v, false);
+    }
 }
 
 static void latch_jobs(struct vk *v, bool ready) {
     struct render *r = &v->base;
     struct upload *u = r->upload;
-    if (!u || (!upload_pending(u) && (ready || !v->staging.unfenced))) return;
+    if (!u || (!upload_pending(u) && (ready || (!v->staging.unfenced && !u->frame_bytes && !u->calm)))) return;
     uint64_t start = timing_enabled ? timing_now() : 0;
     staging_poll(v, false);
     bool used = false;
@@ -3676,6 +3683,7 @@ void gfx_flush(struct render *r) {
 
 void gfx_upload_trim(struct render *r) {
     struct vk *v = V(r);
+    if (v->open && !v->target) submit(v, false);
     level_pool_drain(v);
     if (v->staging.chunk) {
         staging_free(v);

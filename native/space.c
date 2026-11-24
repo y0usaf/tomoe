@@ -861,14 +861,11 @@ static bool render_scene_prepared(struct output *o, struct buffer *buffer,
     region_fini(&changed);
     region_fini(&clip);
     int64_t wait_at = timing_enabled ? timing_now() : 0;
-    if (success && s->settings.wait_frame && signal) {
-        int fd = timeline_export_sync_file(signal, s->render_point);
-        if (fd >= 0) {
-            if (poll(&(struct pollfd){ .fd = fd, .events = POLLIN }, 1, 0) == 0)
-                tomoe_log(LOG_DEBUG, "tomoe: output %s render fence still pending at commit",
-                    output->name);
-            close(fd);
-        }
+    if (log_verbosity >= LOG_DEBUG && success && s->settings.wait_frame && signal) {
+        bool ready = false;
+        if (timeline_check(signal, s->render_point, 0, &ready) && !ready)
+            tomoe_log(LOG_DEBUG, "tomoe: output %s render fence still pending at commit",
+                output->name);
     }
     if (wait_at) timing_add(TIMING_FRAME_WAIT_RENDER, (uint64_t)(timing_now() - wait_at));
     return success;

@@ -341,7 +341,8 @@ bool wl_shm_view_copy(const struct wl_shm_view *view, size_t offset, size_t stri
     atomic_signal_fence(memory_order_seq_cst);
     const char *src = view->data + offset;
     char *out = dst;
-    for (int y = 0; y < rows; y++)
+    if (stride == row) memcpy(out, src, row * (size_t)rows);
+    else for (int y = 0; y < rows; y++)
         memcpy(out + (size_t)y * row, src + (size_t)y * stride, row);
     atomic_signal_fence(memory_order_seq_cst);
     guard.on = false;

@@ -287,18 +287,6 @@ static void result_release(struct result *result) {
     result->width = result->height = 0;
 }
 
-static bool result_ensure(struct result *result, int width, int height) {
-    if (gfx_level_live(&result->level) && !gfx_level_ensure(&result->level, width, height)) {
-        result->width = result->level.width;
-        result->height = result->level.height;
-        return false;
-    }
-    result->allocated = true;
-    result->width = width;
-    result->height = height;
-    return true;
-}
-
 static bool chain_spill(struct chain *chain) {
     struct result *result = chain->result;
     if (!result) return true;
@@ -737,22 +725,20 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
             pass_flush(f->pass);
             bool ok = blur_levels(f, chain, grown, samples, count, passes, offset, 0);
             if (ok) e->blurs++;
-            if (ok && key && (result = result_spare(e, sampled, now)) &&
-                    result_ensure(result, sampled.width, sampled.height)) {
+            if (ok && key && (result = result_spare(e, sampled, now))) {
+                if (gfx_level_live(&result->level)) gfx_level_release(&result->level);
+                result->allocated = true;
+                result->width = sampled.width;
+                result->height = sampled.height;
                 result->area = sampled;
                 result->owner = pass_oplist(f->pass);
                 result->key = key;
                 result->used = now;
                 result->dead = false;
-                if (gfx_level_live(&result->level)) {
-                    gfx_level_blit(&chain->level, &result->level, samples, count, 0, 0,
-                        sampled.x, sampled.y);
-                } else {
-                    memcpy(chain->samples, samples, sizeof(samples[0]) * (size_t)count);
-                    chain->count = count;
-                    result->chain = chain;
-                    chain->result = result;
-                }
+                memcpy(chain->samples, samples, sizeof(samples[0]) * (size_t)count);
+                chain->count = count;
+                result->chain = chain;
+                chain->result = result;
             }
             gfx_state_dirty(f->pass);
             gfx_target_rebind(f->server->renderer, f->buffer);
