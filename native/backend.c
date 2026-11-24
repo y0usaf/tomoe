@@ -72,6 +72,31 @@ static int upload_trim(void *data) {
     return 0;
 }
 
+static int idle_trim_fire(void *data) {
+    struct tomoe *s = data;
+    if (s->idle_activity != s->idle_trim_seen) {
+        s->idle_trim_seen = s->idle_activity;
+        s->idle_trim_armed = wl_event_source_timer_update(s->idle_trim, IDLE_TRIM_MS) == 0;
+        return 0;
+    }
+    s->idle_trim_armed = false;
+    bool settled = !s->renderer || render_idle_trim(s->renderer);
+    ui_trim(s);
+    malloc_trim(0);
+    if (!settled && s->idle_trim)
+        s->idle_trim_armed = wl_event_source_timer_update(s->idle_trim, IDLE_TRIM_MS) == 0;
+    return 0;
+}
+
+void tomoe_note_activity(struct tomoe *s) {
+    if (!s || !s->idle_trim) return;
+    s->idle_activity++;
+    if (!s->idle_trim_armed) {
+        s->idle_trim_seen = s->idle_activity;
+        s->idle_trim_armed = wl_event_source_timer_update(s->idle_trim, IDLE_TRIM_MS) == 0;
+    }
+}
+
 static int upload_ready(int fd, uint32_t mask, void *data) {
     (void)fd;
     (void)mask;
@@ -134,11 +159,14 @@ struct tomoe *tomoe_create(const char *socket_name) {
     s->renderer = render_create(drm_fd);
     if (s->backend == SCREEN_NESTED && drm_fd >= 0) close(drm_fd);
     if (!s->renderer || !effects_create(s) || !buffers_listen(s)) goto failed;
-    if (render_upload_fd(s->renderer) >= 0) {
+    {
         struct wl_event_loop *loop = wl_display_get_event_loop(s->display);
-        s->upload_source = wl_event_loop_add_fd(loop, render_upload_fd(s->renderer),
-            WL_EVENT_READABLE, upload_ready, s);
-        s->upload_trim = wl_event_loop_add_timer(loop, upload_trim, s);
+        s->idle_trim = wl_event_loop_add_timer(loop, idle_trim_fire, s);
+        if (render_upload_fd(s->renderer) >= 0) {
+            s->upload_source = wl_event_loop_add_fd(loop, render_upload_fd(s->renderer),
+                WL_EVENT_READABLE, upload_ready, s);
+            s->upload_trim = wl_event_loop_add_timer(loop, upload_trim, s);
+        }
     }
     if (!capture_listen(s)) goto failed;
     if (!surfaces_listen(s)) goto failed;
@@ -156,6 +184,7 @@ struct tomoe *tomoe_create(const char *socket_name) {
     if (wl_display_add_socket(s->display, socket_name) < 0) goto failed;
     s->running = true;
     if (!backend_start(s) || s->failed) goto failed;
+    tomoe_note_activity(s);
     return s;
 failed:
     tomoe_log(LOG_ERROR, "tomoe: backend startup failed");
@@ -230,7 +259,8 @@ void tomoe_destroy(struct tomoe *s) {
     if (s->render_timeline) timeline_unref(s->render_timeline);
     if (s->upload_source) wl_event_source_remove(s->upload_source);
     if (s->upload_trim) wl_event_source_remove(s->upload_trim);
-    s->upload_source = s->upload_trim = NULL;
+    if (s->idle_trim) wl_event_source_remove(s->idle_trim);
+    s->upload_source = s->upload_trim = s->idle_trim = NULL;
     if (s->renderer) render_destroy(s->renderer);
     if (s->grab_release) wl_event_source_remove(s->grab_release);
     buffers_finish();

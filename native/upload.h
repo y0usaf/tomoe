@@ -7,7 +7,7 @@
 
 enum { UPLOAD_JOBS = 256, UPLOAD_RECTS = 4, UPLOAD_FENCES = 8, UPLOAD_WINDOW = 256 };
 
-#define UPLOAD_MIN_STAGING ((uint64_t)4 << 20)
+#define UPLOAD_MIN_STAGING ((uint64_t)1 << 20)
 #define UPLOAD_MAX_STAGING ((uint64_t)32 << 20)
 
 enum upload_state { UPLOAD_QUEUED, UPLOAD_WORKER, UPLOAD_MAIN, UPLOAD_DONE };

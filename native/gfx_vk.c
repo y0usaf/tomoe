@@ -1,6 +1,7 @@
 #include "gfx.h"
 #include "drm.h"
 #include "upload.h"
+#include <dirent.h>
 #include <fcntl.h>
 #include <linux/dma-buf.h>
 #include <sys/ioctl.h>
@@ -22,13 +23,14 @@
 enum {
     BLENDS = 3,
     TARGET_FORMATS = 8,
-    POOL_SETS = 256,
-    CHUNK_MIN = 4 << 20,
-    SCENE_RESERVE = 4096,
+    POOL_SETS = 64,
+    CHUNK_MIN = 256 << 10,
+    CHUNK_SPARE_MAX = 2,
+    SCENE_RESERVE = 256,
     BATCH_LIMIT = 32,
-    LEVEL_POOL = 24,
+    LEVEL_POOL = 8,
     YUV_FORMATS = 3,
-    YUV_POOL_SETS = 64,
+    YUV_POOL_SETS = 32,
 };
 
 struct vk;
@@ -446,12 +448,19 @@ static void graves_sweep(struct vk *v, bool all) {
 }
 
 static void batch_recycle(struct vk *v, struct batch *b) {
+    size_t spare_count = 0;
+    for (struct chunk *s = v->spare; s; s = s->next) spare_count++;
     while (b->chunks) {
         struct chunk *c = b->chunks;
         b->chunks = c->next;
+        if (c->size > CHUNK_MIN * 2 || spare_count >= CHUNK_SPARE_MAX) {
+            chunk_free(v, c);
+            continue;
+        }
         c->used = 0;
         c->next = v->spare;
         v->spare = c;
+        spare_count++;
     }
     b->acquired_len = 0;
     b->wait_count = 0;
@@ -623,8 +632,8 @@ static void *stage_alloc_in(struct vk *v, VkDeviceSize size, VkDeviceSize align,
             link = &(*link)->next;
         }
         if (!c) {
-            VkDeviceSize want = CHUNK_MIN;
-            while (want < size) want *= 2;
+            VkDeviceSize want = size <= CHUNK_MIN ? CHUNK_MIN :
+                ((size + CHUNK_MIN - 1) / CHUNK_MIN) * CHUNK_MIN;
             c = chunk_new(v, want, VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                 VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
                 VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 0);
@@ -2123,6 +2132,130 @@ static bool device_matches(VkPhysicalDevice phys, dev_t node) {
         (drm.hasPrimary && (dev_t)makedev(drm.primaryMajor, drm.primaryMinor) == node);
 }
 
+static void icd_append_dir(char **out, size_t *len, size_t *cap, const char *base,
+        const char *const *prefixes, size_t prefix_count) {
+    if (!base || !*base) return;
+    char dirpath[PATH_MAX];
+    int n = snprintf(dirpath, sizeof(dirpath), "%s/vulkan/icd.d", base);
+    if (n <= 0 || (size_t)n >= sizeof(dirpath)) return;
+    DIR *dir = opendir(dirpath);
+    if (!dir) return;
+    struct dirent *ent;
+    while ((ent = readdir(dir))) {
+        const char *name = ent->d_name;
+        size_t namelen = strlen(name);
+        if (namelen < 6 || strcmp(name + namelen - 5, ".json") != 0) continue;
+        bool match = false;
+        for (size_t i = 0; i < prefix_count; i++) {
+            size_t plen = strlen(prefixes[i]);
+            if (namelen >= plen && strncmp(name, prefixes[i], plen) == 0) {
+                match = true;
+                break;
+            }
+        }
+        if (!match) continue;
+        char full[PATH_MAX];
+        int fn = snprintf(full, sizeof(full), "%s/%s", dirpath, name);
+        if (fn <= 0 || (size_t)fn >= sizeof(full)) continue;
+        if (*out && strstr(*out, full)) continue;
+        size_t need = *len + (size_t)fn + (*len ? 2 : 1);
+        if (need > *cap) {
+            size_t ncap = *cap ? *cap * 2 : 512;
+            while (ncap < need) ncap *= 2;
+            char *grown = realloc(*out, ncap);
+            if (!grown) break;
+            *out = grown;
+            *cap = ncap;
+        }
+        if (*len) (*out)[(*len)++] = ':';
+        memcpy(*out + *len, full, (size_t)fn + 1);
+        *len += (size_t)fn;
+    }
+    closedir(dir);
+}
+
+static char *find_icd_files(dev_t rdev, bool software) {
+    const char *prefixes[4];
+    size_t count = 0;
+    if (software) {
+        prefixes[count++] = "lvp_icd";
+    } else {
+        char uevent_path[128];
+        snprintf(uevent_path, sizeof(uevent_path), "/sys/dev/char/%u:%u/device/uevent",
+            major(rdev), minor(rdev));
+        FILE *f = fopen(uevent_path, "r");
+        char driver[64] = "";
+        if (f) {
+            char line[256];
+            while (fgets(line, sizeof(line), f)) {
+                if (strncmp(line, "DRIVER=", 7) == 0) {
+                    char *nl = strchr(line + 7, '\n');
+                    if (nl) *nl = '\0';
+                    snprintf(driver, sizeof(driver), "%.63s", line + 7);
+                    break;
+                }
+            }
+            fclose(f);
+        }
+        if (!strcmp(driver, "nvidia")) {
+            prefixes[count++] = "nvidia_icd";
+        } else if (!strcmp(driver, "amdgpu") || !strcmp(driver, "radeon")) {
+            prefixes[count++] = "radeon_icd";
+        } else if (!strcmp(driver, "i915") || !strcmp(driver, "xe")) {
+            prefixes[count++] = "intel_icd";
+            prefixes[count++] = "intel_hasvk_icd";
+        } else if (!strcmp(driver, "nouveau")) {
+            prefixes[count++] = "nouveau_icd";
+        } else if (!strcmp(driver, "virtio-pci") || !strcmp(driver, "virtio_gpu")) {
+            prefixes[count++] = "virtio_icd";
+        } else if (!strcmp(driver, "panfrost")) {
+            prefixes[count++] = "panfrost_icd";
+        } else if (!strcmp(driver, "msm")) {
+            prefixes[count++] = "freedreno_icd";
+        } else if (!strcmp(driver, "v3d")) {
+            prefixes[count++] = "broadcom_icd";
+        }
+    }
+    if (!count) return NULL;
+    char *out = NULL;
+    size_t len = 0, cap = 0;
+    const char *xdg = getenv("XDG_DATA_DIRS");
+    if (xdg && *xdg) {
+        char *copy = strdup(xdg);
+        if (copy) {
+            for (char *tok = copy, *sep; tok; tok = sep) {
+                sep = strchr(tok, ':');
+                if (sep) *sep++ = '\0';
+                icd_append_dir(&out, &len, &cap, tok, prefixes, count);
+            }
+            free(copy);
+        }
+    }
+    if (!len) icd_append_dir(&out, &len, &cap, "/run/opengl-driver/share", prefixes, count);
+    if (!len) icd_append_dir(&out, &len, &cap, "/etc", prefixes, count);
+    if (!len) icd_append_dir(&out, &len, &cap, "/usr/share", prefixes, count);
+    return out;
+}
+
+static bool instance_pick(struct vk *v, const VkInstanceCreateInfo *instance, dev_t rdev) {
+    VkResult result = vkCreateInstance(instance, NULL, &v->instance);
+    if (result != VK_SUCCESS) {
+        v->instance = VK_NULL_HANDLE;
+        return false;
+    }
+    uint32_t count = 0;
+    vkEnumeratePhysicalDevices(v->instance, &count, NULL);
+    VkPhysicalDevice *devices = calloc(count ? count : 1, sizeof(*devices));
+    if (!devices) return false;
+    vkEnumeratePhysicalDevices(v->instance, &count, devices);
+    for (uint32_t i = 0; i < count && !v->phys; i++)
+        if (device_matches(devices[i], rdev)) v->phys = devices[i];
+    for (uint32_t i = 0; i < count && !v->phys && tomoe_test_flag("gfx-software"); i++)
+        if (device_software(devices[i])) v->phys = devices[i];
+    free(devices);
+    return v->phys != VK_NULL_HANDLE;
+}
+
 static bool device_init(struct vk *v) {
     struct stat st;
     if (fstat(v->base.fd, &st) != 0) return false;
@@ -2136,22 +2269,30 @@ static bool device_init(struct vk *v) {
         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
         .pApplicationInfo = &app,
     };
-    VkResult result = vkCreateInstance(&instance, NULL, &v->instance);
-    if (result != VK_SUCCESS) {
-        tomoe_log(LOG_ERROR, "tomoe: vulkan instance creation failed (%d)", (int)result);
-        v->instance = VK_NULL_HANDLE;
+    bool filtered = false;
+    if (!getenv("VK_DRIVER_FILES") && !getenv("VK_ICD_FILENAMES")) {
+        char *icds = find_icd_files(st.st_rdev, tomoe_test_flag("gfx-software"));
+        if (icds && *icds) {
+            setenv("VK_DRIVER_FILES", icds, 1);
+            filtered = true;
+            instance_pick(v, &instance, st.st_rdev);
+            unsetenv("VK_DRIVER_FILES");
+        }
+        free(icds);
+    }
+    if (!v->phys) {
+        if (v->instance) {
+            vkDestroyInstance(v->instance, NULL);
+            v->instance = VK_NULL_HANDLE;
+        }
+        if (filtered || !instance_pick(v, &instance, st.st_rdev)) {
+            if (filtered) instance_pick(v, &instance, st.st_rdev);
+        }
+    }
+    if (!v->instance) {
+        tomoe_log(LOG_ERROR, "tomoe: vulkan instance creation failed");
         return false;
     }
-    uint32_t count = 0;
-    vkEnumeratePhysicalDevices(v->instance, &count, NULL);
-    VkPhysicalDevice *devices = calloc(count ? count : 1, sizeof(*devices));
-    if (!devices) return false;
-    vkEnumeratePhysicalDevices(v->instance, &count, devices);
-    for (uint32_t i = 0; i < count && !v->phys; i++)
-        if (device_matches(devices[i], st.st_rdev)) v->phys = devices[i];
-    for (uint32_t i = 0; i < count && !v->phys && tomoe_test_flag("gfx-software"); i++)
-        if (device_software(devices[i])) v->phys = devices[i];
-    free(devices);
     if (!v->phys) {
         tomoe_log(LOG_ERROR, "tomoe: no Vulkan 1.3 device with dmabuf support matches %s",
             v->base.node ? v->base.node : "the render node");
@@ -2211,7 +2352,7 @@ static bool device_init(struct vk *v) {
         .enabledExtensionCount = sizeof(device_extensions) / sizeof(device_extensions[0]),
         .ppEnabledExtensionNames = device_extensions,
     };
-    result = vkCreateDevice(v->phys, &device, NULL, &v->dev);
+    VkResult result = vkCreateDevice(v->phys, &device, NULL, &v->dev);
     if (result != VK_SUCCESS) {
         tomoe_log(LOG_ERROR, "tomoe: vulkan device creation failed (%d)", (int)result);
         v->dev = VK_NULL_HANDLE;
@@ -3141,6 +3282,45 @@ void gfx_upload_trim(struct render *r) {
         v->spare = c->next;
         chunk_free(v, c);
     }
+}
+
+bool gfx_idle_trim(struct render *r) {
+    struct vk *v = V(r);
+    retire(v, false);
+    graves_sweep(v, false);
+    level_pool_drain(v);
+    if (v->staging.chunk && !v->staging.fences &&
+            (!r->upload || (upload_idle(r->upload) && !upload_pending(r->upload)))) {
+        staging_free(v);
+        if (r->upload) {
+            r->upload->resume = UPLOAD_MIN_STAGING;
+            r->upload->stats.trims++;
+        }
+    }
+    while (v->spare) {
+        struct chunk *c = v->spare;
+        v->spare = c->next;
+        chunk_free(v, c);
+    }
+    if (v->scene.count == 0 && v->scene.cap > SCENE_RESERVE) {
+        struct scene_item *shrunk = realloc(v->scene.items, SCENE_RESERVE * sizeof(*shrunk));
+        if (shrunk) {
+            v->scene.items = shrunk;
+            v->scene.cap = SCENE_RESERVE;
+        }
+    }
+    for (size_t i = 0; i < v->batch_count; i++)
+        if (v->batches[i].busy) return false;
+    if (!v->open && !v->lost && v->command_pool != VK_NULL_HANDLE) {
+        vkResetCommandPool(v->dev, v->command_pool, VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);
+        for (size_t i = 0; i < v->batch_count; i++) {
+            free(v->batches[i].acquired);
+            v->batches[i].acquired = NULL;
+            v->batches[i].acquired_len = 0;
+            v->batches[i].acquired_cap = 0;
+        }
+    }
+    return v->graves == NULL;
 }
 
 void gfx_finish(struct render *r) {

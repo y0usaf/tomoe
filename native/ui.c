@@ -1476,7 +1476,10 @@ static bool surface_commit(struct tomoe *s, struct ui_surface *surface) {
     if (region_not_empty(&damage)) {
         ui_updates++;
         ok = canvas_replay(surface, &damage) && canvas_upload(s, surface, &damage);
-        if (ok) content_record(surface, &damage);
+        if (ok) {
+            content_record(surface, &damage);
+            tomoe_note_activity(s);
+        }
         if (full) ui_redraws++;
         if (surface->canvas && surface->canvas->pixels &&
                 surface->canvas->bytes > (UINT64_C(2) * 1024 * 1024)) {

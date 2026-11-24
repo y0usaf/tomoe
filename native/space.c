@@ -846,6 +846,7 @@ static bool render_scene_prepared(struct output *o, struct buffer *buffer,
         .box = { .width = buffer->width, .height = buffer->height },
         .color = { 0.25f, 0, 0.25f, 0.25f }, .clip = &changed });
     bool success = pass_submit(pass);
+    if (success) tomoe_note_activity(s);
     if (slot < RING_SLOTS) {
         if (success) o->ring.plane_shapes[slot] = plane_shape;
         else {

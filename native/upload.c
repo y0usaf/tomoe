@@ -307,7 +307,10 @@ bool upload_idle(const struct upload *u) {
 }
 
 void upload_set_staging(struct upload *u, unsigned char *base, uint64_t size) {
-    if (!base && u->size) u->resume = u->size;
+    if (!base && u->size) {
+        uint64_t next = u->size / 2;
+        u->resume = next > UPLOAD_MIN_STAGING ? next : UPLOAD_MIN_STAGING;
+    }
     u->base = base;
     u->size = size;
     u->alloc = u->gpu_done = 0;

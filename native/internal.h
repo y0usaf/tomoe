@@ -394,7 +394,9 @@ struct render *render_create(int drm_fd);
 int render_upload_fd(struct render *renderer);
 void render_upload_drain(struct render *renderer);
 void render_upload_trim(struct render *renderer);
-enum { UPLOAD_TRIM_MS = 250 };
+bool render_idle_trim(struct render *renderer);
+void tomoe_note_activity(struct tomoe *s);
+enum { UPLOAD_TRIM_MS = 250, IDLE_TRIM_MS = 2000 };
 uint32_t render_read_format(struct render *renderer);
 const struct format_set *render_formats(struct render *renderer);
 bool render_wait(struct render *renderer, struct timeline *timeline,
@@ -1126,7 +1128,9 @@ struct tomoe {
     struct kms *kms;
     enum screen_kind backend;
     struct render *renderer;
-    struct wl_event_source *upload_source, *upload_trim;
+    struct wl_event_source *upload_source, *upload_trim, *idle_trim;
+    uint64_t idle_activity, idle_trim_seen;
+    bool idle_trim_armed;
     struct node *scene;
     struct node *window_tree, *layer_tree[4], *fullscreen_tree, *popup_tree;
     struct cursor_image cursor_image;
