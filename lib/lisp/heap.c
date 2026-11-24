@@ -12,7 +12,8 @@ struct lisp_runtime lisp;
 
 static char *reservation;
 static uint32_t free_block = UINT32_MAX;
-enum { RESIDENT_FREE_KEEP = 2 };
+static uint32_t next_fresh_block;
+enum { RESIDENT_FREE_KEEP = 1, RESIDENT_WARM_BYTES = 65536 };
 
 static uint32_t resident_blocks[RESIDENT_FREE_KEEP];
 static uint32_t resident_free;
@@ -130,8 +131,18 @@ void buf_printf(struct lisp_buf *buf, const char *fmt, ...)
 
 void heap_reset_blocks(void)
 {
-    free_block = 0;
+    free_block = UINT32_MAX;
+    next_fresh_block = 0;
     resident_free = 0;
+}
+
+void heap_shutdown(void)
+{
+    free(memo);
+    memo = NULL;
+    memo_capacity = 0;
+    memo_used = 0;
+    memo_epoch = 0;
 }
 
 void heap_set_reservation(void *base)
@@ -161,14 +172,17 @@ static void map_block(uint32_t index)
 static uint32_t take_block(void)
 {
     bool resident = resident_free > 0;
-    if (!resident && free_block == UINT32_MAX)
+    if (!resident && free_block == UINT32_MAX && next_fresh_block >= LISP_MAX_BLOCKS)
         lisp_oom();
     uint32_t index;
     if (resident) {
         index = resident_blocks[--resident_free];
-    } else {
+    } else if (free_block != UINT32_MAX) {
         index = free_block;
         free_block = lisp.blocks[index].next;
+        map_block(index);
+    } else {
+        index = next_fresh_block++;
         map_block(index);
     }
     memset(&lisp.blocks[index], 0, sizeof(lisp.blocks[index]));
@@ -193,12 +207,16 @@ static uint32_t take_block(void)
 static void give_block(uint32_t index)
 {
     struct lisp_block *b = &lisp.blocks[index];
+    uint32_t prev_used = b->used;
     b->in_use = 0;
     b->owner = NULL;
     b->used = 0;
     b->kind = 0;
     lisp.heap_used -= LISP_BLOCK_SIZE;
     if (b->mapped && resident_free < RESIDENT_FREE_KEEP) {
+        if (prev_used > RESIDENT_WARM_BYTES)
+            madvise((char *)block_base(index) + RESIDENT_WARM_BYTES,
+                LISP_BLOCK_SIZE - RESIDENT_WARM_BYTES, MADV_DONTNEED);
         resident_blocks[resident_free++] = index;
         return;
     }
@@ -783,6 +801,12 @@ static lisp_value copy_session(lisp_value value, struct lisp_region *dst, bool s
             account_growth(dst, before);
         memo_epoch = saved;
         memo_used = saved_used;
+        if (saved == 0 && memo_capacity > 1024) {
+            free(memo);
+            memo = NULL;
+            memo_capacity = 0;
+            memo_used = 0;
+        }
         throw_error_value(lisp_escape_condition());
     }
     lisp_value out = deep_copy(value, dst, share);
@@ -792,6 +816,12 @@ static lisp_value copy_session(lisp_value value, struct lisp_region *dst, bool s
         account_growth(dst, before);
     memo_epoch = saved;
     memo_used = saved_used;
+    if (saved == 0 && memo_capacity > 1024) {
+        free(memo);
+        memo = NULL;
+        memo_capacity = 0;
+        memo_used = 0;
+    }
     return out;
 }
 

@@ -11,7 +11,8 @@
 #include "lisp-internal.h"
 
 static char name_pool[LISP_NAME_POOL];
-static uint32_t intern_table[LISP_MAX_SYMBOLS * 2];
+static bool lisp_ever_init;
+static size_t name_hwm;
 
 static void init_region(struct lisp_region *region, int kind, const char *name)
 {
@@ -383,33 +384,37 @@ int lisp_init(size_t region_bytes)
 {
     if (lisp.initialised)
         return 0;
-    memset(&lisp, 0, sizeof(lisp));
+    if (lisp_ever_init) {
+        memset(&lisp, 0, sizeof(lisp));
+        if (name_hwm)
+            memset(name_pool, 0, name_hwm);
+        name_hwm = 0;
+    }
     void *reservation = mmap(NULL, LISP_RESERVE_BYTES, PROT_NONE,
                              MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (reservation == MAP_FAILED)
         return -1;
     lisp.blocks = calloc(LISP_MAX_BLOCKS, sizeof(struct lisp_block));
-    lisp.intern_table = intern_table;
-    lisp.intern_cap = LISP_MAX_SYMBOLS * 2;
+    lisp.intern_cap = 4096u;
+    lisp.intern_table = calloc(lisp.intern_cap, sizeof(uint32_t));
+    if (!lisp.blocks || !lisp.intern_table) {
+        free(lisp.blocks);
+        free(lisp.intern_table);
+        lisp.blocks = NULL;
+        lisp.intern_table = NULL;
+        munmap(reservation, LISP_RESERVE_BYTES);
+        return -1;
+    }
     lisp.name_pool = name_pool;
     lisp.region_limit = region_bytes ? region_bytes : (size_t)LISP_BLOCK_SIZE * 16;
     if (lisp.region_limit > LISP_RESERVE_BYTES)
         lisp.region_limit = LISP_RESERVE_BYTES;
-    memset(intern_table, 0, sizeof(intern_table));
-    memset(name_pool, 0, sizeof(name_pool));
-    for (uint32_t i = 0; i < LISP_MAX_BLOCKS; i++) {
-        memset(&lisp.blocks[i], 0, sizeof(lisp.blocks[i]));
-        lisp.blocks[i].next = i + 1 < LISP_MAX_BLOCKS ? i + 1 : UINT32_MAX;
-    }
     heap_set_reservation(reservation);
     heap_reset_blocks();
     init_region(&lisp.arena, REG_ARENA, "<arena>");
     init_region(&lisp.system, REG_GENERATION, "<system>");
     lisp.cur_region = &lisp.arena;
-    for (uint32_t i = 0; i < LISP_MAX_REGIONS; i++)
-        memset(&lisp.regions[i], 0, sizeof(lisp.regions[i]));
     struct lisp_package *packages = lisp.packages;
-    memset(packages, 0, sizeof(lisp.packages));
     const char *names[4] = { "SYSTEM", "KEYWORD", "TOMOE", "TOMOE-USER" };
     for (uint32_t i = 0; i < 4; i++) {
         packages[i].used = true;
@@ -447,8 +452,14 @@ void lisp_shutdown(void)
         munmap(lisp.cache_reservation, LISP_RESERVE_BYTES);
         lisp.cache_reservation = NULL;
     }
+    name_hwm = lisp.name_used;
+    lisp_ever_init = true;
     free(lisp.blocks);
     lisp.blocks = NULL;
+    free(lisp.intern_table);
+    lisp.intern_table = NULL;
+    lisp.intern_cap = 0;
+    heap_shutdown();
     lisp_vm_reset();
     lisp.initialised = false;
 }

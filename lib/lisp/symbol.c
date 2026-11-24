@@ -1,3 +1,4 @@
+#include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <ctype.h>
@@ -77,10 +78,38 @@ static struct lisp_symbol *symbol_create(uint32_t package, const char *name, siz
     return sym;
 }
 
+static void intern_grow(void)
+{
+    uint32_t cap = lisp.intern_cap ? lisp.intern_cap * 2u : 4096u;
+    if (cap > LISP_MAX_SYMBOLS * 2u)
+        cap = LISP_MAX_SYMBOLS * 2u;
+    if (cap <= lisp.intern_cap)
+        return;
+    uint32_t *grown = calloc(cap, sizeof(uint32_t));
+    if (!grown)
+        lisp_error("out of memory growing symbol table");
+    uint32_t mask = cap - 1u;
+    for (uint32_t i = 0; i < lisp.intern_cap; i++) {
+        uint32_t entry = lisp.intern_table[i];
+        if (!entry)
+            continue;
+        struct lisp_symbol *sym = &lisp.symbols[entry - 1u];
+        uint32_t index = sym->hash & mask;
+        while (grown[index] != 0)
+            index = (index + 1u) & mask;
+        grown[index] = entry;
+    }
+    free(lisp.intern_table);
+    lisp.intern_table = grown;
+    lisp.intern_cap = cap;
+}
+
 struct lisp_symbol *symbol_intern(uint32_t package, const char *name, size_t len, bool uninterned)
 {
     uint32_t hash = hash_bytes(name, len);
     if (!uninterned) {
+        if ((lisp.intern_count + 1u) * 2u > lisp.intern_cap)
+            intern_grow();
         uint32_t slot = intern_slot(package, name, len, hash, true);
         if (lisp.intern_table[slot] != 0) {
             struct lisp_symbol *sym = &lisp.symbols[lisp.intern_table[slot] - 1];

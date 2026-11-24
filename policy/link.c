@@ -340,9 +340,9 @@ void core_send(int prim, int argc, const lisp_value *argv) {
 }
 
 static bool read_some(int timeout_ms) {
-    if (in_capacity - in_length < 65536) {
-        size_t capacity = in_capacity ? in_capacity * 2 : 262144;
-        while (capacity - in_length < 65536) capacity *= 2;
+    if (in_capacity - in_length < 4096) {
+        size_t capacity = in_capacity ? in_capacity * 2 : 16384;
+        while (capacity - in_length < 4096) capacity *= 2;
         uint8_t *grown = realloc(in_buf, capacity);
         if (!grown) fatal_link("out of memory reading the link");
         in_buf = grown;
@@ -375,7 +375,15 @@ static bool next_frame(struct message *out) {
     if (!out->payload) fatal_link("out of memory reading a message");
     memcpy(out->payload, in_buf + sizeof(hdr), hdr.len);
     in_length -= frame;
-    if (in_length) memmove(in_buf, in_buf + frame, in_length);
+    if (in_length) {
+        memmove(in_buf, in_buf + frame, in_length);
+    } else if (in_capacity > 32768) {
+        uint8_t *shrunk = realloc(in_buf, 16384);
+        if (shrunk) {
+            in_buf = shrunk;
+            in_capacity = 16384;
+        }
+    }
     return true;
 }
 

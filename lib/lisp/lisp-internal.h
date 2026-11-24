@@ -461,6 +461,7 @@ void heap_arena_reset(void);
 void heap_reclaim_dropped(void);
 void heap_reset_blocks(void);
 void heap_set_reservation(void *base);
+void heap_shutdown(void);
 _Noreturn void lisp_oom(void);
 lisp_value lisp_keep(lisp_value value);
 void lisp_release(lisp_value value);

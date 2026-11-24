@@ -142,6 +142,13 @@ static bool link_flush(struct policy_link *link) {
     if (link->out_offset == link->out_length) {
         link->out_offset = 0;
         link->out_length = 0;
+        if (link->out_capacity > 32768) {
+            uint8_t *shrunk = realloc(link->out, 16384);
+            if (shrunk) {
+                link->out = shrunk;
+                link->out_capacity = 16384;
+            }
+        }
     } else if (link->out_offset > (1u << 20)) {
         memmove(link->out, link->out + link->out_offset, link->out_length - link->out_offset);
         link->out_length -= link->out_offset;
@@ -177,7 +184,7 @@ static bool link_send(struct policy_link *link, uint16_t type, uint32_t seq,
     }
     size_t need = link->out_length + sizeof(struct tpl_hdr) + length;
     if (need > link->out_capacity) {
-        size_t capacity = link->out_capacity ? link->out_capacity : 65536;
+        size_t capacity = link->out_capacity ? link->out_capacity : 16384;
         while (capacity < need) capacity *= 2;
         uint8_t *grown = realloc(link->out, capacity);
         if (!grown) {
@@ -487,8 +494,8 @@ static void handle_message(struct policy_link *link, const struct tpl_hdr *hdr,
 
 static bool link_read(struct policy_link *link) {
     for (;;) {
-        if (link->in_capacity - link->in_length < 65536) {
-            size_t capacity = link->in_capacity ? link->in_capacity * 2 : 131072;
+        if (link->in_capacity - link->in_length < 4096) {
+            size_t capacity = link->in_capacity ? link->in_capacity * 2 : 16384;
             if (capacity > TPL_MAX_PAYLOAD + 65536 + sizeof(struct tpl_hdr))
                 capacity = TPL_MAX_PAYLOAD + 65536 + sizeof(struct tpl_hdr);
             if (capacity > link->in_capacity) {
@@ -545,7 +552,15 @@ static bool link_read(struct policy_link *link) {
         }
         if (offset) {
             link->in_length -= offset;
-            if (link->in_length) memmove(link->in, link->in + offset, link->in_length);
+            if (link->in_length) {
+                memmove(link->in, link->in + offset, link->in_length);
+            } else if (link->in_capacity > 32768) {
+                uint8_t *shrunk = realloc(link->in, 16384);
+                if (shrunk) {
+                    link->in = shrunk;
+                    link->in_capacity = 16384;
+                }
+            }
         }
     }
 }

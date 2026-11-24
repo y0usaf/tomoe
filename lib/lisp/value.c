@@ -33,14 +33,6 @@ static struct lisp_char ascii_chars[128];
 
 void lisp_init_small_ints(void)
 {
-    for (int64_t value = SMALL_INT_MIN; value <= SMALL_INT_MAX; value++) {
-        struct lisp_int *slot = &small_ints[value - SMALL_INT_MIN];
-        slot->h.type = LT_INT;
-        slot->h.flags = 0;
-        slot->h.aux = 0;
-        slot->h.size = sizeof(*slot);
-        slot->value = value;
-    }
     for (uint32_t code = 0; code < 128; code++) {
         struct lisp_char *slot = &ascii_chars[code];
         slot->h.type = LT_CHAR;
@@ -54,8 +46,17 @@ void lisp_init_small_ints(void)
 
 lisp_value make_int(int64_t v)
 {
-    if (small_ints_ready && v >= SMALL_INT_MIN && v <= SMALL_INT_MAX)
-        return VAL(&small_ints[v - SMALL_INT_MIN]);
+    if (small_ints_ready && v >= SMALL_INT_MIN && v <= SMALL_INT_MAX) {
+        struct lisp_int *slot = &small_ints[v - SMALL_INT_MIN];
+        if (!slot->h.type) {
+            slot->h.type = LT_INT;
+            slot->h.flags = 0;
+            slot->h.aux = 0;
+            slot->h.size = sizeof(*slot);
+            slot->value = v;
+        }
+        return VAL(slot);
+    }
     struct lisp_int *out = PTR(alloc_obj(LT_INT, sizeof(*out)), lisp_int);
     out->value = v;
     return VAL(out);
