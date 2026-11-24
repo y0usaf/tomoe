@@ -2745,40 +2745,63 @@ static bool cc_parse_params(struct cc_fn *cc, lisp_value params, struct vm_param
     return true;
 }
 
-static const struct lisp_code *cc_compile_fn(struct cc_fn *parent, struct lisp_region *region,
-    lisp_value name, lisp_value params, lisp_value body, uint8_t info)
-{
+struct cc_scratch {
+    struct cc_scratch *prev;
     uint32_t ins_buf[CC_MAX_INS];
     lisp_value const_buf[CC_MAX_CONSTS];
     const struct lisp_code *proto_buf[CC_MAX_PROTOS];
     struct cc_fn cc;
-    memset(&cc, 0, sizeof(cc));
-    cc.parent = parent;
-    cc.region = region;
-    cc.name = name;
-    cc.ins = ins_buf;
-    cc.consts = const_buf;
-    cc.protos = proto_buf;
-
-    cc_scan_form(&cc, params, 0);
-    cc_scan_form(&cc, body, 0);
-
     struct vm_param_spec specs[64];
+};
+
+static struct cc_scratch *cc_active;
+
+void lisp_compile_cleanup(void)
+{
+    while (cc_active) {
+        struct cc_scratch *sc = cc_active;
+        cc_active = sc->prev;
+        free(sc);
+    }
+}
+
+static const struct lisp_code *cc_compile_fn(struct cc_fn *parent, struct lisp_region *region,
+    lisp_value name, lisp_value params, lisp_value body, uint8_t info)
+{
+    struct cc_scratch *sc = calloc(1, sizeof(*sc));
+    if (!sc)
+        return NULL;
+    sc->prev = cc_active;
+    cc_active = sc;
+    struct cc_fn *cc = &sc->cc;
+    cc->parent = parent;
+    cc->region = region;
+    cc->name = name;
+    cc->ins = sc->ins_buf;
+    cc->consts = sc->const_buf;
+    cc->protos = sc->proto_buf;
+
+    cc_scan_form(cc, params, 0);
+    cc_scan_form(cc, body, 0);
+
     uint32_t spec_count = 0;
     uint16_t min_args = 0;
     bool simple = true;
     bool allow_other = false;
-    if (!cc_parse_params(&cc, params, specs, &spec_count, &min_args, &simple, &allow_other))
+    if (!cc_parse_params(cc, params, sc->specs, &spec_count, &min_args, &simple, &allow_other)) {
+        cc_active = sc->prev;
+        free(sc);
         return NULL;
+    }
 
-    uint16_t param_slots = cc.next_slot;
+    uint16_t param_slots = cc->next_slot;
     uint8_t box_slots[64];
     uint8_t box_count = 0;
-    for (uint32_t i = 0; i < cc.var_count; i++) {
-        if (cc.vars[i].boxed) {
+    for (uint32_t i = 0; i < cc->var_count; i++) {
+        if (cc->vars[i].boxed) {
             if (box_count < 64)
-                box_slots[box_count++] = (uint8_t)cc.vars[i].slot;
-            cc_emit(&cc, INST(OP_BOX_LOCAL, 0, cc.vars[i].slot));
+                box_slots[box_count++] = (uint8_t)cc->vars[i].slot;
+            cc_emit(cc, INST(OP_BOX_LOCAL, 0, cc->vars[i].slot));
         }
     }
 
@@ -2787,42 +2810,48 @@ static const struct lisp_code *cc_compile_fn(struct cc_fn *parent, struct lisp_r
         b = CDR(b);
     bool want_mv = true;
     bool tail_ok = !(info & FNI_ARMED);
-    if (!cc_emit_body(&cc, b, want_mv, tail_ok) || cc.failed)
+    if (!cc_emit_body(cc, b, want_mv, tail_ok) || cc->failed) {
+        cc_active = sc->prev;
+        free(sc);
         return NULL;
-    cc_emit(&cc, INST(OP_RET, 0, 0));
-    if (cc.failed)
+    }
+    cc_emit(cc, INST(OP_RET, 0, 0));
+    if (cc->failed) {
+        cc_active = sc->prev;
+        free(sc);
         return NULL;
+    }
 
     struct lisp_code *out = heap_alloc_in(region, sizeof(*out));
     memset(out, 0, sizeof(*out));
     out->gen = region;
     out->name = name;
-    out->ins_count = cc.ins_count;
-    out->ins = heap_alloc_in(region, sizeof(uint32_t) * cc.ins_count);
-    memcpy((void *)out->ins, cc.ins, sizeof(uint32_t) * cc.ins_count);
-    if (cc.const_count) {
-        out->const_count = cc.const_count;
-        out->consts = heap_alloc_in(region, sizeof(lisp_value) * cc.const_count);
-        memcpy((void *)out->consts, cc.consts, sizeof(lisp_value) * cc.const_count);
+    out->ins_count = cc->ins_count;
+    out->ins = heap_alloc_in(region, sizeof(uint32_t) * cc->ins_count);
+    memcpy((void *)out->ins, cc->ins, sizeof(uint32_t) * cc->ins_count);
+    if (cc->const_count) {
+        out->const_count = cc->const_count;
+        out->consts = heap_alloc_in(region, sizeof(lisp_value) * cc->const_count);
+        memcpy((void *)out->consts, cc->consts, sizeof(lisp_value) * cc->const_count);
     }
-    if (cc.proto_count) {
-        out->proto_count = cc.proto_count;
-        out->protos = heap_alloc_in(region, sizeof(struct lisp_code *) * cc.proto_count);
-        memcpy((void *)out->protos, cc.protos, sizeof(struct lisp_code *) * cc.proto_count);
+    if (cc->proto_count) {
+        out->proto_count = cc->proto_count;
+        out->protos = heap_alloc_in(region, sizeof(struct lisp_code *) * cc->proto_count);
+        memcpy((void *)out->protos, cc->protos, sizeof(struct lisp_code *) * cc->proto_count);
     }
-    if (cc.upval_count) {
-        out->upval_count = cc.upval_count;
-        out->updesc = heap_alloc_in(region, sizeof(struct vm_updesc) * cc.upval_count);
-        memcpy((void *)out->updesc, cc.updesc, sizeof(struct vm_updesc) * cc.upval_count);
+    if (cc->upval_count) {
+        out->upval_count = cc->upval_count;
+        out->updesc = heap_alloc_in(region, sizeof(struct vm_updesc) * cc->upval_count);
+        memcpy((void *)out->updesc, cc->updesc, sizeof(struct vm_updesc) * cc->upval_count);
     }
     if (!simple && spec_count) {
         out->pspec_count = spec_count;
         out->pspecs = heap_alloc_in(region, sizeof(struct vm_param_spec) * spec_count);
-        memcpy((void *)out->pspecs, specs, sizeof(struct vm_param_spec) * spec_count);
+        memcpy((void *)out->pspecs, sc->specs, sizeof(struct vm_param_spec) * spec_count);
     }
     out->min_args = min_args;
     out->param_count = param_slots;
-    out->nlocals = cc.max_slot;
+    out->nlocals = cc->max_slot;
     out->info = info;
     out->simple = (uint8_t)simple;
     out->allow_other_keys = (uint8_t)allow_other;
@@ -2831,6 +2860,8 @@ static const struct lisp_code *cc_compile_fn(struct cc_fn *parent, struct lisp_r
         out->box_slots = heap_alloc_in(region, box_count);
         memcpy((void *)out->box_slots, box_slots, box_count);
     }
+    cc_active = sc->prev;
+    free(sc);
     return out;
 }
 

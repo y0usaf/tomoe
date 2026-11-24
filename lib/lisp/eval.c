@@ -182,6 +182,7 @@ _Noreturn void unwind_to(int index)
     lisp.ctl_top = index;
     if (!ctl_ready || index < 0 || index >= LISP_MAX_CTL)
         abort();
+    lisp_compile_cleanup();
     lisp_vm_sp_set(lisp.ctl[index].vm_sp);
     lisp_vm_fp_set(lisp.ctl[index].vm_fp);
     longjmp(lisp.ctl[index].jb, 1);

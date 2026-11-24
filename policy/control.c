@@ -98,7 +98,7 @@ static bool client_append(struct control_client *client, const char *data, size_
 }
 
 static void client_read(struct control_client *client) {
-    char buffer[65536];
+    char buffer[4096];
     for (;;) {
         ssize_t count = read(client->fd, buffer, sizeof(buffer));
         if (count < 0) {
@@ -689,13 +689,20 @@ int control_client(const char *path, enum control_operation operation, int count
     if (error && error_size && error[0]) return 1;
     lisp_value request = lisp_cons(lisp_int(CONTROL_VERSION),
         lisp_cons(lisp_keyword(names[operation]), values));
-    char buffer[CONTROL_LIMIT + 64];
-    if (request_frame(buffer, sizeof(buffer), request)) {
+    size_t buffer_size = CONTROL_LIMIT + 64;
+    char *buffer = malloc(buffer_size);
+    if (!buffer) {
+        snprintf(error, error_size, "Out of memory encoding control request.");
+        return 1;
+    }
+    if (request_frame(buffer, buffer_size, request)) {
+        free(buffer);
         snprintf(error, error_size, "Cannot encode the control request.");
         return 1;
     }
     int fd = desktop_connect_unix(path, 5);
     if (fd < 0) {
+        free(buffer);
         snprintf(error, error_size, "Cannot connect to %s: %s.", path, strerror(errno));
         return 1;
     }
@@ -703,10 +710,12 @@ int control_client(const char *path, enum control_operation operation, int count
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
     if (write_all(fd, buffer, strlen(buffer))) {
+        free(buffer);
         snprintf(error, error_size, "Cannot send the control request.");
         close(fd);
         return 1;
     }
+    free(buffer);
     lisp_value reply;
     if (reply_frame(fd, &reply, error, error_size)) {
         close(fd);
