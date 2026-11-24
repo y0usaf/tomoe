@@ -585,7 +585,7 @@ static void draw_scene(struct output *o, struct frame *data, const struct presen
         for (size_t i = 0; i < plan->target_count; i++) {
             const struct presentation_target *root = &plan->targets[i];
             for (; layer < 3 && root->band >= ui_band[layer]; layer++) ui_render(o, data, plan, layer);
-            if (!root->visible) continue;
+            if (!root->visible || !root->node) continue;
             struct target target = root->target;
             target.fullscreen = root->fullscreen;
             decorate(o->server, &target, data);

@@ -1867,6 +1867,86 @@ def check_shm_pixels(path, tomoe_bin, capture_bin):
     return f"shm-pixels=ok({checked - bad}/{checked} px equal, {bad} under the cursor, upload={tomoe_upload_stats(tomoe_bin, sock)})"
 
 
+PRESENT_DESTROY_CONFIG = """(in-package #:tomoe-user)
+(define-extension "e2e-present-destroy" (:reads (:windows :command) :state 0) (snapshot state event)
+  (let* ((n (or state 0))
+         (n (if (and (eq (getf event :type) :command)
+                     (equal (getf event :name) "bump"))
+                (1+ n)
+                n))
+         (bg (if (oddp n) "#223344ff" "#443322ff"))
+         (children (loop for i below 60 collect
+                     (ui :text :text (format nil "present-~D-~D abcdefghijklmnopqrstuvwxyz0123456789" n i)
+                         :size 16 :color "#ffffffff"))))
+    (values n
+            (list (shell-surface :e2e-present-bar
+                                 (ui :column :gap 2 :children children)
+                                 :width 800 :height 700
+                                 :anchors '(:top :left)
+                                 :background bg)))))
+"""
+
+
+def check_present_destroy(tomoe_bin):
+    runtime = os.environ["XDG_RUNTIME_DIR"]
+    sock = "e2e-present-destroy"
+    sock_path = os.path.join(runtime, sock)
+    config = os.path.join(runtime, "e2e-present-destroy.lisp")
+    with open(config, "w") as f:
+        f.write(PRESENT_DESTROY_CONFIG)
+    tomoe = start_tomoe(tomoe_bin, sock, config)
+    blob = b"\xff" * (64 * 64 * 4)
+    rounds = 30
+    try:
+        for rnd in range(rounds):
+            clients = []
+            try:
+                for i in range(16):
+                    wl, shm, surf, _, _ = shm_window(sock_path, f"pd-{rnd}-{i}")
+                    fd, _, (buf,) = shm_pool(wl, shm, [blob], 64, 64)
+                    os.close(fd)
+                    shm_show(wl, surf, buf, [(0, 0, 64, 64)])
+                    wl.roundtrip()
+                    clients.append(wl)
+            except (OSError, KeyError, SystemExit) as exc:
+                try:
+                    rc = tomoe.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    rc = tomoe.poll()
+                if rc is not None:
+                    raise SystemExit(f"present-destroy: FAIL tomoe died (rc={rc}) on round {rnd}: {exc}")
+                raise
+            cmd = subprocess.Popen([tomoe_bin, "--socket", sock, "command", "bump"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            for wl in clients:
+                wl.sock.close()
+                time.sleep(0.001)
+            try:
+                cmd.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                cmd.kill()
+                cmd.wait()
+            rc = tomoe.poll()
+            if rc is not None:
+                raise SystemExit(f"present-destroy: FAIL tomoe died (rc={rc}) on round {rnd}")
+        inspect(tomoe_bin, sock)
+    finally:
+        if tomoe.poll() is None:
+            tomoe.terminate()
+            try:
+                tomoe.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                tomoe.kill()
+                tomoe.wait()
+        try:
+            os.unlink(config)
+        except OSError:
+            pass
+    if tomoe.returncode != 0:
+        raise SystemExit(f"present-destroy: FAIL tomoe exited {tomoe.returncode}")
+    return f"present-destroy=ok({rounds} rounds)"
+
+
 def main():
     args = sys.argv[1:]
     checks = args[0].split(",")
@@ -1913,6 +1993,8 @@ def main():
             results.append(check_shm_pixels(path, args[3], args[5]))
         elif check == "policy-effects-bugs":
             results.append(check_policy_effects_bugs(args[3], client_bin))
+        elif check == "present-destroy":
+            results.append(check_present_destroy(args[3]))
         else:
             raise SystemExit(f"unknown check {check}")
     print("e2e-fault-isolation: " + " ".join(results))

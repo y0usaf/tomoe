@@ -906,11 +906,16 @@ void input_pointer_frame(struct input_device *device);
 bool keymap_slot_set(struct keymap_slot *slot, struct txkb_keymap *keymap);
 void keymap_slot_finish(struct keymap_slot *slot);
 uint32_t keymap_slot_modifiers(const struct keymap_slot *slot);
+struct presentation_watch {
+    struct presentation *plan;
+    struct wl_listener destroy;
+};
 struct presentation {
     struct presentation_output *outputs;
     size_t output_count;
     struct presentation_target *targets;
-    size_t target_count, next_order;
+    struct presentation_watch *watches;
+    size_t target_count, watch_count, next_order;
     int view_x, view_y;
     double view_zoom;
     uint32_t focused;
@@ -918,7 +923,7 @@ struct presentation {
     int grab_mode;
     struct wl_list bindings;
     struct keyboard_profile *keyboard;
-    bool outputs_changed, replace_bindings;
+    bool outputs_changed, outputs_stale, replace_bindings;
     struct ui_set *ui;
     struct settings *settings;
     char *grab_owner, *grab_otherwise;
@@ -1464,6 +1469,7 @@ const struct output_location *output_location_for(
     const struct output_location *locations, size_t count, struct output *output);
 
 void presentation_finish(struct tomoe *s);
+void presentation_output_gone(struct tomoe *s, struct output *o);
 struct presentation_target *presentation_target_for(struct presentation *plan, uint32_t id);
 const struct presentation_output *presentation_output_for(const struct presentation *plan,
     struct screen *output);

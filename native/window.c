@@ -539,6 +539,12 @@ void windows_refresh(struct tomoe *s) {
 
 
 void windows_prepare_presentation(struct tomoe *s, struct presentation *plan) {
+    for (size_t i = 0; i < plan->target_count; i++) {
+        struct presentation_target *entry = &plan->targets[i];
+        if (entry->target.kind == TARGET_WINDOW &&
+                (!entry->node || !find_window(s, entry->target.id)))
+            entry->visible = false;
+    }
     struct window *w;
     wl_list_for_each(w, &s->windows, link) {
         struct presentation_target *entry = presentation_target_for(plan, w->target.id);

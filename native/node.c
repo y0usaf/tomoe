@@ -49,7 +49,7 @@ void node_set_position(struct node *node, int x, int y) {
 }
 
 void node_raise_to_top(struct node *node) {
-    if (!node->parent) return;
+    if (!node || !node->parent) return;
     wl_list_remove(&node->link);
     wl_list_insert(node->parent->children.prev, &node->link);
 }

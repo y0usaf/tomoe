@@ -1,8 +1,37 @@
 #include "internal.h"
 #include "ui.h"
 
+static void presentation_node_destroyed(struct wl_listener *listener, void *data) {
+    struct presentation_watch *watch = wl_container_of(listener, watch, destroy);
+    struct presentation *plan = watch->plan;
+    struct node *node = data;
+    detach(&watch->destroy);
+    for (size_t i = 0; i < plan->target_count; i++) {
+        if (plan->targets[i].node != node) continue;
+        plan->targets[i].node = NULL;
+        plan->targets[i].visible = false;
+        plan->targets[i].desired_visible = false;
+        plan->targets[i].staged = false;
+    }
+}
+
+void presentation_output_gone(struct tomoe *s, struct output *o) {
+    if (!s || !s->presentation || !o) return;
+    struct presentation *plan = s->presentation;
+    for (size_t i = 0; i < plan->output_count; i++) {
+        if (plan->outputs[i].output != o) continue;
+        plan->outputs[i].output = NULL;
+        plan->outputs_stale = true;
+    }
+    for (size_t i = 0; i < plan->target_count; i++)
+        if (plan->targets[i].target.output == o->screen)
+            plan->targets[i].target.output = NULL;
+}
+
 void presentation_finish(struct tomoe *s) {
     if (!s || !s->presentation) return;
+    for (size_t i = 0; i < s->presentation->watch_count; i++)
+        detach(&s->presentation->watches[i].destroy);
     ui_set_finish(s->presentation->ui);
     presentation_bindings_finish(s->presentation);
     keyboard_profile_finish(s->presentation->keyboard);
@@ -13,6 +42,7 @@ void presentation_finish(struct tomoe *s) {
     free(s->presentation->settings);
     free(s->presentation->outputs);
     free(s->presentation->targets);
+    free(s->presentation->watches);
     free(s->presentation);
     s->presentation = NULL;
 }
@@ -23,14 +53,15 @@ void tomoe_present_abort(struct tomoe *s) {
 
 struct presentation_target *presentation_target_for(struct presentation *plan, uint32_t id) {
     for (size_t i = 0; i < plan->target_count; i++)
-        if (plan->targets[i].target.id == id) return &plan->targets[i];
+        if (plan->targets[i].node && plan->targets[i].target.id == id) return &plan->targets[i];
     return NULL;
 }
 
 const struct presentation_output *presentation_output_for(const struct presentation *plan,
         struct screen *output) {
     for (size_t i = 0; i < plan->output_count; i++)
-        if (plan->outputs[i].output->screen == output) return &plan->outputs[i];
+        if (plan->outputs[i].output && plan->outputs[i].output->screen == output)
+            return &plan->outputs[i];
     return NULL;
 }
 
@@ -38,6 +69,7 @@ const struct presentation_output *presentation_output_at(const struct presentati
         double x, double y) {
     for (size_t i = 0; i < plan->output_count; i++) {
         const struct presentation_output *output = &plan->outputs[i];
+        if (!output->output) continue;
         const struct box *box = &output->box;
         if (x >= box->x && y >= box->y &&
                 x < (double)box->x + box->width && y < (double)box->y + box->height)
@@ -70,7 +102,8 @@ int tomoe_present_begin(struct tomoe *s, int view_x, int view_y,
         wl_list_length(&s->popup_tree->children);
     plan->outputs = calloc(plan->output_count ? plan->output_count : 1, sizeof(*plan->outputs));
     plan->targets = calloc(capacity ? capacity : 1, sizeof(*plan->targets));
-    if (!plan->outputs || !plan->targets || !presentation_outputs(s, plan)) {
+    plan->watches = calloc(capacity ? capacity : 1, sizeof(*plan->watches));
+    if (!plan->outputs || !plan->targets || !plan->watches || !presentation_outputs(s, plan)) {
         presentation_finish(s);
         return 0;
     }
@@ -97,6 +130,9 @@ int tomoe_present_begin(struct tomoe *s, int view_x, int view_y,
             entry->desired_visible = node->enabled;
             entry->band = (int)band;
             entry->order = plan->next_order++;
+            struct presentation_watch *watch = &plan->watches[plan->watch_count++];
+            watch->plan = plan;
+            listen(&watch->destroy, &node->events.destroy, presentation_node_destroyed);
         }
     }
     return 1;
@@ -188,7 +224,8 @@ static int compare_targets(const void *a, const void *b) {
 
 bool presentation_prepare(struct tomoe *s) {
     struct presentation *plan = s->presentation;
-    if (!plan || !ui_prepare(s) || !layers_prepare_presentation(s, plan)) return false;
+    if (!plan || plan->outputs_stale || !ui_prepare(s) || !layers_prepare_presentation(s, plan))
+        return false;
     windows_prepare_presentation(s, plan);
     qsort(plan->targets, plan->target_count, sizeof(*plan->targets), compare_targets);
     return true;
@@ -214,7 +251,7 @@ void presentation_publish(struct tomoe *s) {
     if (s->focused != plan->focused) tomoe_focus(s, plan->focused);
     if (s->focused == previous_focus) update_keyboard_focus(s);
     for (size_t i = 0; i < plan->target_count; i++)
-        node_raise_to_top(plan->targets[i].node);
+        if (plan->targets[i].node) node_raise_to_top(plan->targets[i].node);
     schedule_repaint(s);
 }
 
