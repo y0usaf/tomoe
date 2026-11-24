@@ -1,0 +1,33 @@
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform texture2D tex_image;
+layout(set = 1, binding = 0) uniform sampler tex_sampler;
+layout(set = 2, binding = 0) writeonly uniform image2D dst_image;
+layout(push_constant) uniform Blur {
+    vec2 half_pixel;
+    vec2 uv_step;
+    vec2 uv_origin;
+    vec2 uv_min;
+    vec2 uv_max;
+    ivec2 rect_off;
+    ivec2 rect_end;
+    float offset;
+    float grain;
+    float vibrancy;
+};
+vec4 at(vec2 uv) {
+    return texture(sampler2D(tex_image, tex_sampler), clamp(uv, uv_min, uv_max));
+}
+void main() {
+    ivec2 p = rect_off + ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= rect_end.x || p.y >= rect_end.y) return;
+    vec2 v_tex = uv_origin + vec2(p) * uv_step;
+    vec2 d = half_pixel * offset;
+    vec2 d2 = vec2(d.x, -d.y);
+    vec4 sum = at(v_tex) * 4.0;
+    sum += at(v_tex - d);
+    sum += at(v_tex + d);
+    sum += at(v_tex + d2);
+    sum += at(v_tex - d2);
+    imageStore(dst_image, p, sum * 0.125);
+}

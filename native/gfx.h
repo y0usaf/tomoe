@@ -156,6 +156,9 @@ void gfx_blur_copy_in(struct render *r, struct buffer *buffer, struct gfx_level 
 void gfx_blur_passes(struct render *r, struct gfx_level *const *levels, int passes,
     double offset, const struct region *down, const struct region *up, float noise,
     float vibrancy);
+bool gfx_blur_direct(struct render *r, struct buffer *buffer, struct box grown, int shrink,
+    struct gfx_level *const *levels, int passes, double offset, const struct region *down,
+    const struct region *up, float noise, float vibrancy);
 void gfx_backdrop_grab(struct render *r, struct buffer *buffer, const struct gfx_level *level,
     struct box need, const struct box *shown, const struct box *clear, int count);
 void gfx_shader_draw(struct pass *pass, struct gfx_prog *p, const struct gfx_shader_params *sp,

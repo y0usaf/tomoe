@@ -16,6 +16,8 @@
 #include "shaders/blur.vert.h"
 #include "shaders/down.frag.h"
 #include "shaders/up.frag.h"
+#include "shaders/down.comp.h"
+#include "shaders/up.comp.h"
 #include "shaders/lut.frag.h"
 #include "shaders/ext.frag.h"
 #include "shaders/glass.frag.h"
@@ -43,8 +45,8 @@ struct vk_image {
     VkImage image;
     VkDeviceMemory memory;
     VkImageView view, sample;
-    VkDescriptorSet set;
-    VkDescriptorPool pool;
+    VkDescriptorSet set, storage_set;
+    VkDescriptorPool pool, storage_pool;
     VkFormat format;
     VkImageUsageFlags usage;
     uint32_t drm_format;
@@ -70,8 +72,8 @@ struct grave {
     VkImage image;
     VkDeviceMemory memory;
     VkImageView view, sample;
-    VkDescriptorSet set;
-    VkDescriptorPool pool;
+    VkDescriptorSet set, storage_set;
+    VkDescriptorPool pool, storage_pool;
     VkShaderModule module;
     VkPipeline pipelines[TARGET_FORMATS];
 };
@@ -146,6 +148,17 @@ struct blur_push {
     float offset, grain, vibrancy;
 };
 
+struct blur_comp_push {
+    float half_pixel[2];
+    float uv_step[2];
+    float uv_origin[2];
+    float uv_min[2];
+    float uv_max[2];
+    int32_t rect_off[2];
+    int32_t rect_end[2];
+    float offset, grain, vibrancy;
+};
+
 struct glass_push {
     float box[4];
     float resolution[2];
@@ -215,17 +228,18 @@ struct vk {
     uint64_t chunks_made, chunk_bytes, images_made, fence_waits, levels_made, imports_made;
     struct grave *graves;
     struct chunk *spare;
-    VkDescriptorSetLayout image_layout, sampler_layout;
+    VkDescriptorSetLayout image_layout, sampler_layout, storage_layout;
     VkDescriptorPool sampler_pool;
-    VkDescriptorPool *pools;
-    size_t pool_count;
+    VkDescriptorPool *pools, *storage_pools;
+    size_t pool_count, storage_pool_count;
     VkSampler samplers[2];
     VkDescriptorSet sampler_sets[2];
     VkPipelineLayout layout;
-    VkShaderModule vert, frag, blur_vert, down_frag, up_frag, lut_frag, ext_frag, glass_frag;
-    bool ycbcr;
+    VkShaderModule vert, frag, blur_vert, down_frag, up_frag, down_comp_mod, up_comp_mod,
+        lut_frag, ext_frag, glass_frag;
+    bool ycbcr, queue_compute, compute_blur;
     struct yuv_path yuv[YUV_FORMATS];
-    VkPipelineLayout blur_layout, lut_layout, glass_layout, user_layout;
+    VkPipelineLayout blur_layout, blur_comp_layout, lut_layout, glass_layout, user_layout;
     VkDescriptorSetLayout ubo_layout;
     VkDescriptorPool ubo_pool;
     VkDeviceSize ubo_align;
@@ -233,7 +247,7 @@ struct vk {
     bool lost;
     uint64_t submits, lose_at;
     struct gfx_prog glass_program;
-    VkPipeline down, up;
+    VkPipeline down, up, down_comp, up_comp;
     struct target_pipelines targets[TARGET_FORMATS];
     struct wl_list images;
     struct vk_image *dummy;
@@ -451,6 +465,7 @@ static void bury_now(struct vk *v, struct grave *g) {
         if (g->pipelines[i]) vkDestroyPipeline(v->dev, g->pipelines[i], NULL);
     if (g->module) vkDestroyShaderModule(v->dev, g->module, NULL);
     if (g->set) vkFreeDescriptorSets(v->dev, g->pool, 1, &g->set);
+    if (g->storage_set) vkFreeDescriptorSets(v->dev, g->storage_pool, 1, &g->storage_set);
     if (g->sample && g->sample != g->view) vkDestroyImageView(v->dev, g->sample, NULL);
     if (g->view) vkDestroyImageView(v->dev, g->view, NULL);
     if (g->image) vkDestroyImage(v->dev, g->image, NULL);
@@ -960,6 +975,60 @@ static VkDescriptorSet descriptor_new(struct vk *v, VkImageView view, VkDescript
     return set;
 }
 
+static VkDescriptorSet storage_descriptor_new(struct vk *v, VkImageView view,
+        VkDescriptorPool *from) {
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    for (size_t i = v->storage_pool_count; i > 0; i--) {
+        VkDescriptorSetAllocateInfo alloc = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = v->storage_pools[i - 1],
+            .descriptorSetCount = 1,
+            .pSetLayouts = &v->storage_layout,
+        };
+        if (vkAllocateDescriptorSets(v->dev, &alloc, &set) == VK_SUCCESS) {
+            *from = v->storage_pools[i - 1];
+            break;
+        }
+        set = VK_NULL_HANDLE;
+    }
+    if (!set) {
+        VkDescriptorPoolSize size = { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, POOL_SETS };
+        VkDescriptorPoolCreateInfo info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+            .maxSets = POOL_SETS,
+            .poolSizeCount = 1,
+            .pPoolSizes = &size,
+        };
+        VkDescriptorPool pool;
+        VkDescriptorPool *grown = realloc(v->storage_pools,
+            (v->storage_pool_count + 1) * sizeof(*grown));
+        if (!grown) return VK_NULL_HANDLE;
+        v->storage_pools = grown;
+        if (vkCreateDescriptorPool(v->dev, &info, NULL, &pool) != VK_SUCCESS)
+            return VK_NULL_HANDLE;
+        v->storage_pools[v->storage_pool_count++] = pool;
+        VkDescriptorSetAllocateInfo alloc = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = pool,
+            .descriptorSetCount = 1,
+            .pSetLayouts = &v->storage_layout,
+        };
+        if (vkAllocateDescriptorSets(v->dev, &alloc, &set) != VK_SUCCESS) return VK_NULL_HANDLE;
+        *from = pool;
+    }
+    VkDescriptorImageInfo image = { .imageView = view, .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+    VkWriteDescriptorSet write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = set,
+        .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        .pImageInfo = &image,
+    };
+    vkUpdateDescriptorSets(v->dev, 1, &write, 0, NULL);
+    return set;
+}
+
 static bool yuv_view(struct vk *v, struct vk_image *image) {
     struct yuv_path *y = &v->yuv[image->yuv];
     VkSamplerYcbcrConversionInfo conversion = {
@@ -1043,6 +1112,10 @@ static bool image_view(struct vk *v, struct vk_image *image, bool opaque) {
             return false;
         }
     }
+    if ((image->usage & VK_IMAGE_USAGE_STORAGE_BIT) && v->storage_layout) {
+        image->storage_set = storage_descriptor_new(v, image->view, &image->storage_pool);
+        if (!image->storage_set) return false;
+    }
     if (!(image->usage & VK_IMAGE_USAGE_SAMPLED_BIT)) return true;
     image->set = descriptor_new(v, image->sample, &image->pool);
     return image->set != VK_NULL_HANDLE;
@@ -1053,7 +1126,8 @@ static void image_free(struct vk_image *image) {
     if (image->fd >= 0) close(image->fd);
     if (v->bound == image) rendering_end(v);
     bury(v, (struct grave){ .image = image->image, .memory = image->memory, .view = image->view,
-        .sample = image->sample, .set = image->set, .pool = image->pool });
+        .sample = image->sample, .set = image->set, .pool = image->pool,
+        .storage_set = image->storage_set, .storage_pool = image->storage_pool });
     if (v->target == image) v->target = NULL;
     for (size_t i = 0; v->open && i < v->open->acquired_len; i++)
         if (v->open->acquired[i] == image) v->open->acquired[i] = NULL;
@@ -1118,6 +1192,10 @@ static struct vk_image *image_new(struct vk *v, VkFormat format, int width, int 
     VkAccessFlags2 dst_access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT |
         VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
         VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    if (usage & VK_IMAGE_USAGE_STORAGE_BIT) {
+        dst_stage |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        dst_access |= VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    }
     if (usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) {
         image_sync(b->pre, image->image, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
             VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -2514,11 +2592,16 @@ static bool device_init(struct vk *v) {
     vkGetPhysicalDeviceQueueFamilyProperties(v->phys, &families, family);
     v->family = UINT32_MAX;
     uint32_t ts_bits = 0;
-    for (uint32_t i = 0; i < families && v->family == UINT32_MAX; i++)
-        if (family[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+    for (uint32_t i = 0; i < families; i++) {
+        if (!(family[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) continue;
+        bool has_comp = (family[i].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0;
+        if (v->family == UINT32_MAX || (!v->queue_compute && has_comp)) {
             v->family = i;
+            v->queue_compute = has_comp;
             ts_bits = family[i].timestampValidBits;
+            if (has_comp) break;
         }
+    }
     free(family);
     if (v->family == UINT32_MAX) return false;
     float priority = 1;
@@ -2547,6 +2630,21 @@ static bool device_init(struct vk *v) {
         .synchronization2 = VK_TRUE,
         .dynamicRendering = VK_TRUE,
     };
+    VkPhysicalDeviceFeatures supported_features = {0};
+    vkGetPhysicalDeviceFeatures(v->phys, &supported_features);
+    VkFormatProperties3 fp3 = { .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3 };
+    VkFormatProperties2 fp2 = {
+        .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
+        .pNext = &fp3,
+    };
+    vkGetPhysicalDeviceFormatProperties2(v->phys, (VkFormat)LEVEL_FORMAT, &fp2);
+    VkFormatFeatureFlags2 need_storage = VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT |
+        VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT;
+    v->compute_blur = v->queue_compute && supported_features.shaderStorageImageWriteWithoutFormat &&
+        (fp3.optimalTilingFeatures & need_storage) == need_storage;
+    VkPhysicalDeviceFeatures enabled_features = {
+        .shaderStorageImageWriteWithoutFormat = v->compute_blur ? VK_TRUE : VK_FALSE,
+    };
     VkDeviceCreateInfo device = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .pNext = &features13,
@@ -2554,6 +2652,7 @@ static bool device_init(struct vk *v) {
         .pQueueCreateInfos = &queue,
         .enabledExtensionCount = sizeof(device_extensions) / sizeof(device_extensions[0]),
         .ppEnabledExtensionNames = device_extensions,
+        .pEnabledFeatures = &enabled_features,
     };
     VkResult result = vkCreateDevice(v->phys, &device, NULL, &v->dev);
     if (result != VK_SUCCESS) {
@@ -2899,7 +2998,7 @@ static bool layouts_init(struct vk *v) {
         .binding = 0,
         .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
         .descriptorCount = 1,
-        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
     };
     VkDescriptorSetLayoutCreateInfo image_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -2910,7 +3009,7 @@ static bool layouts_init(struct vk *v) {
         .binding = 0,
         .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
         .descriptorCount = 1,
-        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
     };
     VkDescriptorSetLayoutCreateInfo sampler_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -3013,6 +3112,70 @@ static bool layouts_init(struct vk *v) {
     v->up = pipeline_make(v, (VkFormat)LEVEL_FORMAT, 0, v->blur_vert, v->up_frag,
         v->blur_layout, false);
     if (!v->down || !v->up) tomoe_log(LOG_ERROR, "tomoe: vulkan blur pipelines failed");
+    if (v->compute_blur) {
+        VkDescriptorSetLayoutBinding storage = {
+            .binding = 0,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+        };
+        VkDescriptorSetLayoutCreateInfo storage_info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .bindingCount = 1,
+            .pBindings = &storage,
+        };
+        VkDescriptorSetLayout csets[3] = { v->image_layout, v->sampler_layout, VK_NULL_HANDLE };
+        VkPushConstantRange cpush = { VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(struct blur_comp_push) };
+        bool ok = vkCreateDescriptorSetLayout(v->dev, &storage_info, NULL, &v->storage_layout) == VK_SUCCESS;
+        if (ok) {
+            csets[2] = v->storage_layout;
+            VkPipelineLayoutCreateInfo clayout = {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                .setLayoutCount = 3,
+                .pSetLayouts = csets,
+                .pushConstantRangeCount = 1,
+                .pPushConstantRanges = &cpush,
+            };
+            ok = vkCreatePipelineLayout(v->dev, &clayout, NULL, &v->blur_comp_layout) == VK_SUCCESS;
+        }
+        if (ok) {
+            v->down_comp_mod = shader_module(v, down_comp, sizeof(down_comp));
+            v->up_comp_mod = shader_module(v, up_comp, sizeof(up_comp));
+            ok = v->down_comp_mod && v->up_comp_mod;
+        }
+        if (ok) {
+            VkComputePipelineCreateInfo cp[2] = {
+                {
+                    .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                    .stage = {
+                        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                        .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                        .module = v->down_comp_mod,
+                        .pName = "main",
+                    },
+                    .layout = v->blur_comp_layout,
+                },
+                {
+                    .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                    .stage = {
+                        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                        .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                        .module = v->up_comp_mod,
+                        .pName = "main",
+                    },
+                    .layout = v->blur_comp_layout,
+                },
+            };
+            VkPipeline out[2] = { VK_NULL_HANDLE, VK_NULL_HANDLE };
+            if (vkCreateComputePipelines(v->dev, v->pipeline_cache, 2, cp, NULL, out) == VK_SUCCESS) {
+                v->down_comp = out[0];
+                v->up_comp = out[1];
+            } else {
+                ok = false;
+            }
+        }
+        if (!ok) v->compute_blur = false;
+    }
     return true;
 }
 
@@ -3443,6 +3606,8 @@ void gfx_close(struct render *r) {
             for (int b = 0; b < BLENDS; b++)
                 if (v->targets[i].blend[b]) vkDestroyPipeline(v->dev, v->targets[i].blend[b], NULL);
         for (size_t i = 0; i < v->pool_count; i++) vkDestroyDescriptorPool(v->dev, v->pools[i], NULL);
+        for (size_t i = 0; i < v->storage_pool_count; i++)
+            vkDestroyDescriptorPool(v->dev, v->storage_pools[i], NULL);
         if (v->sampler_pool) vkDestroyDescriptorPool(v->dev, v->sampler_pool, NULL);
         for (int i = 0; i < 2; i++)
             if (v->samplers[i]) vkDestroySampler(v->dev, v->samplers[i], NULL);
@@ -3467,6 +3632,12 @@ void gfx_close(struct render *r) {
         if (v->ubo_pool) vkDestroyDescriptorPool(v->dev, v->ubo_pool, NULL);
         if (v->ubo_layout) vkDestroyDescriptorSetLayout(v->dev, v->ubo_layout, NULL);
         if (v->glass_frag) vkDestroyShaderModule(v->dev, v->glass_frag, NULL);
+        if (v->down_comp) vkDestroyPipeline(v->dev, v->down_comp, NULL);
+        if (v->up_comp) vkDestroyPipeline(v->dev, v->up_comp, NULL);
+        if (v->blur_comp_layout) vkDestroyPipelineLayout(v->dev, v->blur_comp_layout, NULL);
+        if (v->down_comp_mod) vkDestroyShaderModule(v->dev, v->down_comp_mod, NULL);
+        if (v->up_comp_mod) vkDestroyShaderModule(v->dev, v->up_comp_mod, NULL);
+        if (v->storage_layout) vkDestroyDescriptorSetLayout(v->dev, v->storage_layout, NULL);
         if (v->down) vkDestroyPipeline(v->dev, v->down, NULL);
         if (v->up) vkDestroyPipeline(v->dev, v->up, NULL);
         if (v->blur_layout) vkDestroyPipelineLayout(v->dev, v->blur_layout, NULL);
@@ -3488,6 +3659,7 @@ void gfx_close(struct render *r) {
     free(v->batches);
     free(v->pipeline_cache_path);
     free(v->pools);
+    free(v->storage_pools);
     free(v->scene.items);
 }
 
@@ -3672,9 +3844,12 @@ bool gfx_level_ensure(struct gfx_level *level, int width, int height) {
     if (image) level_pool_put(v, image);
     level->token = 0;
     image = level_pool_take(v, width, height);
-    if (!image) image = image_new(v, (VkFormat)LEVEL_FORMAT, width, height,
-        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-        VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, true);
+    if (!image) {
+        VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        if (v->compute_blur) usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+        image = image_new(v, (VkFormat)LEVEL_FORMAT, width, height, usage, true);
+    }
     if (!image) {
         *level = (struct gfx_level){0};
         return false;
@@ -4009,10 +4184,148 @@ static void sample_pass(struct vk *v, VkPipeline pipeline, struct vk_image *from
         dst_access);
 }
 
+static bool blur_compute_dispatch(struct vk *v, VkCommandBuffer cb, struct vk_image *from,
+        struct vk_image *to, const struct box *sub, double offset, const struct region *region,
+        float grain, float vibrancy) {
+    int count = 0;
+    const struct rect *rects = region_rectangles(region, &count);
+    if (count == 0) return false;
+    if (!from->set || !to->storage_set || !image_use(v, from) || !image_use(v, to)) return false;
+    VkDescriptorSet sets[3] = { from->set, v->sampler_sets[0], to->storage_set };
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, v->blur_comp_layout, 0, 3,
+        sets, 0, NULL);
+    struct blur_comp_push push = {
+        .offset = (float)offset,
+        .grain = grain,
+        .vibrancy = vibrancy,
+    };
+    if (sub) {
+        float sx = (float)sub->width / (float)from->width;
+        float sy = (float)sub->height / (float)from->height;
+        float ox = (float)sub->x / (float)from->width;
+        float oy = (float)sub->y / (float)from->height;
+        push.uv_step[0] = sx / (float)to->width;
+        push.uv_step[1] = sy / (float)to->height;
+        push.uv_origin[0] = ox + 0.5f * push.uv_step[0];
+        push.uv_origin[1] = oy + 0.5f * push.uv_step[1];
+        push.half_pixel[0] = 0.5f * push.uv_step[0];
+        push.half_pixel[1] = 0.5f * push.uv_step[1];
+        push.uv_min[0] = ((float)sub->x + 0.5f) / (float)from->width;
+        push.uv_min[1] = ((float)sub->y + 0.5f) / (float)from->height;
+        push.uv_max[0] = ((float)(sub->x + sub->width) - 0.5f) / (float)from->width;
+        push.uv_max[1] = ((float)(sub->y + sub->height) - 0.5f) / (float)from->height;
+    } else {
+        push.uv_step[0] = 1.0f / (float)to->width;
+        push.uv_step[1] = 1.0f / (float)to->height;
+        push.uv_origin[0] = 0.5f / (float)to->width;
+        push.uv_origin[1] = 0.5f / (float)to->height;
+        push.half_pixel[0] = 0.5f / (float)to->width;
+        push.half_pixel[1] = 0.5f / (float)to->height;
+        push.uv_min[0] = 0.0f;
+        push.uv_min[1] = 0.0f;
+        push.uv_max[0] = 1.0f;
+        push.uv_max[1] = 1.0f;
+    }
+    v->base.gl_calls++;
+    bool dispatched = false;
+    for (int i = 0; i < count; i++) {
+        int32_t x1 = rects[i].x1 < 0 ? 0 : rects[i].x1, y1 = rects[i].y1 < 0 ? 0 : rects[i].y1;
+        int32_t x2 = rects[i].x2 > to->width ? to->width : rects[i].x2;
+        int32_t y2 = rects[i].y2 > to->height ? to->height : rects[i].y2;
+        if (x2 <= x1 || y2 <= y1) continue;
+        push.rect_off[0] = x1;
+        push.rect_off[1] = y1;
+        push.rect_end[0] = x2;
+        push.rect_end[1] = y2;
+        vkCmdPushConstants(cb, v->blur_comp_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push),
+            &push);
+        vkCmdDispatch(cb, (uint32_t)((x2 - x1 + 7) / 8), (uint32_t)((y2 - y1 + 7) / 8), 1);
+        v->base.gl_calls += 2;
+        dispatched = true;
+    }
+    return dispatched;
+}
+
+static bool blur_compute_passes(struct vk *v, struct vk_image *direct_src, const struct box *grown,
+        struct gfx_level *const *levels, int passes, double offset, const struct region *down,
+        const struct region *up, float noise, float vibrancy) {
+    if (!v->compute_blur || !v->down_comp || !v->up_comp) return false;
+    if (direct_src && (!direct_src->set || !image_use(v, direct_src))) return false;
+    for (int i = 0; i <= passes; i++) {
+        struct vk_image *img = level_image(levels[i]);
+        if (!img || !img->storage_set || !img->set) return false;
+    }
+    struct batch *b = batch(v);
+    if (!b) return false;
+    rendering_close(v);
+    VkCommandBuffer cb = b->main;
+    memory_barrier(v, cb,
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_COPY_BIT |
+            VK_PIPELINE_STAGE_2_BLIT_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT,
+        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT |
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+    bool ran = false;
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, v->down_comp);
+    v->base.gl_calls++;
+    for (int i = 1; i <= passes; i++) {
+        struct vk_image *from = (i == 1 && direct_src) ? direct_src : level_image(levels[i - 1]);
+        struct vk_image *to = level_image(levels[i]);
+        if (!from || !to) continue;
+        if (blur_compute_dispatch(v, cb, from, to, (i == 1 && direct_src) ? grown : NULL,
+                offset, &down[i], 0, 1)) {
+            ran = true;
+            memory_barrier(v, cb, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+        }
+    }
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, v->up_comp);
+    v->base.gl_calls++;
+    for (int i = passes - 1; i >= 0; i--) {
+        struct vk_image *from = level_image(levels[i + 1]), *to = level_image(levels[i]);
+        if (!from || !to) continue;
+        bool did = blur_compute_dispatch(v, cb, from, to, NULL, offset, &up[i],
+            i == 0 ? noise : 0, i == 0 ? vibrancy : 1);
+        if (did) ran = true;
+        if (i > 0 && did) {
+            memory_barrier(v, cb, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+        }
+    }
+    if (ran) {
+        memory_barrier(v, cb, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
+                VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT |
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT |
+                VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+    }
+    return true;
+}
+
+bool gfx_blur_direct(struct render *r, struct buffer *buffer, struct box grown, int shrink,
+        struct gfx_level *const *levels, int passes, double offset, const struct region *down,
+        const struct region *up, float noise, float vibrancy) {
+    struct vk *v = V(r);
+    if (shrink != 0 || !v->compute_blur) return false;
+    struct vk_image *src = import(v, buffer);
+    if (!src) return false;
+    return blur_compute_passes(v, src, &grown, levels, passes, offset, down, up, noise, vibrancy);
+}
+
 void gfx_blur_passes(struct render *r, struct gfx_level *const *levels, int passes,
         double offset, const struct region *down, const struct region *up, float noise,
         float vibrancy) {
     struct vk *v = V(r);
+    if (v->compute_blur &&
+            blur_compute_passes(v, NULL, NULL, levels, passes, offset, down, up, noise, vibrancy))
+        return;
     if (!v->down || !v->up) return;
     VkPipelineStageFlags2 color = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkPipelineStageFlags2 frag = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;

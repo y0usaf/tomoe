@@ -616,15 +616,18 @@ static bool blur_levels(struct frame *f, struct chain *chain, struct box grown,
                 (uint32_t)downs[i].width, (uint32_t)downs[i].height);
         }
     }
-    int copies = 0;
-    const struct rect *copy = region_rectangles(&down[0], &copies);
     struct render *r = f->server->renderer;
-    gfx_blur_copy_in(r, f->buffer, &chain->level, grown, copy, copies, shrink);
     const struct settings *st = &f->server->settings;
     struct gfx_level *levels[32];
     for (int i = 0; i <= passes; i++) levels[i] = blur_level(e, chain, i);
-    gfx_blur_passes(r, levels, passes, offset, down, up, (float)st->blur_noise,
-        (float)st->blur_vibrancy);
+    if (!gfx_blur_direct(r, f->buffer, grown, shrink, levels, passes, offset, down, up,
+            (float)st->blur_noise, (float)st->blur_vibrancy)) {
+        int copies = 0;
+        const struct rect *copy = region_rectangles(&down[0], &copies);
+        gfx_blur_copy_in(r, f->buffer, &chain->level, grown, copy, copies, shrink);
+        gfx_blur_passes(r, levels, passes, offset, down, up, (float)st->blur_noise,
+            (float)st->blur_vibrancy);
+    }
     for (int i = 0; i <= passes; i++) {
         region_fini(&up[i]);
         region_fini(&down[i]);

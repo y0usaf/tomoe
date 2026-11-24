@@ -126,7 +126,7 @@ build/tomoe: $(NATIVE) $(SUPPORT:%=build/%.o)
 build/obj/%.o: native/%.c $(wildcard native/*.h) $(LIB_HEADERS) $(HEADERS) | build/obj
 	$(CC) $(CFLAGS_NATIVE) -c $< -o $@
 
-SHADER_SOURCES = $(wildcard native/shaders/*.vert native/shaders/*.frag)
+SHADER_SOURCES = $(wildcard native/shaders/*.vert native/shaders/*.frag native/shaders/*.comp)
 SHADER_HEADERS = $(patsubst native/shaders/%,build/shaders/%.h,$(SHADER_SOURCES))
 
 build/obj/gfx_vk.o: $(SHADER_HEADERS)
