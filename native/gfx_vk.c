@@ -2033,13 +2033,33 @@ static bool area_inside(VkRect2D inner, VkRect2D outer) {
         (int64_t)inner.offset.y + inner.extent.height <= (int64_t)outer.offset.y + outer.extent.height;
 }
 
-static VkRect2D pass_area(const struct pass *pass, const struct vk_image *target) {
+static VkRect2D clip_area(const struct region *clip, const struct vk_image *target) {
     VkRect2D full = { { 0, 0 }, { (uint32_t)target->width, (uint32_t)target->height } };
-    if (!pass || !pass->clip) return full;
-    const struct rect *e = region_extents((struct region *)pass->clip);
+    if (!clip) return full;
+    const struct rect *e = region_extents((struct region *)clip);
     if (!e || e->x2 <= e->x1 || e->y2 <= e->y1) return full;
     return clamp_area(target, (VkRect2D){ { e->x1, e->y1 },
         { (uint32_t)(e->x2 - e->x1), (uint32_t)(e->y2 - e->y1) } });
+}
+
+static VkRect2D scene_area(const struct scene_item *items, size_t n, const struct vk_image *target) {
+    VkRect2D full = { { 0, 0 }, { (uint32_t)target->width, (uint32_t)target->height } };
+    int32_t x1 = target->width, y1 = target->height, x2 = 0, y2 = 0;
+    for (size_t i = 0; i < n; i++) {
+        const int32_t *sc = items[i].scissor;
+        if (sc[2] <= sc[0]) return full;
+        int32_t ix1 = sc[0] < 0 ? 0 : sc[0];
+        int32_t iy1 = sc[1] < 0 ? 0 : sc[1];
+        int32_t ix2 = sc[2] > target->width ? target->width : sc[2];
+        int32_t iy2 = sc[3] > target->height ? target->height : sc[3];
+        if (ix2 <= ix1 || iy2 <= iy1) continue;
+        if (ix1 < x1) x1 = ix1;
+        if (iy1 < y1) y1 = iy1;
+        if (ix2 > x2) x2 = ix2;
+        if (iy2 > y2) y2 = iy2;
+    }
+    if (x2 <= x1 || y2 <= y1) return (VkRect2D){ { 0, 0 }, { 0, 0 } };
+    return (VkRect2D){ { x1, y1 }, { (uint32_t)(x2 - x1), (uint32_t)(y2 - y1) } };
 }
 
 static bool rendering_begin_area(struct vk *v, struct vk_image *target, VkRect2D area,
@@ -2271,7 +2291,7 @@ void pass_flush(struct pass *pass) {
     for (size_t i = 0; i < n; i++) out[i] = items[i].in;
     r->uploads++;
     r->upload_bytes += n * sizeof(*out);
-    VkRect2D area = load_op == VK_ATTACHMENT_LOAD_OP_LOAD ? pass_area(pass, v->target) :
+    VkRect2D area = load_op == VK_ATTACHMENT_LOAD_OP_LOAD ? scene_area(items, n, v->target) :
         (VkRect2D){ { 0, 0 }, { (uint32_t)v->target->width, (uint32_t)v->target->height } };
     if (!rendering_begin_area(v, v->target, area, load_op, clear)) return;
     VkCommandBuffer cb = v->open->main;
@@ -2357,8 +2377,9 @@ void gfx_texture_draw(struct pass *pass, const struct texture_options *options,
             !image_use(v, t->image) || !image_use(v, lut->image)) return;
     VkBuffer buffer;
     VkDeviceSize offset;
+    const struct region *clip = options->clip ? options->clip : pass->clip;
     struct scene_instance *in = stage_alloc(v, sizeof(*in), &buffer, &offset);
-    if (!in || !rendering_begin_area(v, v->target, pass_area(pass, v->target), VK_ATTACHMENT_LOAD_OP_LOAD, NULL)) return;
+    if (!in || !rendering_begin_area(v, v->target, clip_area(clip, v->target), VK_ATTACHMENT_LOAD_OP_LOAD, NULL)) return;
     memset(in, 0, sizeof(*in));
     memcpy(in->pos, pos, sizeof(in->pos));
     memcpy(in->tex, texcoords, sizeof(in->tex));
@@ -2372,7 +2393,6 @@ void gfx_texture_draw(struct pass *pass, const struct texture_options *options,
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, v->lut_layout, 0, 4, sets, 0, NULL);
     vkCmdBindVertexBuffers(cb, 0, 1, &buffer, &offset);
     r->gl_calls += 3;
-    const struct region *clip = options->clip ? options->clip : pass->clip;
     int count = 1;
     const struct rect *rects = clip ? region_rectangles((struct region *)clip, &count) : NULL;
     for (int i = 0; i < count; i++) {
@@ -3315,7 +3335,7 @@ static void external_quad(struct pass *pass, struct vk_texture *t, const float p
     VkBuffer buffer;
     VkDeviceSize offset;
     struct scene_instance *in = stage_alloc(v, sizeof(*in), &buffer, &offset);
-    if (!in || !rendering_begin_area(v, v->target, pass_area(pass, v->target), VK_ATTACHMENT_LOAD_OP_LOAD, NULL)) return;
+    if (!in || !rendering_begin_area(v, v->target, clip_area(clip, v->target), VK_ATTACHMENT_LOAD_OP_LOAD, NULL)) return;
     memset(in, 0, sizeof(*in));
     memcpy(in->pos, pos, sizeof(in->pos));
     if (local) memcpy(in->local, local, sizeof(in->local));
@@ -3952,9 +3972,13 @@ static bool rects_overlap(const struct rect *rects, int count) {
 }
 
 static void blit_barrier(struct vk *v, VkCommandBuffer cb) {
-    memory_barrier(v, cb, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+    memory_barrier(v, cb,
+        VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT,
+        VK_ACCESS_2_TRANSFER_WRITE_BIT,
         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
+            VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT |
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
             VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT |
             VK_ACCESS_2_TRANSFER_WRITE_BIT);
@@ -4382,8 +4406,9 @@ void gfx_blur_passes(struct render *r, struct gfx_level *const *levels, int pass
             sample_pass(v, v->up, from, to, offset, &up[i], 0, 1, both, both, sample | attach);
         else
             sample_pass(v, v->up, from, to, offset, &up[i], noise, vibrancy, both,
-                both | VK_PIPELINE_STAGE_2_BLIT_BIT, sample | attach |
-                VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
+                both | VK_PIPELINE_STAGE_2_BLIT_BIT | VK_PIPELINE_STAGE_2_COPY_BIT,
+                sample | attach | VK_ACCESS_2_TRANSFER_READ_BIT |
+                VK_ACCESS_2_TRANSFER_WRITE_BIT);
     }
 }
 
@@ -4546,7 +4571,7 @@ void gfx_shader_draw(struct pass *pass, struct gfx_prog *p, const struct gfx_sha
     VkBuffer buffer;
     VkDeviceSize offset;
     struct scene_instance *in = stage_alloc(v, sizeof(*in), &buffer, &offset);
-    if (!ubo || !in || !rendering_begin_area(v, v->target, pass_area(pass, v->target), VK_ATTACHMENT_LOAD_OP_LOAD, NULL)) return;
+    if (!ubo || !in || !rendering_begin_area(v, v->target, clip_area(pass ? pass->clip : NULL, v->target), VK_ATTACHMENT_LOAD_OP_LOAD, NULL)) return;
     memset(in, 0, sizeof(*in));
     memcpy(in->pos, pos, sizeof(in->pos));
     memcpy(in->local, local, sizeof(in->local));
@@ -4599,7 +4624,7 @@ void gfx_glass_draw(struct pass *pass, struct gfx_prog *p, struct texture *map,
     VkBuffer buffer;
     VkDeviceSize offset;
     struct scene_instance *in = stage_alloc(v, sizeof(*in), &buffer, &offset);
-    if (!in || !rendering_begin_area(v, v->target, pass_area(pass, v->target), VK_ATTACHMENT_LOAD_OP_LOAD, NULL)) return;
+    if (!in || !rendering_begin_area(v, v->target, clip_area(pass ? pass->clip : NULL, v->target), VK_ATTACHMENT_LOAD_OP_LOAD, NULL)) return;
     memset(in, 0, sizeof(*in));
     memcpy(in->pos, pos, sizeof(in->pos));
     memcpy(in->local, local, sizeof(in->local));
