@@ -2780,7 +2780,7 @@ static bool device_init(struct vk *v) {
 }
 
 static bool modifier_usable(struct vk *v, VkFormat format, uint64_t modifier,
-        VkImageUsageFlags usage, VkExternalMemoryFeatureFlags need) {
+        VkImageUsageFlags usage, VkExternalMemoryFeatureFlags need, uint32_t width, uint32_t height) {
     VkPhysicalDeviceImageDrmFormatModifierInfoEXT mod = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_DRM_FORMAT_MODIFIER_INFO_EXT,
         .drmFormatModifier = modifier,
@@ -2807,6 +2807,9 @@ static bool modifier_usable(struct vk *v, VkFormat format, uint64_t modifier,
         .pNext = &external_props,
     };
     if (vkGetPhysicalDeviceImageFormatProperties2(v->phys, &info, &props) != VK_SUCCESS)
+        return false;
+    if (props.imageFormatProperties.maxExtent.width < width ||
+            props.imageFormatProperties.maxExtent.height < height)
         return false;
     return (external_props.externalMemoryProperties.externalMemoryFeatures & need) == need;
 }
@@ -2864,13 +2867,13 @@ static bool formats_init(struct vk *v) {
                 (features & VK_FORMAT_FEATURE_BLIT_SRC_BIT);
             if (sample && modifier_usable(v, p->vk, modifier,
                     VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                    VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT))
+                    VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT, 0, 0))
                 format_set_add(&r->texture_formats, p->drm, modifier);
             if (sample && render && modifier_usable(v, p->vk, modifier,
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                     VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT |
-                    VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT))
+                    VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT, 0, 0))
                 format_set_add(&r->render_formats, p->drm, modifier);
         }
         free(mods);
@@ -2898,7 +2901,7 @@ static bool formats_init(struct vk *v) {
             if (!(features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) || (!midpoint && !cosited) ||
                     !modifier_usable(v, yuv_formats[i].vk, mods[j].drmFormatModifier,
                     VK_IMAGE_USAGE_SAMPLED_BIT,
-                    VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT)) continue;
+                    VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT, 0, 0)) continue;
             if (y->modifier_count < 32) y->modifiers[y->modifier_count++] = mods[j].drmFormatModifier;
             y->supported = true;
             all_midpoint = all_midpoint && midpoint;
@@ -3479,19 +3482,21 @@ struct gfx_bo *gfx_bo_alloc(struct render *r, int width, int height,
         for (uint32_t k = 0; k < mod_count; k++)
             if (mods[k] == m) { dup = true; break; }
         if (dup) continue;
-        if (!modifier_usable(v, p->vk, m, usage, VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT))
+        if (!modifier_usable(v, p->vk, m, usage, VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT,
+                (uint32_t)width, (uint32_t)height))
             continue;
         mods[mod_count++] = m;
     }
     if (!mod_count && format_has(format, DRM_FORMAT_MOD_INVALID)) {
         if (modifier_usable(v, p->vk, DRM_FORMAT_MOD_LINEAR, usage,
-                VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT)) {
+                VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT, (uint32_t)width, (uint32_t)height)) {
             mods[mod_count++] = DRM_FORMAT_MOD_LINEAR;
         } else if (fallback) {
             for (size_t i = 0; i < fallback->len; i++) {
                 uint64_t m = fallback->modifiers[i];
                 if (m == DRM_FORMAT_MOD_INVALID) continue;
-                if (modifier_usable(v, p->vk, m, usage, VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT))
+                if (modifier_usable(v, p->vk, m, usage, VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT,
+                (uint32_t)width, (uint32_t)height))
                     mods[mod_count++] = m;
             }
         }

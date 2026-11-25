@@ -187,7 +187,8 @@ static int vk_modifier_planes(const struct stream *s, uint64_t modifier) {
     return 0;
 }
 
-static bool vk_modifier_exportable(VkPhysicalDevice phys, VkFormat format, uint64_t modifier) {
+static bool vk_modifier_exportable(VkPhysicalDevice phys, VkFormat format, uint64_t modifier,
+        int width, int height) {
     VkPhysicalDeviceImageDrmFormatModifierInfoEXT mod = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_DRM_FORMAT_MODIFIER_INFO_EXT,
         .drmFormatModifier = modifier,
@@ -214,6 +215,9 @@ static bool vk_modifier_exportable(VkPhysicalDevice phys, VkFormat format, uint6
         .pNext = &eprops,
     };
     if (vkGetPhysicalDeviceImageFormatProperties2(phys, &info, &props) != VK_SUCCESS)
+        return false;
+    if (props.imageFormatProperties.maxExtent.width < (uint32_t)width ||
+            props.imageFormatProperties.maxExtent.height < (uint32_t)height)
         return false;
     return (eprops.externalMemoryProperties.externalMemoryFeatures &
         VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT) != 0;
@@ -345,7 +349,7 @@ static bool dmabuf_setup(struct stream *s) {
             }
         }
         if (planes < 1 || planes > PLANES_MAX) continue;
-        if (!vk_modifier_exportable(s->vk.phys, vk_format, modifier)) continue;
+        if (!vk_modifier_exportable(s->vk.phys, vk_format, modifier, s->width, s->height)) continue;
         if (modifier == DRM_FORMAT_MOD_LINEAR) {
             linear_ok = true;
             linear_planes = planes;
