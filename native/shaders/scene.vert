@@ -12,14 +12,14 @@ layout(location = 8) in vec4 params;
 layout(location = 9) in vec4 extra;
 layout(location = 10) in vec4 shape;
 
-layout(location = 0) out vec4 v_color;
-layout(location = 1) out vec4 v_tint;
-layout(location = 2) out vec4 v_params;
-layout(location = 3) out vec4 v_extra;
-layout(location = 4) out vec2 v_size;
+layout(location = 0) flat out vec4 v_color;
+layout(location = 1) flat out vec4 v_tint;
+layout(location = 2) flat out vec4 v_params;
+layout(location = 3) flat out vec4 v_extra;
+layout(location = 4) flat out vec2 v_size;
 layout(location = 5) out vec2 v_local;
 layout(location = 6) out vec2 v_tex;
-layout(location = 7) out float v_program;
+layout(location = 7) flat out float v_program;
 
 vec2 corner(vec4 a, vec4 b, int c) {
     if (c == 0) return a.xy;

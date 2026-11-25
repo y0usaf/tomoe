@@ -3,14 +3,14 @@
 layout(set = 0, binding = 0) uniform texture2D tex_image;
 layout(set = 1, binding = 0) uniform sampler tex_sampler;
 
-layout(location = 0) in vec4 v_color;
-layout(location = 1) in vec4 v_tint;
-layout(location = 2) in vec4 v_params;
-layout(location = 3) in vec4 v_extra;
-layout(location = 4) in vec2 v_size;
+layout(location = 0) flat in vec4 v_color;
+layout(location = 1) flat in vec4 v_tint;
+layout(location = 2) flat in vec4 v_params;
+layout(location = 3) flat in vec4 v_extra;
+layout(location = 4) flat in vec2 v_size;
 layout(location = 5) in vec2 v_local;
 layout(location = 6) in vec2 v_tex;
-layout(location = 7) in float v_program;
+layout(location = 7) flat in float v_program;
 
 layout(location = 0) out vec4 fragment;
 

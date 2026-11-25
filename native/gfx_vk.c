@@ -322,13 +322,14 @@ static int memory_type(struct vk *v, uint32_t bits, VkMemoryPropertyFlags need,
     return fallback;
 }
 
-static void full_barrier(struct vk *v, VkCommandBuffer cb) {
+static void stage_barrier(VkCommandBuffer cb, VkPipelineStageFlags2 src_stage,
+        VkAccessFlags2 src_access, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
     VkMemoryBarrier2 memory = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .srcStageMask = src_stage,
+        .srcAccessMask = src_access,
+        .dstStageMask = dst_stage,
+        .dstAccessMask = dst_access,
     };
     VkDependencyInfo info = {
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -336,6 +337,13 @@ static void full_barrier(struct vk *v, VkCommandBuffer cb) {
         .pMemoryBarriers = &memory,
     };
     vkCmdPipelineBarrier2(cb, &info);
+}
+
+static void full_barrier(struct vk *v, VkCommandBuffer cb) {
+    (void)v;
+    stage_barrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
 }
 
 static void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout from, VkImageLayout to,
@@ -1282,14 +1290,19 @@ static void latch_jobs(struct vk *v, bool ready) {
             at += (VkDeviceSize)width * (VkDeviceSize)height * 4;
         }
         if (!n) continue;
-        if (t->image->copied == seq) full_barrier(v, b->main);
+        if (t->image->copied == seq)
+            stage_barrier(b->main, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
         t->image->copied = seq;
         vkCmdCopyBufferToImage(b->main, v->staging.chunk->buffer, t->image->image,
             VK_IMAGE_LAYOUT_GENERAL, n, copies);
         r->gl_calls++;
         used = true;
     }
-    if (used && v->open) full_barrier(v, v->open->main);
+    if (used && v->open)
+        stage_barrier(v->open->main, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
     if (ready && used && !v->target && v->open) {
         uint64_t limit = upload_pending(u) ? u->jobs[u->latch % UPLOAD_JOBS].start : u->alloc;
         bool merged = v->staging.fences == UPLOAD_FENCES;
@@ -1757,8 +1770,8 @@ static struct target_pipelines *pipelines_find(struct vk *v, VkFormat format) {
     return NULL;
 }
 
-static bool rendering_begin(struct vk *v, struct vk_image *target) {
-    if (v->rendering && v->bound == target) return true;
+static bool rendering_begin_area(struct vk *v, struct vk_image *target, VkRect2D area,
+        VkAttachmentLoadOp load_op) {
     if (!target) return false;
     rendering_end(v);
     struct batch *b = batch(v);
@@ -1767,12 +1780,12 @@ static bool rendering_begin(struct vk *v, struct vk_image *target) {
         .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
         .imageView = target->view,
         .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-        .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .loadOp = load_op,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
     };
     VkRenderingInfo info = {
         .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-        .renderArea = { { 0, 0 }, { (uint32_t)target->width, (uint32_t)target->height } },
+        .renderArea = area,
         .layerCount = 1,
         .colorAttachmentCount = 1,
         .pColorAttachments = &color,
@@ -1790,6 +1803,13 @@ static bool rendering_begin(struct vk *v, struct vk_image *target) {
     v->bound = target;
     v->base.gl_calls += 2;
     return true;
+}
+
+static bool rendering_begin(struct vk *v, struct vk_image *target) {
+    if (v->rendering && v->bound == target) return true;
+    if (!target) return false;
+    VkRect2D area = { { 0, 0 }, { (uint32_t)target->width, (uint32_t)target->height } };
+    return rendering_begin_area(v, target, area, VK_ATTACHMENT_LOAD_OP_LOAD);
 }
 
 static struct vk_image *level_image(const struct gfx_level *level) {
@@ -3080,7 +3100,10 @@ bool gfx_buffer_copy(struct pass *pass, struct buffer *src, const struct region 
     }
     VkCommandBuffer cb = transfer_begin(v);
     if (!cb) return false;
-    if (!from->foreign || from->written == b->serial) full_barrier(v, cb);
+    if (!from->foreign || from->written == b->serial)
+        stage_barrier(cb, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT,
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
     int count = 0;
     const struct rect *rects = region_rectangles((struct region *)region, &count);
     VkImageCopy copies[32];
@@ -3179,7 +3202,25 @@ static void sample_pass(struct vk *v, VkPipeline pipeline, struct vk_image *from
         float vibrancy) {
     int count = 0;
     const struct rect *rects = region_rectangles(where, &count);
-    if (!count || !from->set || !rendering_begin(v, to)) return;
+    if (!count || !from->set) return;
+    int32_t min_x = to->width, min_y = to->height, max_x = 0, max_y = 0;
+    for (int i = 0; i < count; i++) {
+        int32_t x1 = rects[i].x1 < 0 ? 0 : rects[i].x1;
+        int32_t y1 = rects[i].y1 < 0 ? 0 : rects[i].y1;
+        int32_t x2 = rects[i].x2 > to->width ? to->width : rects[i].x2;
+        int32_t y2 = rects[i].y2 > to->height ? to->height : rects[i].y2;
+        if (x2 <= x1 || y2 <= y1) continue;
+        if (x1 < min_x) min_x = x1;
+        if (y1 < min_y) min_y = y1;
+        if (x2 > max_x) max_x = x2;
+        if (y2 > max_y) max_y = y2;
+    }
+    if (max_x <= min_x || max_y <= min_y) return;
+    VkRect2D area = { { min_x, min_y }, { (uint32_t)(max_x - min_x), (uint32_t)(max_y - min_y) } };
+    VkAttachmentLoadOp load_op = (count == 1 && min_x == 0 && min_y == 0 &&
+            max_x == to->width && max_y == to->height)
+        ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : VK_ATTACHMENT_LOAD_OP_LOAD;
+    if (!rendering_begin_area(v, to, area, load_op)) return;
     VkCommandBuffer cb = v->open->main;
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     VkDescriptorSet sets[2] = { from->set, v->sampler_sets[0] };
@@ -3248,7 +3289,8 @@ void gfx_backdrop_grab(struct render *r, struct buffer *buffer, const struct gfx
         int w = shown->width, h = shown->height;
         if (cb && clip_copy(&sx, &sy, &dx, &dy, &w, &h, source, dest)) {
             blit(cb, source, dest, sx, sy, sx + w, sy + h, dx, dy, dx + w, dy + h, VK_FILTER_NEAREST);
-            full_barrier(v, cb);
+            stage_barrier(cb, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         }
     }
     rendering_end(v);
