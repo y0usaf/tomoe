@@ -25,6 +25,7 @@ struct stream {
     int height;
     uint32_t format;
     uint32_t shm_format;
+    bool have_shm_format;
     dev_t device;
     bool have_device;
     bool constrained;
@@ -102,6 +103,22 @@ static uint32_t spa_format_of_shm(uint32_t format) {
     case WL_SHM_FORMAT_ABGR8888: return SPA_VIDEO_FORMAT_RGBA;
     case WL_SHM_FORMAT_XBGR8888: return SPA_VIDEO_FORMAT_RGBX;
     default: return 0;
+    }
+}
+
+static uint32_t drm_format_of_shm(uint32_t format) {
+    switch (format) {
+    case WL_SHM_FORMAT_ARGB8888: return DRM_FORMAT_ARGB8888;
+    case WL_SHM_FORMAT_XRGB8888: return DRM_FORMAT_XRGB8888;
+    default: return format;
+    }
+}
+
+static uint32_t shm_format_of_drm(uint32_t fourcc) {
+    switch (fourcc) {
+    case DRM_FORMAT_ARGB8888: return WL_SHM_FORMAT_ARGB8888;
+    case DRM_FORMAT_XRGB8888: return WL_SHM_FORMAT_XRGB8888;
+    default: return fourcc;
     }
 }
 
@@ -834,10 +851,13 @@ static void capture_shm_format(void *data, struct ext_image_copy_capture_session
         uint32_t format) {
     struct stream *s = data;
     if (format == WL_SHM_FORMAT_ARGB8888 || format == WL_SHM_FORMAT_XRGB8888 ||
-            format == WL_SHM_FORMAT_ABGR8888 || format == WL_SHM_FORMAT_XBGR8888)
+            format == WL_SHM_FORMAT_ABGR8888 || format == WL_SHM_FORMAT_XBGR8888) {
         s->shm_format = format;
-    else if (!s->shm_format)
+        s->have_shm_format = true;
+    } else if (!s->have_shm_format) {
         s->shm_format = format;
+        s->have_shm_format = true;
+    }
 }
 
 static void capture_dmabuf_device(void *data, struct ext_image_copy_capture_session_v1 *session,
@@ -995,13 +1015,17 @@ struct stream *stream_start(struct session *session) {
         stream_free(s);
         return NULL;
     }
-    if (!spa_format_of(s->format)) s->format = s->shm_format;
+    if (!spa_format_of(s->format) && s->have_shm_format)
+        s->format = drm_format_of_shm(s->shm_format);
     if (!spa_format_of(s->format)) {
         portal_log("the compositor offers no streamable pixel format");
         stream_free(s);
         return NULL;
     }
-    if (!s->shm_format) s->shm_format = s->format;
+    if (!s->have_shm_format) {
+        s->shm_format = shm_format_of_drm(s->format);
+        s->have_shm_format = true;
+    }
     if (!dmabuf_setup(s) && !udmabuf_setup(s)) s->alloc = ALLOC_SHM;
     s->dmabuf = s->alloc != ALLOC_SHM;
     if (s->dmabuf)

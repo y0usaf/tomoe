@@ -215,20 +215,26 @@ pkgs.testers.runNixOSTest {
         "else:\n"
         "    print('portal did not claim dbus name', file=sys.stderr)\n"
         "    sys.exit(2)\n"
-        "obj = bus.get_object('org.freedesktop.impl.portal.desktop.tomoe', '/org/freedesktop/portal/desktop')\n"
-        "iface = dbus.Interface(obj, 'org.freedesktop.impl.portal.ScreenCast')\n"
-        "sp = dbus.ObjectPath('/org/freedesktop/portal/desktop/session/e2e/s1')\n"
-        "rc1, _ = iface.CreateSession(dbus.ObjectPath('/org/freedesktop/portal/desktop/request/e2e/r1'), sp, 'e2e', {})\n"
-        "assert int(rc1) == 0, f'CreateSession rc={rc1}'\n"
-        "rc2, _ = iface.SelectSources(dbus.ObjectPath('/org/freedesktop/portal/desktop/request/e2e/r2'), sp, 'e2e', {'types': dbus.UInt32(1)})\n"
-        "assert int(rc2) == 0, f'SelectSources rc={rc2}'\n"
-        "rc3, res = iface.Start(dbus.ObjectPath('/org/freedesktop/portal/desktop/request/e2e/r3'), sp, 'e2e', str(), {})\n"
-        "assert int(rc3) == 0, f'Start rc={rc3} res={res}'\n"
-        "streams = res.get('streams', [])\n"
-        "assert len(streams) > 0, f'no streams in {res}'\n"
-        "node_id = int(streams[0][0])\n"
-        "bench = subprocess.Popen([sys.argv[1], '--phase', 'frames', '--seconds', '4', '--windows', '1'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        "source_type = int(os.environ.get('PW_SOURCE_TYPE', '1'))\n"
+        "bench = subprocess.Popen([sys.argv[1], '--phase', 'frames', '--seconds', '8', '--windows', '1'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
         "try:\n"
+        "    obj = bus.get_object('org.freedesktop.impl.portal.desktop.tomoe', '/org/freedesktop/portal/desktop')\n"
+        "    iface = dbus.Interface(obj, 'org.freedesktop.impl.portal.ScreenCast')\n"
+        "    sp = dbus.ObjectPath('/org/freedesktop/portal/desktop/session/e2e/s1')\n"
+        "    rc1, _ = iface.CreateSession(dbus.ObjectPath('/org/freedesktop/portal/desktop/request/e2e/r1'), sp, 'e2e', {})\n"
+        "    assert int(rc1) == 0, f'CreateSession rc={rc1}'\n"
+        "    rc2 = 2\n"
+        "    for attempt in range(20):\n"
+        "        rc2, _ = iface.SelectSources(dbus.ObjectPath(f'/org/freedesktop/portal/desktop/request/e2e/r2_{attempt}'), sp, 'e2e', {'types': dbus.UInt32(source_type)})\n"
+        "        if int(rc2) == 0:\n"
+        "            break\n"
+        "        time.sleep(0.1)\n"
+        "    assert int(rc2) == 0, f'SelectSources rc={rc2}'\n"
+        "    rc3, res = iface.Start(dbus.ObjectPath('/org/freedesktop/portal/desktop/request/e2e/r3'), sp, 'e2e', str(), {})\n"
+        "    assert int(rc3) == 0, f'Start rc={rc3} res={res}'\n"
+        "    streams = res.get('streams', [])\n"
+        "    assert len(streams) > 0, f'no streams in {res}'\n"
+        "    node_id = int(streams[0][0])\n"
         "    r = subprocess.run([sys.argv[2], '--node', str(node_id), '--timeout', '6', '--frames', '5', '--slow-first-ms', '200'] + sys.argv[3:])\n"
         "finally:\n"
         "    bench.terminate()\n"
@@ -259,7 +265,13 @@ pkgs.testers.runNixOSTest {
             pw_shm_rc = rc_i
             pw_shm_out = out_i
             break
-    if pw_rc != 0 or pw_shm_rc != 0:
+    pw_win_shm_rc, pw_win_shm_out = machine.execute(
+        f"{sh_env} WAYLAND_DISPLAY={wl_display} DBUS_SESSION_BUS_ADDRESS={bus_addr} "
+        f"PIPEWIRE_RUNTIME_DIR=/run/e2e/rt PW_SOURCE_TYPE=2 ${pyDbus}/bin/python3 /run/e2e/pw_driver.py "
+        f"${client}/bin/bench-client ${pwPortal}/bin/tomoe-e2e-pw-portal --shm-only"
+    )
+    print(f"E2E_PW_PORTAL_WINDOW_SHM rc={pw_win_shm_rc} out={pw_win_shm_out.strip()}")
+    if pw_rc != 0 or pw_shm_rc != 0 or pw_win_shm_rc != 0:
         _, plog = machine.execute("journalctl -u e2e-portal -u e2e-pipewire --no-pager -n 60")
         print(f"E2E_PORTAL_LOG:\n{plog}")
 
@@ -281,5 +293,6 @@ pkgs.testers.runNixOSTest {
     assert blur_rc == 0, f"e2e-layer-blur failed (rc={blur_rc}): {blur_out}"
     assert pw_rc == 0, f"e2e-pw-portal failed (rc={pw_rc}): {pw_out}"
     assert pw_shm_rc == 0, f"e2e-pw-portal --shm-only failed (rc={pw_shm_rc}): {pw_shm_out}"
+    assert pw_win_shm_rc == 0, f"e2e-pw-portal window --shm-only failed (rc={pw_win_shm_rc}): {pw_win_shm_out}"
   '';
 }

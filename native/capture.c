@@ -163,6 +163,7 @@ static void capture(struct wl_client *client, struct wl_resource *manager, uint3
     wl_resource_set_user_data(resource, frame);
     wl_list_insert(&s->copy_frames, &frame->link);
     zwlr_screencopy_frame_v1_send_buffer(resource,
+        frame->shm_format == DRM_FORMAT_ARGB8888 ? WL_SHM_FORMAT_ARGB8888 :
         frame->shm_format == DRM_FORMAT_XRGB8888 ? WL_SHM_FORMAT_XRGB8888 : frame->shm_format,
         box.width, box.height, box.width * 4);
     if (wl_resource_get_version(resource) >= 3) {
