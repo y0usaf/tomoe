@@ -1365,9 +1365,17 @@ bool effect_cursor(struct frame *f, const struct texture_options *options,
 }
 
 void effects_finish(struct tomoe *s) {
-    if (s->effects) {
-        free(s->effects->trail.seen);
-        free(s->effects->trail.cells);
+    struct effects *e = s->effects;
+    if (e) {
+        for (size_t i = 0; i < BLUR_RESULTS; i++) gfx_level_release(&e->results[i].level);
+        for (size_t i = 0; i < BLUR_CHAINS; i++) gfx_level_release(&e->chains[i].level);
+        for (int i = 0; i < FROST_CHAINS; i++) gfx_level_release(&e->frost[i].level);
+        gfx_level_release(&e->glass.level);
+        for (size_t i = 0; i < sizeof(e->scratch) / sizeof(e->scratch[0]); i++)
+            gfx_level_release(&e->scratch[i]);
+        gfx_level_release(&e->backdrop);
+        free(e->trail.seen);
+        free(e->trail.cells);
     }
     free(s->effects);
     s->effects = NULL;
