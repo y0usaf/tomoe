@@ -69,6 +69,7 @@ struct vk_texture {
 struct grave {
     struct grave *next;
     uint64_t serial;
+    struct chunk *chunk;
     VkImage image;
     VkDeviceMemory memory;
     VkImageView view, sample;
@@ -461,6 +462,7 @@ static struct chunk *chunk_new(struct vk *v, VkDeviceSize size, VkBufferUsageFla
 }
 
 static void bury_now(struct vk *v, struct grave *g) {
+    if (g->chunk) chunk_free(v, g->chunk);
     for (int i = 0; i < TARGET_FORMATS; i++)
         if (g->pipelines[i]) vkDestroyPipeline(v->dev, g->pipelines[i], NULL);
     if (g->module) vkDestroyShaderModule(v->dev, g->module, NULL);
@@ -1451,6 +1453,19 @@ static void staging_free(struct vk *v) {
     if (v->base.upload) upload_set_staging(v->base.upload, NULL, 0);
 }
 
+static void staging_retire(struct vk *v) {
+    if (!v->staging.chunk) return;
+    staging_poll(v, false);
+    struct chunk *old = v->staging.chunk;
+    v->staging.chunk = NULL;
+    bool busy = v->staging.fences > 0 || v->staging.unfenced;
+    v->staging.fences = 0;
+    v->staging.unfenced = false;
+    if (v->base.upload) upload_set_staging(v->base.upload, NULL, 0);
+    if (busy) bury(v, (struct grave){ .chunk = old });
+    else chunk_free(v, old);
+}
+
 static bool staging_alloc(struct vk *v, uint64_t size) {
     v->staging.chunk = chunk_new(v, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 0);
     if (!v->staging.chunk) {
@@ -1462,11 +1477,23 @@ static bool staging_alloc(struct vk *v, uint64_t size) {
     return true;
 }
 
+static void staging_resize(struct vk *v) {
+    struct upload *u = v->base.upload;
+    if (!u || !v->staging.chunk || !upload_idle(u)) return;
+    uint64_t want = upload_wanted(u);
+    if (!want) return;
+    staging_retire(v);
+    u->stats.resizes++;
+    staging_alloc(v, want);
+}
+
 static struct upload *staging(struct vk *v) {
     struct render *r = &v->base;
     if (!r->upload) return NULL;
     if (!v->staging.chunk && !v->staging.failed &&
             !staging_alloc(v, upload_wanted(r->upload))) v->staging.failed = true;
+    else
+        staging_resize(v);
     return v->staging.chunk ? r->upload : NULL;
 }
 
@@ -1560,12 +1587,6 @@ static bool latch_jobs(struct vk *v, bool ready) {
         u->gpu_done = u->alloc;
     }
     upload_latch_end(u, true);
-    uint64_t want = upload_wanted(u);
-    if (want && upload_idle(u)) {
-        staging_free(v);
-        u->stats.resizes++;
-        staging_alloc(v, want);
-    }
     if (timing_enabled) timing_add(TIMING_UPLOAD_LATCH, timing_now() - start);
     return used;
 }
@@ -1578,6 +1599,7 @@ void gfx_upload_latch(struct render *r) {
     struct vk *v = V(r);
     if (latch_jobs(v, true) && v->open && !v->target) submit(v, false);
     else idle_submit(v);
+    staging_resize(v);
 }
 
 static bool stage(struct vk_texture *t, struct buffer *buffer, const struct region *damage) {

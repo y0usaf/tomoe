@@ -32,7 +32,7 @@ struct upload_stats {
 
 struct upload {
     struct upload_job jobs[UPLOAD_JOBS];
-    _Atomic uint32_t head, sleeping, stop, signaled, wake;
+    _Atomic uint32_t head, sleeping, stop, signaled, wake, waiters;
     uint32_t taken, tail, latch;
     int fd;
     pthread_t thread;

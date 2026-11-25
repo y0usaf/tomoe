@@ -1,6 +1,5 @@
 #include "upload.h"
 #include <linux/futex.h>
-#include <sched.h>
 #include <signal.h>
 #include <sys/eventfd.h>
 #include <sys/syscall.h>
@@ -63,7 +62,9 @@ static void *worker(void *data) {
         if (timing_enabled)
             atomic_fetch_add_explicit(&u->stats.worker_ns, now_ns() - start, memory_order_relaxed);
         atomic_fetch_add_explicit(&u->stats.worker_jobs, 1, memory_order_relaxed);
-        atomic_store_explicit(&job->state, UPLOAD_DONE, memory_order_release);
+        atomic_store_explicit(&job->state, UPLOAD_DONE, memory_order_seq_cst);
+        if (atomic_load_explicit(&u->waiters, memory_order_seq_cst))
+            syscall(SYS_futex, (uint32_t *)&job->state, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
         if (!atomic_exchange(&u->signaled, 1)) {
             uint64_t one = 1;
             ssize_t n = write(u->fd, &one, sizeof(one));
@@ -228,15 +229,12 @@ static bool main_copy(struct upload *u, struct upload_job *job, int state) {
         return copy_rects(job, job->src);
     }
     u->stats.raced++;
-    job->superseded = true;
-    uint64_t start;
-    if (reserve(u, job->end - job->start, &start)) {
-        job->src = u->base + start % u->size;
-        u->alloc = start + (job->end - job->start);
-        return copy_rects(job, job->src);
-    }
     u->stats.waited++;
-    while (atomic_load_explicit(&job->state, memory_order_acquire) != UPLOAD_DONE) sched_yield();
+    job->superseded = true;
+    atomic_fetch_add_explicit(&u->waiters, 1, memory_order_seq_cst);
+    while (atomic_load_explicit(&job->state, memory_order_seq_cst) != UPLOAD_DONE)
+        syscall(SYS_futex, (uint32_t *)&job->state, FUTEX_WAIT_PRIVATE, UPLOAD_WORKER, NULL, NULL, 0);
+    atomic_fetch_sub_explicit(&u->waiters, 1, memory_order_relaxed);
     job->src = job->dst;
     return !job->fault;
 }
@@ -278,7 +276,7 @@ void upload_latch_end(struct upload *u, bool frame) {
     u->frame_bytes = 0;
     if (++u->window_latches == UPLOAD_WINDOW) {
         u->window_peak = u->window_max;
-        u->calm = u->window_max <= u->size / 4;
+        u->calm = u->window_max <= u->size / 8;
         u->window_max = 0;
         u->window_latches = 0;
     }
