@@ -273,6 +273,8 @@ int main(int argc, char **argv) {
             &SPA_RECTANGLE(1280, 720), &SPA_RECTANGLE(1, 1), &SPA_RECTANGLE(16384, 16384)),
         SPA_FORMAT_VIDEO_framerate, SPA_POD_CHOICE_RANGE_Fraction(
             &SPA_FRACTION(60, 1), &SPA_FRACTION(0, 1), &SPA_FRACTION(1000, 1)),
+        SPA_FORMAT_VIDEO_maxFramerate, SPA_POD_CHOICE_RANGE_Fraction(
+            &SPA_FRACTION(60, 1), &SPA_FRACTION(0, 1), &SPA_FRACTION(60, 1)),
         0);
     const struct spa_pod *params[2];
     uint32_t n_params = 0;
@@ -295,7 +297,9 @@ int main(int argc, char **argv) {
             SPA_FORMAT_VIDEO_size, SPA_POD_CHOICE_RANGE_Rectangle(
                 &SPA_RECTANGLE(1280, 720), &SPA_RECTANGLE(1, 1), &SPA_RECTANGLE(16384, 16384)),
             SPA_FORMAT_VIDEO_framerate, SPA_POD_CHOICE_RANGE_Fraction(
-                &SPA_FRACTION(60, 1), &SPA_FRACTION(0, 1), &SPA_FRACTION(1000, 1)));
+                &SPA_FRACTION(60, 1), &SPA_FRACTION(0, 1), &SPA_FRACTION(1000, 1)),
+            SPA_FORMAT_VIDEO_maxFramerate, SPA_POD_CHOICE_RANGE_Fraction(
+                &SPA_FRACTION(60, 1), &SPA_FRACTION(0, 1), &SPA_FRACTION(60, 1)));
     }
     struct timespec ts = { .tv_sec = timeout_sec, .tv_nsec = 0 };
     c.timer = pw_loop_add_timer(pw_main_loop_get_loop(c.loop), on_timeout, &c);

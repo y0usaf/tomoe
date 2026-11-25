@@ -573,7 +573,10 @@ void pww_pod_choice_fraction(struct pww_build *b, uint32_t choice, const uint32_
     pww_build_u32(b, 0);
     pww_build_u32(b, 8);
     pww_build_u32(b, SPA_TYPE_FRACTION);
-    for (uint32_t i = 0; i < count; i++) pww_build_u32(b, values[i]);
+    for (uint32_t i = 0; i < count; i++) {
+        pww_build_u32(b, values[i * 2]);
+        pww_build_u32(b, values[i * 2 + 1]);
+    }
     pww_pod_end(b, &f, SPA_TYPE_CHOICE);
 }
 
