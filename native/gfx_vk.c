@@ -222,6 +222,7 @@ struct vk {
     PFN_vkGetSemaphoreFdKHR semaphore_fd;
     PFN_vkImportSemaphoreFdKHR import_semaphore;
     bool sync_fd;
+    bool nvidia_drm;
     VkCommandPool command_pool;
     struct batch *batches;
     size_t batch_count;
@@ -1327,8 +1328,11 @@ static struct vk_image *import(struct vk *v, struct buffer *buffer) {
     vkGetImageMemoryRequirements(v->dev, image->image, &req);
     int fd = -1, type = -1;
     if (v->memory_fd_properties(v->dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, d.fd[0],
-            &fd_props) == VK_SUCCESS)
-        type = memory_type(v, req.memoryTypeBits & fd_props.memoryTypeBits, 0, 0);
+            &fd_props) == VK_SUCCESS) {
+        uint32_t bits = req.memoryTypeBits & fd_props.memoryTypeBits;
+        type = memory_type(v, bits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
+        if (type < 0) type = memory_type(v, bits, 0, 0);
+    }
     if (type >= 0) fd = fcntl(d.fd[0], F_DUPFD_CLOEXEC, 0);
     VkMemoryDedicatedAllocateInfo dedicated = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
@@ -2839,6 +2843,33 @@ static uint32_t modifier_planes(struct vk *v, VkFormat format, uint64_t modifier
     return planes;
 }
 
+struct nv_drm_gem_alloc_nvkms_memory_params {
+    uint32_t handle;
+    uint8_t block_linear;
+    uint8_t compressible;
+    uint16_t pad;
+    uint64_t memory_size;
+    uint32_t flags;
+    uint32_t pad2;
+};
+
+#define TOMOE_DRM_IOCTL_NVIDIA_GEM_ALLOC_NVKMS_MEMORY \
+    _IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x0b, struct nv_drm_gem_alloc_nvkms_memory_params)
+
+static bool drm_is_nvidia(int fd) {
+    if (fd < 0) return false;
+    char name[32] = {0};
+    struct drm_version ver = { .name_len = sizeof(name) - 1, .name = name };
+    if (drm_ioctl(fd, DRM_IOCTL_VERSION, &ver) != 0) return false;
+    name[sizeof(name) - 1] = '\0';
+    return strcmp(name, "nvidia-drm") == 0;
+}
+
+static bool nvidia_mod_compressed(uint64_t mod) {
+    return (mod >> 56) == DRM_FORMAT_MOD_VENDOR_NVIDIA &&
+        (mod & 0x10ull) != 0 && ((mod >> 23) & 0x7ull) != 0;
+}
+
 static bool formats_init(struct vk *v) {
     struct render *r = &v->base;
     for (size_t i = 0; i < sizeof(pixels) / sizeof(pixels[0]); i++) {
@@ -2869,7 +2900,10 @@ static bool formats_init(struct vk *v) {
                     VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                     VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT, 0, 0))
                 format_set_add(&r->texture_formats, p->drm, modifier);
-            if (sample && render && modifier_usable(v, p->vk, modifier,
+            if (sample && render &&
+                    (!v->nvidia_drm || (!nvidia_mod_compressed(modifier) &&
+                        mods[j].drmFormatModifierPlaneCount == 1)) &&
+                    modifier_usable(v, p->vk, modifier,
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                     VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT |
@@ -3395,6 +3429,7 @@ bool gfx_open(struct render *r) {
     const char *lose = tomoe_test_flag_value("gfx-lose-device");
     if (lose) v->lose_at = strtoull(lose, NULL, 10);
     if (!device_init(v)) return false;
+    v->nvidia_drm = drm_is_nvidia(r->fd);
     if (!formats_init(v)) {
         tomoe_log(LOG_ERROR, "tomoe: vulkan reports no renderable dmabuf formats");
         return false;
@@ -3482,6 +3517,8 @@ struct gfx_bo *gfx_bo_alloc(struct render *r, int width, int height,
         for (uint32_t k = 0; k < mod_count; k++)
             if (mods[k] == m) { dup = true; break; }
         if (dup) continue;
+        if (v->nvidia_drm && (nvidia_mod_compressed(m) || modifier_planes(v, p->vk, m) != 1))
+            continue;
         if (!modifier_usable(v, p->vk, m, usage, VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT,
                 (uint32_t)width, (uint32_t)height))
             continue;
@@ -3495,8 +3532,10 @@ struct gfx_bo *gfx_bo_alloc(struct render *r, int width, int height,
             for (size_t i = 0; i < fallback->len; i++) {
                 uint64_t m = fallback->modifiers[i];
                 if (m == DRM_FORMAT_MOD_INVALID) continue;
+                if (v->nvidia_drm && (nvidia_mod_compressed(m) || modifier_planes(v, p->vk, m) != 1))
+                    continue;
                 if (modifier_usable(v, p->vk, m, usage, VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT,
-                (uint32_t)width, (uint32_t)height))
+                        (uint32_t)width, (uint32_t)height))
                     mods[mod_count++] = m;
             }
         }
@@ -3557,6 +3596,66 @@ struct gfx_bo *gfx_bo_alloc(struct render *r, int width, int height,
         .image = image,
     };
     vkGetImageMemoryRequirements2(v->dev, &req_info, &req);
+    if (v->nvidia_drm) {
+        if (planes != 1 || r->fd < 0) {
+            vkDestroyImage(v->dev, image, NULL);
+            return NULL;
+        }
+        VkImageSubresource sub = {
+            .aspectMask = VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT,
+            .mipLevel = 0,
+            .arrayLayer = 0,
+        };
+        VkSubresourceLayout layout = {0};
+        vkGetImageSubresourceLayout(v->dev, image, &sub, &layout);
+        vkDestroyImage(v->dev, image, NULL);
+        bool linear = chosen.drmFormatModifier == DRM_FORMAT_MOD_LINEAR;
+        uint64_t stride = layout.rowPitch;
+        if (linear) stride = (stride + 255ull) & ~255ull;
+        if (layout.offset != 0 || stride == 0 || stride > UINT32_MAX) return NULL;
+        uint64_t min_sz = req.memoryRequirements.size;
+        if (linear) {
+            uint64_t lin_sz = stride * (uint64_t)height;
+            if (lin_sz > min_sz) min_sz = lin_sz;
+        }
+        uint64_t align = req.memoryRequirements.alignment > 65536ull
+            ? req.memoryRequirements.alignment : 65536ull;
+        uint64_t alloc_sz = (min_sz + align - 1) & ~(align - 1);
+        if (alloc_sz < min_sz) return NULL;
+        struct nv_drm_gem_alloc_nvkms_memory_params nv = {
+            .block_linear = linear ? 0 : 1,
+            .compressible = 0,
+            .memory_size = alloc_sz,
+            .flags = 0,
+        };
+        if (drm_ioctl(r->fd, TOMOE_DRM_IOCTL_NVIDIA_GEM_ALLOC_NVKMS_MEMORY, &nv) != 0)
+            return NULL;
+        struct drm_prime_handle ph = {
+            .handle = nv.handle,
+            .flags = DRM_CLOEXEC | DRM_RDWR,
+            .fd = -1,
+        };
+        int rc = drm_ioctl(r->fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &ph);
+        drm_prime_close_handle(r->fd, nv.handle);
+        if (rc != 0 || ph.fd < 0) return NULL;
+        struct gfx_bo *bo = calloc(1, sizeof(*bo));
+        if (!bo) {
+            close(ph.fd);
+            return NULL;
+        }
+        *dmabuf = (struct dmabuf_attributes){
+            .width = width,
+            .height = height,
+            .format = format->format,
+            .n_planes = 1,
+            .modifier = chosen.drmFormatModifier,
+        };
+        for (int i = 0; i < DMABUF_MAX_PLANES; i++) dmabuf->fd[i] = -1;
+        dmabuf->offset[0] = 0;
+        dmabuf->stride[0] = (uint32_t)stride;
+        dmabuf->fd[0] = ph.fd;
+        return bo;
+    }
     int type = memory_type(v, req.memoryRequirements.memoryTypeBits,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
     if (type < 0) type = memory_type(v, req.memoryRequirements.memoryTypeBits, 0, 0);
@@ -3640,7 +3739,7 @@ fail_fd:
 void gfx_bo_destroy(struct render *r, struct gfx_bo *bo) {
     if (!bo) return;
     struct vk *v = V(r);
-    if (v && v->dev)
+    if (v && v->dev && (bo->image || bo->memory))
         bury(v, (struct grave){ .image = bo->image, .memory = bo->memory });
     free(bo);
 }

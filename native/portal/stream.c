@@ -1,6 +1,8 @@
 #include "portal.h"
 #include "pw.h"
 
+#include <dirent.h>
+#include <drm/drm.h>
 #include <drm/drm_fourcc.h>
 #include <errno.h>
 #include <linux/udmabuf.h>
@@ -20,6 +22,19 @@ struct portal_vk_bo {
     VkDeviceMemory memory;
 };
 
+struct nv_drm_gem_alloc_nvkms_memory_params {
+    uint32_t handle;
+    uint8_t block_linear;
+    uint8_t compressible;
+    uint16_t pad;
+    uint64_t memory_size;
+    uint32_t flags;
+    uint32_t pad2;
+};
+
+#define PORTAL_DRM_IOCTL_NVIDIA_GEM_ALLOC_NVKMS_MEMORY \
+    _IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x0b, struct nv_drm_gem_alloc_nvkms_memory_params)
+
 struct portal_vk {
     VkInstance instance;
     VkPhysicalDevice phys;
@@ -27,6 +42,8 @@ struct portal_vk {
     VkPhysicalDeviceMemoryProperties memory;
     PFN_vkGetMemoryFdKHR memory_fd;
     VkFormat format;
+    int drm_fd;
+    bool nvidia_drm;
     uint64_t mod_values[PWV_MAX_MODIFIERS];
     int mod_planes[PWV_MAX_MODIFIERS];
     size_t mod_count;
@@ -166,10 +183,54 @@ static bool vk_has_ext(const VkExtensionProperties *list, uint32_t count, const 
     return false;
 }
 
+static int portal_drm_ioctl(int fd, unsigned long req, void *arg) {
+    int rc;
+    do rc = ioctl(fd, req, arg);
+    while (rc < 0 && (errno == EINTR || errno == EAGAIN));
+    return rc;
+}
+
+static bool portal_drm_is_nvidia(int fd) {
+    if (fd < 0) return false;
+    char name[32] = {0};
+    struct drm_version ver = { .name_len = sizeof(name) - 1, .name = name };
+    if (portal_drm_ioctl(fd, DRM_IOCTL_VERSION, &ver) != 0) return false;
+    name[sizeof(name) - 1] = '\0';
+    return strcmp(name, "nvidia-drm") == 0;
+}
+
+static int portal_open_drm_dev(dev_t target) {
+    DIR *dir = opendir("/dev/dri");
+    if (!dir) return -1;
+    int found = -1;
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL) {
+        if (strncmp(ent->d_name, "renderD", 7) != 0 && strncmp(ent->d_name, "card", 4) != 0)
+            continue;
+        char path[64];
+        int n = snprintf(path, sizeof(path), "/dev/dri/%s", ent->d_name);
+        if (n < 0 || (size_t)n >= sizeof(path)) continue;
+        struct stat st;
+        if (stat(path, &st) == 0 && S_ISCHR(st.st_mode) && st.st_rdev == target) {
+            found = open(path, O_RDWR | O_CLOEXEC);
+            if (found >= 0) break;
+        }
+    }
+    closedir(dir);
+    return found;
+}
+
+static bool portal_nvidia_mod_compressed(uint64_t mod) {
+    return (mod >> 56) == DRM_FORMAT_MOD_VENDOR_NVIDIA &&
+        (mod & 0x10ull) != 0 && ((mod >> 23) & 0x7ull) != 0;
+}
+
 static void vk_teardown(struct stream *s) {
     if (s->vk.dev != VK_NULL_HANDLE) vkDestroyDevice(s->vk.dev, NULL);
     if (s->vk.instance != VK_NULL_HANDLE) vkDestroyInstance(s->vk.instance, NULL);
+    if (s->vk.drm_fd >= 0) close(s->vk.drm_fd);
     memset(&s->vk, 0, sizeof(s->vk));
+    s->vk.drm_fd = -1;
 }
 
 static void vk_bo_destroy(struct stream *s, struct portal_vk_bo *bo) {
@@ -223,7 +284,7 @@ static bool vk_modifier_exportable(VkPhysicalDevice phys, VkFormat format, uint6
         VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT) != 0;
 }
 
-static bool vk_device_matches(VkPhysicalDevice phys, dev_t wanted) {
+static bool vk_device_matches(VkPhysicalDevice phys, dev_t wanted, dev_t *node_out) {
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(phys, &props);
     if (props.apiVersion < VK_API_VERSION_1_1) return false;
@@ -246,8 +307,13 @@ static bool vk_device_matches(VkPhysicalDevice phys, dev_t wanted) {
         .pNext = &drm,
     };
     vkGetPhysicalDeviceProperties2(phys, &props2);
-    return (drm.hasRender && (dev_t)makedev(drm.renderMajor, drm.renderMinor) == wanted) ||
+    bool match = (drm.hasRender && (dev_t)makedev(drm.renderMajor, drm.renderMinor) == wanted) ||
         (drm.hasPrimary && (dev_t)makedev(drm.primaryMajor, drm.primaryMinor) == wanted);
+    if (match && node_out) {
+        if (drm.hasRender) *node_out = (dev_t)makedev(drm.renderMajor, drm.renderMinor);
+        else *node_out = (dev_t)makedev(drm.primaryMajor, drm.primaryMinor);
+    }
+    return match;
 }
 
 static bool udmabuf_setup(struct stream *s) {
@@ -301,12 +367,19 @@ static bool dmabuf_setup(struct stream *s) {
         return false;
     }
     vkEnumeratePhysicalDevices(s->vk.instance, &dev_count, devs);
+    dev_t drm_node = 0;
     for (uint32_t i = 0; i < dev_count && s->vk.phys == VK_NULL_HANDLE; i++)
-        if (vk_device_matches(devs[i], wanted)) s->vk.phys = devs[i];
+        if (vk_device_matches(devs[i], wanted, &drm_node)) s->vk.phys = devs[i];
     free(devs);
     if (s->vk.phys == VK_NULL_HANDLE) {
         vk_teardown(s);
         return false;
+    }
+    s->vk.drm_fd = portal_open_drm_dev(drm_node);
+    s->vk.nvidia_drm = portal_drm_is_nvidia(s->vk.drm_fd);
+    if (!s->vk.nvidia_drm && s->vk.drm_fd >= 0) {
+        close(s->vk.drm_fd);
+        s->vk.drm_fd = -1;
     }
     VkDrmFormatModifierPropertiesListEXT mod_list = {
         .sType = VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT,
@@ -349,6 +422,7 @@ static bool dmabuf_setup(struct stream *s) {
             }
         }
         if (planes < 1 || planes > PLANES_MAX) continue;
+        if (s->vk.nvidia_drm && (planes != 1 || portal_nvidia_mod_compressed(modifier))) continue;
         if (!vk_modifier_exportable(s->vk.phys, vk_format, modifier, s->width, s->height)) continue;
         if (modifier == DRM_FORMAT_MOD_LINEAR) {
             linear_ok = true;
@@ -524,6 +598,67 @@ static struct slot *slot_create(struct stream *s, bool want_dmabuf) {
             .image = image,
         };
         vkGetImageMemoryRequirements2(s->vk.dev, &req_info, &req);
+        if (s->vk.nvidia_drm) {
+            if (planes != 1 || s->vk.drm_fd < 0) {
+                vkDestroyImage(s->vk.dev, image, NULL);
+                goto failed;
+            }
+            VkImageSubresource sub = {
+                .aspectMask = VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT,
+                .mipLevel = 0,
+                .arrayLayer = 0,
+            };
+            VkSubresourceLayout layout = {0};
+            vkGetImageSubresourceLayout(s->vk.dev, image, &sub, &layout);
+            vkDestroyImage(s->vk.dev, image, NULL);
+            bool linear = s->modifier == DRM_FORMAT_MOD_LINEAR;
+            uint64_t stride = layout.rowPitch;
+            if (linear) stride = (stride + 255ull) & ~255ull;
+            if (layout.offset != 0 || stride == 0 || stride > UINT32_MAX) goto failed;
+            uint64_t min_sz = req.memoryRequirements.size;
+            if (linear) {
+                uint64_t lin_sz = stride * (uint64_t)s->height;
+                if (lin_sz > min_sz) min_sz = lin_sz;
+            }
+            uint64_t align = req.memoryRequirements.alignment > 65536ull
+                ? req.memoryRequirements.alignment : 65536ull;
+            uint64_t alloc_sz = (min_sz + align - 1) & ~(align - 1);
+            if (alloc_sz < min_sz || alloc_sz > UINT32_MAX) goto failed;
+            struct nv_drm_gem_alloc_nvkms_memory_params nv = {
+                .block_linear = linear ? 0 : 1,
+                .compressible = 0,
+                .memory_size = alloc_sz,
+                .flags = 0,
+            };
+            if (portal_drm_ioctl(s->vk.drm_fd, PORTAL_DRM_IOCTL_NVIDIA_GEM_ALLOC_NVKMS_MEMORY,
+                    &nv) != 0)
+                goto failed;
+            struct drm_prime_handle ph = {
+                .handle = nv.handle,
+                .flags = DRM_CLOEXEC | DRM_RDWR,
+                .fd = -1,
+            };
+            int rc = portal_drm_ioctl(s->vk.drm_fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &ph);
+            struct drm_gem_close gc = { .handle = nv.handle };
+            portal_drm_ioctl(s->vk.drm_fd, DRM_IOCTL_GEM_CLOSE, &gc);
+            if (rc != 0 || ph.fd < 0) goto failed;
+            slot->fds[0] = ph.fd;
+            slot->offset[0] = 0;
+            slot->stride[0] = (uint32_t)stride;
+            slot->size[0] = (uint32_t)alloc_sz;
+            slot->planes = 1;
+            struct zwp_linux_buffer_params_v1 *params = zwp_linux_dmabuf_v1_create_params(
+                s->portal->dmabuf);
+            if (!params) goto failed;
+            zwp_linux_buffer_params_v1_add(params, slot->fds[0], 0, 0, slot->stride[0],
+                (uint32_t)(s->modifier >> 32), (uint32_t)s->modifier);
+            slot->buffer = zwp_linux_buffer_params_v1_create_immed(params, s->width, s->height,
+                s->format, 0);
+            zwp_linux_buffer_params_v1_destroy(params);
+            if (!slot->buffer) goto failed;
+            slot->kind = SPA_DATA_DMABUF;
+            return slot;
+        }
         int mtype = vk_memory_type(&s->vk, req.memoryRequirements.memoryTypeBits);
         if (mtype < 0) {
             vkDestroyImage(s->vk.dev, image, NULL);
@@ -1268,6 +1403,7 @@ struct stream *stream_start(struct session *session) {
     s->arming = true;
     s->source_type = session->choice.type;
     s->udmabuf = -1;
+    s->vk.drm_fd = -1;
     s->wants_cursor = session->cursor_mode == CURSOR_METADATA;
     if (s->source_type == SOURCE_MONITOR) {
         struct output_info *info = portal_output_by_name(p, session->choice.output);
