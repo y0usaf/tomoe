@@ -34,6 +34,7 @@ struct pwv {
     struct loop *loop;
     struct loop_source *source;
     struct loop_source *process_source;
+    struct loop_timer *drain_timer;
     struct pwv_events events;
     void *data;
     uint32_t node_proxy;
@@ -76,10 +77,12 @@ struct pwv {
     uint32_t param_flags;
     uint32_t buffers_flags;
     uint32_t publish_gen;
+    bool io_delivered;
 };
 
 static void wire_ready(void *data, int fd, uint32_t mask);
 static void process_ready(void *data, int fd, uint32_t mask);
+static void drain_ready(void *data, uint64_t expirations);
 static void run_cycle(struct pwv *v);
 static int publish_params(struct pwv *v);
 
@@ -298,7 +301,22 @@ static int send_port_update(struct pwv *v) {
         PW_CLIENT_NODE_METHOD_PORT_UPDATE);
 }
 
+static void drain_disarm(struct pwv *v) {
+    if (!v->drain_timer) return;
+    loop_del_timer(v->loop, v->drain_timer);
+    v->drain_timer = NULL;
+}
+
+static void drain_arm(struct pwv *v) {
+    if (v->drain_timer || !v->loop) return;
+    v->drain_timer = loop_add_timer(v->loop, drain_ready, v);
+    if (!v->drain_timer) return;
+    struct timespec wait = { .tv_sec = 0, .tv_nsec = 4000000L };
+    loop_update_timer(v->loop, v->drain_timer, &wait, NULL, false);
+}
+
 static void clear_buffers(struct pwv *v) {
+    drain_disarm(v);
     pww_unmap_owner(&v->wire, (int)PWV_PORT);
     if (!v->n_buffers) return;
     for (uint32_t i = 0; i < v->n_buffers; i++) {
@@ -309,6 +327,7 @@ static void clear_buffers(struct pwv *v) {
     v->n_buffers = 0;
     v->n_dequeued = 0;
     v->n_queued = 0;
+    v->io_delivered = false;
     memset(v->where, 0, sizeof(v->where));
     memset(v->port_buffers, 0, sizeof(v->port_buffers));
 }
@@ -320,10 +339,12 @@ static void recycle_buffer(struct pwv *v) {
     if (id >= v->n_buffers || v->where[id] != BUFFER_PORT) return;
     v->where[id] = BUFFER_FREE;
     v->io->buffer_id = SPA_ID_INVALID;
+    v->io_delivered = false;
     if (v->n_dequeued < PWV_MAX_BUFFERS) v->dequeued[v->n_dequeued++] = &v->slots[id].pub;
 }
 
-static void trigger_targets(struct pwv *v, uint64_t nsec) {
+static bool trigger_targets(struct pwv *v, uint64_t nsec) {
+    bool sent = false;
     for (size_t i = 0; i < v->n_targets; i++) {
         struct pwv_target *target = &v->targets[i];
         if (target->id == v->node_global) continue;
@@ -340,10 +361,13 @@ static void trigger_targets(struct pwv *v, uint64_t nsec) {
         memcpy(a + PW_ACT_SIGNAL_TIME, &nsec, 8);
         uint64_t one = 1;
         if (write(target->fd, &one, sizeof(one)) < 0) continue;
+        sent = true;
     }
+    return sent;
 }
 
-static int32_t produce(struct pwv *v) {
+static int32_t produce(struct pwv *v, bool *fresh) {
+    *fresh = false;
     if (!v->io) return SPA_STATUS_NEED_DATA;
     if (v->io->status == SPA_STATUS_HAVE_DATA) {
         uint32_t id = v->io->buffer_id;
@@ -361,6 +385,8 @@ static int32_t produce(struct pwv *v) {
         v->where[buffer->id] = BUFFER_PORT;
         v->io->buffer_id = buffer->id;
         v->io->status = SPA_STATUS_HAVE_DATA;
+        v->io_delivered = false;
+        *fresh = true;
         return SPA_STATUS_HAVE_DATA;
     }
     return SPA_STATUS_NEED_DATA;
@@ -379,7 +405,8 @@ static void run_cycle(struct pwv *v) {
             memcpy(a + PW_ACT_AWAKE_TIME, &nsec, 8);
         }
     }
-    int32_t status = produce(v);
+    bool fresh = false;
+    int32_t status = produce(v, &fresh);
     if (owned) {
         uint8_t *a = v->activation;
         __atomic_store_n((int32_t *)(a + PW_ACT_STATE + PW_STATE_STATUS), status,
@@ -391,12 +418,17 @@ static void run_cycle(struct pwv *v) {
             memcpy(a + PW_ACT_FINISH_TIME, &finish, 8);
         }
     }
-    if (status == SPA_STATUS_HAVE_DATA) {
-        trigger_targets(v, nsec);
+    if (status == SPA_STATUS_HAVE_DATA && (fresh || owned || !v->io_delivered)) {
+        if (trigger_targets(v, nsec)) v->io_delivered = true;
         if (v->complete_fd >= 0) {
             uint64_t one = 1;
             if (write(v->complete_fd, &one, sizeof(one)) < 0) return;
         }
+    }
+    if (v->io && v->io->status == SPA_STATUS_HAVE_DATA && (v->n_queued || !v->n_dequeued)) {
+        drain_arm(v);
+    } else {
+        drain_disarm(v);
     }
     if (v->events.process && v->n_dequeued) v->events.process(v->data);
 }
@@ -553,6 +585,7 @@ static int handle_set_activation(struct pwv *v, struct pww_parse *p) {
     target->fd = v->wire.fds[index];
     v->wire.fds[index] = -1;
     target->active = true;
+    if (v->io && v->io->status == SPA_STATUS_HAVE_DATA && !v->io_delivered) run_cycle(v);
     return 0;
 }
 
@@ -688,6 +721,7 @@ static int dispatch(void *data, uint32_t id, uint32_t opcode, struct pww_parse *
             return -ENOMEM;
         if (io_id == SPA_IO_BUFFERS) {
             v->io = ptr;
+            v->io_delivered = false;
             if (ptr) run_cycle(v);
         }
         return 0;
@@ -732,12 +766,19 @@ static int dispatch(void *data, uint32_t id, uint32_t opcode, struct pww_parse *
         uint32_t type, command;
         if (pww_parse_pod_object(p, &type, &command)) return -EPROTO;
         if (type != SPA_TYPE_OBJECT_COMMANDNODE) return 0;
-        if (command == SPA_NODE_COMMAND_START) run_cycle(v);
+        if (command == SPA_NODE_COMMAND_START) { v->io_delivered = false; run_cycle(v); }
         return 0;
     }
     default:
         return 0;
     }
+}
+
+static void drain_ready(void *data, uint64_t expirations) {
+    (void)expirations;
+    struct pwv *v = data;
+    drain_disarm(v);
+    run_cycle(v);
 }
 
 static void process_ready(void *data, int fd, uint32_t mask) {
@@ -870,6 +911,7 @@ failed:
 
 void pwv_stop(struct pwv *v) {
     if (!v) return;
+    drain_disarm(v);
     if (v->process_source) loop_del_io(v->loop, v->process_source);
     if (v->source) loop_del_io(v->loop, v->source);
     if (v->wire.fd >= 0) close(v->wire.fd);
@@ -898,7 +940,13 @@ struct pwv_buffer *pwv_dequeue(struct pwv *v) {
 
 void pwv_queue(struct pwv *v, struct pwv_buffer *buffer) {
     if (!v || !buffer || v->where[buffer->id] != BUFFER_APP) return;
-    if (v->n_queued >= PWV_MAX_BUFFERS) return;
+    while (v->n_queued > 0) {
+        struct pwv_buffer *stale = v->queued[0];
+        memmove(&v->queued[0], &v->queued[1], (v->n_queued - 1) * sizeof(v->queued[0]));
+        v->n_queued--;
+        v->where[stale->id] = BUFFER_FREE;
+        if (v->n_dequeued < PWV_MAX_BUFFERS) v->dequeued[v->n_dequeued++] = stale;
+    }
     v->where[buffer->id] = BUFFER_QUEUED;
     v->queued[v->n_queued++] = buffer;
     run_cycle(v);

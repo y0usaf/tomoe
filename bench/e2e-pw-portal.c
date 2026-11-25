@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <string.h>
 
 #include <drm_fourcc.h>
@@ -39,6 +40,7 @@ struct consumer {
     int width;
     int height;
     int target_frames;
+    int slow_first_ms;
     int exit_code;
 };
 
@@ -171,6 +173,7 @@ static void on_process(void *userdata) {
         c->data_type = b->buffer->datas[0].type;
     }
     c->frames++;
+    if (c->frames == 1 && c->slow_first_ms > 0) usleep((useconds_t)c->slow_first_ms * 1000u);
     pw_stream_queue_buffer(c->stream, b);
     maybe_finish(c);
 }
@@ -199,6 +202,7 @@ int main(int argc, char **argv) {
     uint32_t target_id = PW_ID_ANY;
     int timeout_sec = 8;
     int target_frames = 1;
+    int slow_first_ms = 0;
     bool require_modifier = true;
     bool shm_only = false;
     for (int i = 1; i < argc; i++) {
@@ -208,6 +212,8 @@ int main(int argc, char **argv) {
             timeout_sec = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
             target_frames = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--slow-first-ms") == 0 && i + 1 < argc) {
+            slow_first_ms = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--allow-shm") == 0) {
             require_modifier = false;
         } else if (strcmp(argv[i], "--shm-only") == 0) {
@@ -226,6 +232,7 @@ int main(int argc, char **argv) {
     c.require_modifier = require_modifier;
     c.shm_only = shm_only;
     c.target_frames = target_frames;
+    c.slow_first_ms = slow_first_ms;
     c.exit_code = 1;
     c.loop = pw_main_loop_new(NULL);
     if (!c.loop) return 1;

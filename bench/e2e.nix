@@ -229,7 +229,7 @@ pkgs.testers.runNixOSTest {
         "node_id = int(streams[0][0])\n"
         "bench = subprocess.Popen([sys.argv[1], '--phase', 'frames', '--seconds', '4', '--windows', '1'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
         "try:\n"
-        "    r = subprocess.run([sys.argv[2], '--node', str(node_id), '--timeout', '6', '--frames', '1'] + sys.argv[3:])\n"
+        "    r = subprocess.run([sys.argv[2], '--node', str(node_id), '--timeout', '6', '--frames', '5', '--slow-first-ms', '200'] + sys.argv[3:])\n"
         "finally:\n"
         "    bench.terminate()\n"
         "    try:\n"
