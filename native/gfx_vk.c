@@ -1375,7 +1375,7 @@ static struct vk_texture *texture_of(struct texture *base) {
 static void copy_barrier(struct vk *v, VkCommandBuffer cb) {
     memory_barrier(v, cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COPY_BIT |
-            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            VK_PIPELINE_STAGE_2_BLIT_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT |
             VK_ACCESS_2_TRANSFER_WRITE_BIT);
 }
