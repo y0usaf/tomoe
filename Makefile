@@ -127,9 +127,17 @@ build/obj/%.o: native/%.c $(wildcard native/*.h) $(LIB_HEADERS) $(HEADERS) | bui
 	$(CC) $(CFLAGS_NATIVE) -c $< -o $@
 
 SHADER_SOURCES = $(wildcard native/shaders/*.vert native/shaders/*.frag native/shaders/*.comp)
-SHADER_HEADERS = $(patsubst native/shaders/%,build/shaders/%.h,$(SHADER_SOURCES))
+# Fragment shaders that discard: glslang turns discard into OpDemoteToHelperInvocation for
+# Vulkan 1.3, which needs the shaderDemoteToHelperInvocation feature. The .kill builds target
+# Vulkan 1.2 (OpKill) for a device that lacks it.
+SHADER_KILL = scene.frag ext.frag
+SHADER_HEADERS = $(patsubst native/shaders/%,build/shaders/%.h,$(SHADER_SOURCES)) \
+	$(SHADER_KILL:%=build/shaders/%.kill.h)
 
 build/obj/gfx_vk.o: $(SHADER_HEADERS)
+
+build/shaders/%.kill.spv: native/shaders/% | build/shaders
+	glslangValidator -V --target-env vulkan1.2 -o $@ $<
 
 build/shaders/%.spv: native/shaders/% | build/shaders
 	glslangValidator -V --target-env vulkan1.3 -o $@ $<

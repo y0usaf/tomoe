@@ -13,6 +13,7 @@
 #include <vulkan/vulkan.h>
 #include "shaders/scene.vert.h"
 #include "shaders/scene.frag.h"
+#include "shaders/scene.frag.kill.h"
 #include "shaders/blur.vert.h"
 #include "shaders/down.frag.h"
 #include "shaders/up.frag.h"
@@ -20,6 +21,7 @@
 #include "shaders/up.comp.h"
 #include "shaders/lut.frag.h"
 #include "shaders/ext.frag.h"
+#include "shaders/ext.frag.kill.h"
 #include "shaders/glass.frag.h"
 #include "shader-vk.h"
 
@@ -238,7 +240,7 @@ struct vk {
     VkPipelineLayout layout;
     VkShaderModule vert, frag, blur_vert, down_frag, up_frag, down_comp_mod, up_comp_mod,
         lut_frag, ext_frag, glass_frag;
-    bool ycbcr, queue_compute, compute_blur;
+    bool ycbcr, queue_compute, compute_blur, demote;
     struct yuv_path yuv[YUV_FORMATS];
     VkPipelineLayout blur_layout, blur_comp_layout, lut_layout, glass_layout, user_layout;
     VkDescriptorSetLayout ubo_layout;
@@ -2664,8 +2666,12 @@ static bool device_init(struct vk *v) {
         .queueCount = 1,
         .pQueuePriorities = &priority,
     };
+    VkPhysicalDeviceVulkan13Features have13 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+    };
     VkPhysicalDeviceVulkan11Features have11 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+        .pNext = &have13,
     };
     VkPhysicalDeviceFeatures2 have = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
@@ -2673,6 +2679,7 @@ static bool device_init(struct vk *v) {
     };
     vkGetPhysicalDeviceFeatures2(v->phys, &have);
     v->ycbcr = have11.samplerYcbcrConversion;
+    v->demote = have13.shaderDemoteToHelperInvocation;
     VkPhysicalDeviceVulkan11Features features11 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
         .samplerYcbcrConversion = v->ycbcr,
@@ -2680,6 +2687,7 @@ static bool device_init(struct vk *v) {
     VkPhysicalDeviceVulkan13Features features13 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
         .pNext = &features11,
+        .shaderDemoteToHelperInvocation = v->demote,
         .synchronization2 = VK_TRUE,
         .dynamicRendering = VK_TRUE,
     };
@@ -3119,7 +3127,8 @@ static bool layouts_init(struct vk *v) {
         vkUpdateDescriptorSets(v->dev, 1, &write, 0, NULL);
     }
     v->vert = shader_module(v, scene_vert, sizeof(scene_vert));
-    v->frag = shader_module(v, scene_frag, sizeof(scene_frag));
+    v->frag = v->demote ? shader_module(v, scene_frag, sizeof(scene_frag)) :
+        shader_module(v, scene_frag_kill, sizeof(scene_frag_kill));
     v->blur_vert = shader_module(v, blur_vert, sizeof(blur_vert));
     v->down_frag = shader_module(v, down_frag, sizeof(down_frag));
     v->up_frag = shader_module(v, up_frag, sizeof(up_frag));
@@ -3398,7 +3407,8 @@ bool gfx_ready(struct render *r) {
         tomoe_log(LOG_ERROR, "tomoe: vulkan pipeline setup failed");
         return false;
     }
-    v->ext_frag = shader_module(v, ext_frag, sizeof(ext_frag));
+    v->ext_frag = v->demote ? shader_module(v, ext_frag, sizeof(ext_frag)) :
+        shader_module(v, ext_frag_kill, sizeof(ext_frag_kill));
     for (int i = 0; v->ext_frag && i < YUV_FORMATS; i++) {
         if (!v->yuv[i].supported || !yuv_init(v, i)) continue;
         for (int k = 0; k < v->yuv[i].modifier_count; k++)
@@ -4696,6 +4706,16 @@ enum {
 
 struct spv_id { int32_t set, binding, location, constant; uint32_t storage; bool builtin, variable; };
 
+static bool spirv_capability(const uint32_t *code, size_t words, uint32_t capability) {
+    for (size_t at = 5; at < words;) {
+        uint32_t count = code[at] >> 16, op = code[at] & 0xffff;
+        if (!count || at + count > words) return false;
+        if (op == 17 && count == 2 && code[at + 1] == capability) return true;
+        at += count;
+    }
+    return false;
+}
+
 static bool spirv_scan(const uint32_t *code, size_t words, uint32_t *reads) {
     if (words < 5 || code[0] != 0x07230203u || code[1] > 0x00010600u || code[3] == 0 ||
             code[3] > (1u << 22)) return false;
@@ -4808,6 +4828,12 @@ struct gfx_prog *gfx_user_shader(struct render *r, const void *bytes, size_t len
     p->hash = hash;
     if (!spirv_scan(p->code, words, &p->reads)) {
         tomoe_log(LOG_ERROR, "tomoe: a user shader declares inputs outside the Tomoe interface");
+        free(p->code);
+        free(p);
+        return NULL;
+    }
+    if (!v->demote && spirv_capability(p->code, words, 5379)) {
+        tomoe_log(LOG_ERROR, "tomoe: a user shader discards, and this device cannot demote helper invocations");
         free(p->code);
         free(p);
         return NULL;
