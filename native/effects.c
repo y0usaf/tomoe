@@ -418,11 +418,6 @@ void effects_plan(struct tomoe *s, struct oplist *list) {
                 op->cached = true;
                 break;
             }
-        } else if (op->blur_kind == BLUR_GLASS) {
-            if (e->glass.key == op->key && gfx_level_live(&e->glass.level)) {
-                e->glass.pinned = e->stamp;
-                op->cached = true;
-            }
         }
     }
     for (size_t r = 0; r < BLUR_RESULTS; r++) {
@@ -461,8 +456,7 @@ void effects_plan(struct tomoe *s, struct oplist *list) {
             if (e->frost_last == i) e->frost_done = 0;
         }
     }
-    if (gfx_level_live(&e->glass.level) && e->glass.pinned != e->stamp &&
-            now - e->glass_used > BLUR_IDLE_NS)
+    if (gfx_level_live(&e->glass.level) && now - e->glass_used > BLUR_IDLE_NS)
         chain_release(&e->glass);
     if (e->scratch_used && now - e->scratch_used > BLUR_IDLE_NS) {
         for (size_t i = 0; i < sizeof(e->scratch) / sizeof(e->scratch[0]); i++)
@@ -480,7 +474,6 @@ void effects_forget(struct tomoe *s) {
     }
     for (size_t i = 0; i < BLUR_CHAINS; i++) s->effects->chains[i].key = 0;
     for (int i = 0; i < FROST_CHAINS; i++) s->effects->frost[i].key = 0;
-    s->effects->glass.key = 0;
     s->effects->frost_done = 0;
 }
 
@@ -853,7 +846,8 @@ static struct gfx_level *frost_prepare(struct frame *f, struct fbox area,
     }
     if (!count) return NULL;
     int slot = -1;
-    if (key) {
+    bool cacheable = key && !(inputs && inputs->frost_ring);
+    if (cacheable) {
         for (int i = 0; i < FROST_CHAINS; i++) {
             struct chain *c = &e->frost[i];
             if (c->key == key && gfx_level_live(&c->level) &&
@@ -889,7 +883,7 @@ static struct gfx_level *frost_prepare(struct frame *f, struct fbox area,
         return NULL;
     }
     e->blurs++;
-    c->key = key;
+    c->key = cacheable ? key : 0;
     c->width = bounds.width;
     c->height = bounds.height;
     c->count = count;
@@ -987,30 +981,17 @@ void effect_shader(struct frame *f, struct gfx_prog *p, struct fbox area, double
         struct box reach = { covered.x - r, covered.y - r, covered.width + 2 * r,
             covered.height + 2 * r };
         const struct settings *st = &f->server->settings;
-        double seed[13 + 4 * BLUR_SAMPLES] = { reach.x, reach.y, reach.width, reach.height,
+        double seed[] = { reach.x, reach.y, reach.width, reach.height,
             f->transform, f->width, f->height, f->x, f->y,
             frosted ? st->blur_passes : 0, frosted ? st->blur_offset : 0,
             frosted ? st->blur_noise : 0, frosted ? st->blur_vibrancy : 0 };
-        size_t seeds = 13;
-        if (frosted && inputs && inputs->frost_ring) {
-            int rn = 0;
-            const struct rect *rr = region_rectangles(inputs->frost_ring, &rn);
-            if (rn > BLUR_SAMPLES) {
-                rr = region_extents(inputs->frost_ring);
-                rn = 1;
-            }
-            for (int ri = 0; ri < rn; ri++) {
-                seed[seeds++] = rr[ri].x1;
-                seed[seeds++] = rr[ri].y1;
-                seed[seeds++] = rr[ri].x2;
-                seed[seeds++] = rr[ri].y2;
-            }
-        }
+        size_t seeds = sizeof(seed) / sizeof(seed[0]);
         if (pass_record_blur(f->pass, covered, reach, (struct box){0}, NULL, params, used,
                 ++f->blurs, seed, planes_cross(f, reach) ? 0 : seeds)) {
             struct op *op = pass_recorded(f->pass, before);
             if (op) {
-                op->blur_kind = beneath ? BLUR_BENEATH : BLUR_FROST;
+                op->blur_kind = beneath ? BLUR_BENEATH :
+                    (inputs && inputs->frost_ring ? BLUR_NONE : BLUR_FROST);
                 if (inputs) op->ui = inputs->ui;
             }
             if (marks) shader_marks_op(f, op, covered, inputs);
@@ -1060,37 +1041,17 @@ bool effect_glass(struct frame *f, struct gfx_prog *p, struct texture *map, stru
         (double)map->serial };
     double seed[] = { reach.x, reach.y, reach.width, reach.height, f->transform, f->width,
         f->height, f->x, f->y };
-    size_t before = pass_record_count(f->pass);
     if (pass_record_blur(f->pass, covered, reach, (struct box){0}, NULL, params,
             sizeof(params) / sizeof(params[0]), ++f->blurs, seed,
-            sizeof(seed) / sizeof(seed[0]))) {
-        struct op *op = pass_recorded(f->pass, before);
-        if (op) op->blur_kind = BLUR_GLASS;
-        return true;
-    }
+            sizeof(seed) / sizeof(seed[0]))) return true;
     struct op_clip clip;
     if (!op_begin(f->pass, OP_GLASS, covered, &clip)) return true;
-    uint64_t gkey = clip.op ? clip.op->key : 0;
+    pass_flush(f->pass);
     e->glass_used = monotonic_ns();
-    bool ok = gkey && e->glass.key == gkey && gfx_level_live(&e->glass.level) &&
-        e->glass.width == grown.width && e->glass.height == grown.height;
-    if (ok) {
-        e->reused++;
-    } else {
-        pass_flush(f->pass);
-        ok = blur_levels(f, &e->glass, grown, &(struct box){ 0, 0, grown.width, grown.height },
-            1, GLASS_FROST_PASSES, GLASS_FROST, 0);
-        gfx_state_dirty(f->pass);
-        gfx_target_viewport(f->server->renderer, f->buffer);
-        if (ok) {
-            e->blurs++;
-            e->glass.key = gkey;
-            e->glass.width = grown.width;
-            e->glass.height = grown.height;
-        } else {
-            e->glass.key = 0;
-        }
-    }
+    bool ok = blur_levels(f, &e->glass, grown, &(struct box){ 0, 0, grown.width, grown.height },
+        1, GLASS_FROST_PASSES, GLASS_FROST, 0);
+    gfx_state_dirty(f->pass);
+    gfx_target_viewport(f->server->renderer, f->buffer);
     if (ok) {
         float pos[8], local[8];
         quad_geometry(f, box, box.x, box.y, pos, local);

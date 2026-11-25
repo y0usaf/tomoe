@@ -349,7 +349,7 @@ struct ui_pointer;
 
 struct timeline;
 struct gfx_prog;
-enum blur_kind { BLUR_NONE = 0, BLUR_PANEL, BLUR_FROST, BLUR_GLASS, BLUR_BENEATH };
+enum blur_kind { BLUR_NONE = 0, BLUR_PANEL, BLUR_FROST, BLUR_BENEATH };
 enum gfx_input { GFX_IN_BENEATH, GFX_IN_FROST, GFX_IN_MARKS, GFX_IN_SELECTION, GFX_IN_DATA,
     GFX_IN_WINDOWS, GFX_IN_MOUSE, GFX_IN_TRAIL, GFX_IN_TIME, GFX_IN_FRAME };
 bool gfx_prog_reads(const struct gfx_prog *p, enum gfx_input input);
