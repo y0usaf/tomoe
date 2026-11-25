@@ -1,5 +1,7 @@
 #include "internal.h"
 #include "drm.h"
+#include <fcntl.h>
+#include <poll.h>
 #include <stdarg.h>
 #include <sys/eventfd.h>
 #include <sys/stat.h>
@@ -317,26 +319,36 @@ void format_set_finish(struct format_set *set) {
     *set = (struct format_set){ 0 };
 }
 
-static struct timeline *timeline_wrap(int drm_fd, uint32_t handle) {
+static struct timeline *timeline_wrap(int drm_fd, uint32_t handle, bool local) {
     struct timeline *timeline = calloc(1, sizeof(*timeline));
     if (!timeline) {
         drm_syncobj_destroy(drm_fd, handle);
         return NULL;
     }
-    *timeline = (struct timeline){ .drm_fd = drm_fd, .handle = handle, .refs = 1 };
+    *timeline = (struct timeline){
+        .drm_fd = drm_fd, .cached_fd = -1, .handle = handle, .refs = 1, .local = local,
+    };
     return timeline;
+}
+
+static void timeline_cache_drop(struct timeline *timeline) {
+    if (timeline->cached_fd >= 0) {
+        close(timeline->cached_fd);
+        timeline->cached_fd = -1;
+    }
 }
 
 struct timeline *timeline_create(int drm_fd) {
     uint32_t handle = 0;
-    if (drm_syncobj_create(drm_fd, 0, &handle)) return timeline_wrap(drm_fd, handle);
+    if (drm_syncobj_create(drm_fd, 0, &handle)) return timeline_wrap(drm_fd, handle, true);
     tomoe_log(LOG_ERROR, "tomoe: drm_syncobj_create failed: %s", strerror(errno));
     return NULL;
 }
 
 struct timeline *timeline_import(int drm_fd, int syncobj_fd) {
     uint32_t handle = 0;
-    if (drm_syncobj_fd_to_handle(drm_fd, syncobj_fd, &handle)) return timeline_wrap(drm_fd, handle);
+    if (drm_syncobj_fd_to_handle(drm_fd, syncobj_fd, &handle))
+        return timeline_wrap(drm_fd, handle, false);
     tomoe_log(LOG_ERROR, "tomoe: drm_syncobj_fd_to_handle failed: %s", strerror(errno));
     return NULL;
 }
@@ -348,6 +360,7 @@ struct timeline *timeline_ref(struct timeline *timeline) {
 
 void timeline_unref(struct timeline *timeline) {
     if (!timeline || --timeline->refs) return;
+    timeline_cache_drop(timeline);
     if (timeline->scratch) drm_syncobj_destroy(timeline->drm_fd, timeline->scratch);
     drm_syncobj_destroy(timeline->drm_fd, timeline->handle);
     free(timeline);
@@ -360,6 +373,10 @@ static uint32_t timeline_scratch(struct timeline *timeline) {
 }
 
 int timeline_export_sync_file(struct timeline *timeline, uint64_t point) {
+    if (timeline->local && timeline->cached_fd >= 0 && timeline->cached_point == point) {
+        int dup_fd = fcntl(timeline->cached_fd, F_DUPFD_CLOEXEC, 0);
+        if (dup_fd >= 0) return dup_fd;
+    }
     uint32_t handle = timeline_scratch(timeline);
     int fd = -1;
     if (!handle) return -1;
@@ -372,15 +389,34 @@ int timeline_export_sync_file(struct timeline *timeline, uint64_t point) {
 }
 
 bool timeline_import_sync_file(struct timeline *timeline, uint64_t point, int fd) {
+    timeline_cache_drop(timeline);
     uint32_t handle = timeline_scratch(timeline);
     if (!handle) return false;
     bool ok = drm_syncobj_import_sync_file(timeline->drm_fd, handle, fd) &&
         drm_syncobj_transfer(timeline->drm_fd, timeline->handle, point, handle, 0, 0);
-    if (!ok) tomoe_log(LOG_ERROR, "tomoe: sync file import failed: %s", strerror(errno));
-    return ok;
+    if (!ok) {
+        tomoe_log(LOG_ERROR, "tomoe: sync file import failed: %s", strerror(errno));
+        return false;
+    }
+    if (timeline->local && point >= timeline->cached_point) {
+        int copy = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+        if (copy >= 0) {
+            timeline->cached_fd = copy;
+            timeline->cached_point = point;
+        }
+    }
+    return true;
 }
 
 bool timeline_check(struct timeline *timeline, uint64_t point, uint32_t flags, bool *ready) {
+    if (!flags && timeline->local && timeline->cached_fd >= 0 && timeline->cached_point == point) {
+        struct pollfd p = { .fd = timeline->cached_fd, .events = POLLIN };
+        int ret = poll(&p, 1, 0);
+        if (ret >= 0) {
+            *ready = ret > 0;
+            return true;
+        }
+    }
     int ret = drm_syncobj_timeline_wait(timeline->drm_fd, &timeline->handle, &point, 1, 0,
         flags, NULL);
     if (ret != 0 && ret != -ETIME) {
@@ -392,6 +428,7 @@ bool timeline_check(struct timeline *timeline, uint64_t point, uint32_t flags, b
 }
 
 bool timeline_signal(struct timeline *timeline, uint64_t point) {
+    if (timeline->cached_fd >= 0 && point >= timeline->cached_point) timeline_cache_drop(timeline);
     if (drm_syncobj_timeline_signal(timeline->drm_fd, timeline->handle, point)) return true;
     tomoe_log(LOG_ERROR, "tomoe: drm_syncobj_timeline_signal failed");
     return false;

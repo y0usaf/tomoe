@@ -1470,7 +1470,7 @@ static struct upload *staging(struct vk *v) {
     return v->staging.chunk ? r->upload : NULL;
 }
 
-static void latch_jobs(struct vk *v, bool ready);
+static bool latch_jobs(struct vk *v, bool ready);
 
 static void reclaim(void *data) {
     struct vk *v = data;
@@ -1481,10 +1481,10 @@ static void reclaim(void *data) {
     }
 }
 
-static void latch_jobs(struct vk *v, bool ready) {
+static bool latch_jobs(struct vk *v, bool ready) {
     struct render *r = &v->base;
     struct upload *u = r->upload;
-    if (!u || (!upload_pending(u) && (ready || (!v->staging.unfenced && !u->frame_bytes && !u->calm)))) return;
+    if (!u || (!upload_pending(u) && (ready || (!v->staging.unfenced && !u->frame_bytes && !u->calm)))) return false;
     uint64_t start = timing_enabled ? timing_now() : 0;
     staging_poll(v, false);
     bool used = false;
@@ -1523,6 +1523,7 @@ static void latch_jobs(struct vk *v, bool ready) {
         used = true;
     }
     if (used && v->open) copy_barrier(v, v->open->main);
+    bool fenced = false;
     if (ready && used && !v->target && v->open) {
         uint64_t limit = upload_pending(u) ? u->jobs[u->latch % UPLOAD_JOBS].start : u->alloc;
         bool merged = v->staging.fences == UPLOAD_FENCES;
@@ -1532,12 +1533,13 @@ static void latch_jobs(struct vk *v, bool ready) {
         v->staging.serial[at] = v->open->serial;
         v->staging.limit[at] = limit;
         used = false;
+        fenced = true;
     }
     if (ready) {
         v->staging.unfenced |= used;
         upload_latch_end(u, false);
         if (timing_enabled) timing_add(TIMING_UPLOAD_LATCH, timing_now() - start);
-        return;
+        return fenced;
     }
     used |= v->staging.unfenced;
     v->staging.unfenced = false;
@@ -1565,6 +1567,7 @@ static void latch_jobs(struct vk *v, bool ready) {
         staging_alloc(v, want);
     }
     if (timing_enabled) timing_add(TIMING_UPLOAD_LATCH, timing_now() - start);
+    return used;
 }
 
 static void latch(struct vk *v) {
@@ -1572,8 +1575,9 @@ static void latch(struct vk *v) {
 }
 
 void gfx_upload_latch(struct render *r) {
-    latch_jobs(V(r), true);
-    idle_submit(V(r));
+    struct vk *v = V(r);
+    if (latch_jobs(v, true) && v->open && !v->target) submit(v, false);
+    else idle_submit(v);
 }
 
 static bool stage(struct vk_texture *t, struct buffer *buffer, const struct region *damage) {

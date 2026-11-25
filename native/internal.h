@@ -119,9 +119,11 @@ bool format_set_add(struct format_set *set, uint32_t format, uint64_t modifier);
 void format_set_finish(struct format_set *set);
 
 struct timeline {
-    int drm_fd;
+    int drm_fd, cached_fd;
     uint32_t handle, scratch;
+    uint64_t cached_point;
     size_t refs;
+    bool local;
 };
 struct timeline_waiter {
     int fd;

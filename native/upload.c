@@ -320,7 +320,9 @@ void upload_set_staging(struct upload *u, unsigned char *base, uint64_t size) {
 }
 
 uint64_t upload_wanted(const struct upload *u) {
-    uint64_t need = !u->size ? u->resume : u->peak > u->size ? u->peak : u->calm ? u->window_peak : 0;
+    uint64_t peak = u->peak > UPLOAD_MAX_STAGING / 2 ? UPLOAD_MAX_STAGING : u->peak * 2;
+    uint64_t wpeak = u->window_peak > UPLOAD_MAX_STAGING / 2 ? UPLOAD_MAX_STAGING : u->window_peak * 2;
+    uint64_t need = !u->size ? u->resume : peak > u->size ? peak : u->calm ? wpeak : 0;
     uint64_t want = UPLOAD_MIN_STAGING;
     while (want < need && want < UPLOAD_MAX_STAGING) want <<= 1;
     if (!u->size || want > u->size || (u->calm && want < u->size)) return want;
