@@ -1341,7 +1341,6 @@ struct xdg_configure {
     struct box popup_geometry;
     bool reactive;
 };
-#define XDG_CONFIGURES 16
 struct xdg_surface {
     struct wl_resource *resource, *client, *role_resource;
     struct tomoe *server;
@@ -1355,8 +1354,8 @@ struct xdg_surface {
     struct box geometry;
     struct xdg_surface_state pending, current;
     struct surface_synced synced;
-    struct xdg_configure configures[XDG_CONFIGURES];
-    size_t configure_count;
+    struct xdg_configure *configures;
+    size_t configure_count, configure_cap;
     struct wl_event_source *configure_idle;
     uint32_t scheduled_serial;
     struct node *scene, *scene_surface;

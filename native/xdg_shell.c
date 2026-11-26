@@ -226,10 +226,15 @@ static void send_toplevel_configure(struct xdg_toplevel *toplevel, struct xdg_co
 static void configure_idle(void *data) {
     struct xdg_surface *xdg = data;
     xdg->configure_idle = NULL;
-    if (xdg->configure_count == XDG_CONFIGURES) {
-        memmove(xdg->configures, xdg->configures + 1,
-            sizeof(xdg->configures[0]) * (XDG_CONFIGURES - 1));
-        xdg->configure_count--;
+    if (xdg->configure_count == xdg->configure_cap) {
+        size_t next_cap = xdg->configure_cap ? xdg->configure_cap * 2 : 16;
+        struct xdg_configure *grown = realloc(xdg->configures, sizeof(*grown) * next_cap);
+        if (!grown) {
+            wl_client_post_no_memory(wl_resource_get_client(xdg->resource));
+            return;
+        }
+        xdg->configures = grown;
+        xdg->configure_cap = next_cap;
     }
     struct xdg_configure *configure = &xdg->configures[xdg->configure_count++];
     *configure = (struct xdg_configure){ .serial = xdg->scheduled_serial };
@@ -360,6 +365,7 @@ static void surface_free(struct xdg_surface *xdg) {
     wl_list_remove(&xdg->link);
     surface_synced_finish(&xdg->synced);
     wl_resource_set_user_data(xdg->resource, NULL);
+    free(xdg->configures);
     free(xdg);
 }
 

@@ -182,7 +182,8 @@ static void foreign_state_send(struct window *w) {
         foreign_state(w->server, w));
 }
 static void window_activate(struct window *w, bool activated) {
-    if (w->xdg->base->initialized) xdg_toplevel_configure_activated(w->xdg, activated);
+    if (w->xdg->base->initialized && w->xdg->scheduled.activated != activated)
+        xdg_toplevel_configure_activated(w->xdg, activated);
 }
 static void window_event(struct window *w, const char *type, const char *request) {
     struct tomoe *s = w->server;
