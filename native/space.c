@@ -153,18 +153,18 @@ static bool make_leaf(struct tomoe *s, struct surface *surface,
     if (pw <= 0 || ph <= 0 || pw > INT_MAX || ph > INT_MAX) return false;
     leaf->screen.width = (int)pw; leaf->screen.height = (int)ph;
     leaf->shown = leaf->screen;
-    int clip_w = target && target->drawn_width > 0 ? target->drawn_width :
-        (target ? target->width : 0);
-    int clip_h = target && target->drawn_height > 0 ? target->drawn_height :
-        (target ? target->height : 0);
-    if (window && clip_w > 0 && clip_h > 0 && toplevel_surface(surface)) {
-        double left = target->x, top = target->y;
-        double far_x = left + clip_w, far_y = top + clip_h;
-        leaf_to_screen(s, plan, &left, &top);
-        leaf_to_screen(s, plan, &far_x, &far_y);
-        struct box placed = { pixel_round(left), pixel_round(top),
-            pixel_round(far_x) - pixel_round(left), pixel_round(far_y) - pixel_round(top) };
-        box_intersection(&leaf->shown, &leaf->screen, &placed);
+    if (window && toplevel_surface(surface)) {
+        int clip_w = target->drawn_width > 0 ? target->drawn_width : target->width;
+        int clip_h = target->drawn_height > 0 ? target->drawn_height : target->height;
+        if (clip_w > 0 && clip_h > 0) {
+            double left = target->x, top = target->y;
+            double far_x = left + clip_w, far_y = top + clip_h;
+            leaf_to_screen(s, plan, &left, &top);
+            leaf_to_screen(s, plan, &far_x, &far_y);
+            struct box placed = { pixel_round(left), pixel_round(top),
+                pixel_round(far_x) - pixel_round(left), pixel_round(far_y) - pixel_round(top) };
+            box_intersection(&leaf->shown, &leaf->screen, &placed);
+        }
     }
     return true;
 }
@@ -993,7 +993,8 @@ bool render_window_buffer(struct tomoe *s, uint32_t id, struct buffer *buffer, b
     root.node = window_capture_node(s, id, &root.target);
     if (!root.node) return false;
     root.target.offset_x = root.target.offset_y = 0;
-    root.target.width = root.target.height = 0;
+    root.target.width = buffer->width;
+    root.target.height = buffer->height;
     root.target.drawn_width = root.target.drawn_height = 0;
     root.target.alpha = 1;
     root.target.visual = (struct visual){ .opacity = 1, .scale = 1 };
@@ -1087,7 +1088,7 @@ static bool scanout_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     const struct target *t = leaf->target;
     if (t && t->kind == TARGET_ICON) return true;
     if (leaf->surface->current.alpha != UINT32_MAX || leaf->surface->current.viewport.has_src ||
-            (t && (t->alpha != 1 || t->offset_x || t->offset_y || t->drawn_width ||
+            (t && (t->alpha != 1 || t->offset_x || t->offset_y || t->drawn_width || t->drawn_height ||
                 t->visual.opacity != 1 || t->visual.scale != 1 || t->visual.rotation != 0 ||
                 t->visual.translate_x || t->visual.translate_y || t->visual.tint[3] != 0 ||
                 t->visual.closing))) return true;

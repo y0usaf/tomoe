@@ -798,6 +798,7 @@ void windows_publish_presentation(struct tomoe *s, struct presentation *plan) {
                 w->resize_to_w = entry->width;
                 w->resize_to_h = entry->height;
                 animation_start(&w->resize, &st->window_resize, 0, 1, now);
+                window_drawn_size(w, 0);
             }
             w->wanted_w = entry->width;
             w->wanted_h = entry->height;
@@ -847,6 +848,7 @@ void window_place_native(struct tomoe *s, uint32_t id, int x, int y, int width, 
         w->resize_to_w = width;
         w->resize_to_h = height;
         animation_start(&w->resize, &st->window_resize, 0, 1, now);
+        window_drawn_size(w, 0);
     }
     w->target.x = x;
     w->target.y = y;
