@@ -211,8 +211,10 @@ bool effect_texture(struct frame *f, const struct texture_options *options,
             !gfx_tex_info(options->texture, &external, &alpha)) return false;
     if (external && !gfx_external_ready(f->server->renderer)) return false;
     struct fbox local = local_box(f, clip);
+    const float *tint = options->tint;
     double params[] = { 5, dst.x, dst.y, dst.width, dst.height, local.x, local.y, local.width,
-        local.height, radius };
+        local.height, radius,
+        tint ? tint[0] : 0, tint ? tint[1] : 0, tint ? tint[2] : 0, tint ? tint[3] : 0 };
     struct drawn drawn = record(f, options, dst, params, sizeof(params) / sizeof(params[0]));
     if (drawn.recorded) {
         if (drawn.op) {
@@ -242,6 +244,7 @@ bool effect_texture(struct frame *f, const struct texture_options *options,
         float pos[8], local[8];
         quad_geometry(f, dst, clip.x, clip.y, pos, local);
         gfx_external_draw(f->pass, options, alpha, clip, radius, pos, local, texcoords);
+        op_end(f->pass, &draw_clip);
         return true;
     }
     struct scene_quad scene = { .kind = SCENE_TEXTURE, .texture = options->texture,
@@ -250,6 +253,8 @@ bool effect_texture(struct frame *f, const struct texture_options *options,
             SCENE_FILTER_LINEAR,
         .alpha = options->alpha ? *options->alpha : 1, .opaque = alpha ? 0 : 1,
         .radius = radius, .size = { clip.width, clip.height } };
+    if (tint)
+        for (int i = 0; i < 4; i++) scene.tint[i] = tint[i];
     scene_geometry(f, dst, texcoords, clip.x, clip.y, &scene);
     pass_scene(f->pass, &scene);
     op_end(f->pass, &draw_clip);

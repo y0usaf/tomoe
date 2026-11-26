@@ -29,7 +29,6 @@ struct window {
     int shift_to_x, shift_to_y;
     int resize_from_w, resize_from_h, resize_to_w, resize_to_h;
     int wanted_w, wanted_h;
-    double stale_until;
     bool foreign_known;
     struct screen *foreign_outputs[16];
     size_t foreign_output_count;
@@ -594,24 +593,14 @@ static void window_animate_close(struct window *w, const struct animation_config
 static bool same_tint(const float a[4], const float b[4]) {
     return a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3];
 }
-static bool window_buffer_stale(const struct window *w, double now) {
-    if (!w->mapped || w->wanted_w <= 0 || w->wanted_h <= 0) return false;
-    if (now >= w->stale_until) return false;
-    int dw = physical_size(w->client_width, w->target.scale) - w->wanted_w;
-    int dh = physical_size(w->client_height, w->target.scale) - w->wanted_h;
-    return dw > 1 || dw < -1 || dh > 1 || dh < -1;
-}
-static void window_drawn_size(struct window *w, double resize, double now) {
-    if (resize < 1) {
-        w->target.drawn_width = (int)lround(w->resize_from_w +
+static void window_drawn_size(struct window *w, double resize) {
+    if (w->resize.active) {
+        int width = (int)lround(w->resize_from_w +
             (w->resize_to_w - w->resize_from_w) * resize);
-        w->target.drawn_height = (int)lround(w->resize_from_h +
+        int height = (int)lround(w->resize_from_h +
             (w->resize_to_h - w->resize_from_h) * resize);
-        return;
-    }
-    if (window_buffer_stale(w, now)) {
-        w->target.drawn_width = w->wanted_w;
-        w->target.drawn_height = w->wanted_h;
+        w->target.drawn_width = width > 1 ? width : 1;
+        w->target.drawn_height = height > 1 ? height : 1;
         return;
     }
     w->target.drawn_width = w->target.drawn_height = 0;
@@ -651,7 +640,7 @@ static struct visual window_live_visual(struct window *w, const struct settings 
     live.translate_x = (int)lround(w->shift_from_x + (w->shift_to_x - w->shift_from_x) * shift);
     live.translate_y = (int)lround(w->shift_from_y + (w->shift_to_y - w->shift_from_y) * shift);
     live.closing = w->closing;
-    window_drawn_size(w, animation_advance(&w->resize, now, stats), now);
+    window_drawn_size(w, animation_advance(&w->resize, now, stats));
     return live;
 }
 static void ghost_release(struct ghost *g) {
@@ -704,8 +693,10 @@ static void window_retire(struct window *w) {
     int client_height = w->client_height > 0 ? w->client_height : w->target.client_height;
     int width = physical_size(client_width, w->target.scale);
     int height = physical_size(client_height, w->target.scale);
-    if (w->target.drawn_width > 0) width = w->target.drawn_width;
-    if (w->target.drawn_height > 0) height = w->target.drawn_height;
+    int limit_w = w->target.drawn_width > 0 ? w->target.drawn_width : w->target.width;
+    int limit_h = w->target.drawn_height > 0 ? w->target.drawn_height : w->target.height;
+    if (limit_w > 0 && limit_w < width) width = limit_w;
+    if (limit_h > 0 && limit_h < height) height = limit_h;
     if (width < 1 || height < 1 || width > 16384 || height > 16384) return;
     const struct format *format = format_set_get(render_formats(s->renderer),
         DRM_FORMAT_ARGB8888);
@@ -807,7 +798,6 @@ void windows_publish_presentation(struct tomoe *s, struct presentation *plan) {
                 w->resize_to_w = entry->width;
                 w->resize_to_h = entry->height;
                 animation_start(&w->resize, &st->window_resize, 0, 1, now);
-                w->stale_until = now + 1.0;
             }
             w->wanted_w = entry->width;
             w->wanted_h = entry->height;
@@ -857,7 +847,6 @@ void window_place_native(struct tomoe *s, uint32_t id, int x, int y, int width, 
         w->resize_to_w = width;
         w->resize_to_h = height;
         animation_start(&w->resize, &st->window_resize, 0, 1, now);
-        w->stale_until = now + 1.0;
     }
     w->target.x = x;
     w->target.y = y;

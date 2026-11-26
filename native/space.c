@@ -153,9 +153,13 @@ static bool make_leaf(struct tomoe *s, struct surface *surface,
     if (pw <= 0 || ph <= 0 || pw > INT_MAX || ph > INT_MAX) return false;
     leaf->screen.width = (int)pw; leaf->screen.height = (int)ph;
     leaf->shown = leaf->screen;
-    if (window && target->width > 0 && target->height > 0 && toplevel_surface(surface)) {
+    int clip_w = target && target->drawn_width > 0 ? target->drawn_width :
+        (target ? target->width : 0);
+    int clip_h = target && target->drawn_height > 0 ? target->drawn_height :
+        (target ? target->height : 0);
+    if (window && clip_w > 0 && clip_h > 0 && toplevel_surface(surface)) {
         double left = target->x, top = target->y;
-        double far_x = left + target->width, far_y = top + target->height;
+        double far_x = left + clip_w, far_y = top + clip_h;
         leaf_to_screen(s, plan, &left, &top);
         leaf_to_screen(s, plan, &far_x, &far_y);
         struct box placed = { pixel_round(left), pixel_round(top),
@@ -297,12 +301,10 @@ void frame_done(struct output *o, const struct timespec *when) {
 static struct fbox window_box(const struct target *t, const struct frame *f) {
     double width = physical_size(t->client_width, t->scale);
     double height = physical_size(t->client_height, t->scale);
-    if (t->width > 0) width = fmin(width, t->width);
-    if (t->height > 0) height = fmin(height, t->height);
-    if (t->drawn_width > 0 && t->drawn_height > 0) {
-        width = t->drawn_width;
-        height = t->drawn_height;
-    }
+    int limit_w = t->drawn_width > 0 ? t->drawn_width : t->width;
+    int limit_h = t->drawn_height > 0 ? t->drawn_height : t->height;
+    if (limit_w > 0) width = fmin(width, limit_w);
+    if (limit_h > 0) height = fmin(height, limit_h);
     double x = (t->x + t->offset_x - f->view_x) * f->zoom;
     double y = (t->y + t->offset_y - f->view_y) * f->zoom;
     width *= f->zoom;
@@ -341,7 +343,7 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     const struct target *t = leaf->target;
     bool window = t && t->kind == TARGET_WINDOW;
     if (box_empty(&leaf->shown)) return false;
-    bool transformed = window && (t->visual.scale != 1 || t->drawn_width > 0);
+    bool transformed = window && t->visual.scale != 1;
     if (transformed) {
         struct fbox box = window_box(t, data);
         local = (struct box){ pixel_round(box.x) - data->x, pixel_round(box.y) - data->y,
@@ -992,7 +994,9 @@ bool render_window_buffer(struct tomoe *s, uint32_t id, struct buffer *buffer, b
     if (!root.node) return false;
     root.target.offset_x = root.target.offset_y = 0;
     root.target.width = root.target.height = 0;
+    root.target.drawn_width = root.target.drawn_height = 0;
     root.target.alpha = 1;
+    root.target.visual = (struct visual){ .opacity = 1, .scale = 1 };
     struct presentation plan = { .view_x = root.target.x, .view_y = root.target.y,
         .view_zoom = 1 };
     struct pass *pass = render_begin(s->renderer, buffer, NULL, 0);
