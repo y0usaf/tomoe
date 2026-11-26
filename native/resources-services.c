@@ -14,6 +14,7 @@
 #include "../support/battery.h"
 #include "../support/mpris.h"
 #include "../support/network.h"
+#include "../support/audio.h"
 #include "../support/notifications.h"
 
 #define SOURCE_RETRY_MS 1000
@@ -26,6 +27,7 @@ static const char *producer_default(int kind) {
         return "(:available nil :player-name \"\" :status \"\" :title \"\" :artist \"\""
                " :album \"\" :art-url \"\" :length 0 :position 0 :volume 1.0d0)";
     case PRODUCER_BATTERY: return "(:available nil :percent 100 :charging nil)";
+    case PRODUCER_AUDIO: return "(:available nil :volume 1.0d0 :muted nil)";
     default: return "(:available nil :notifications nil)";
     }
 }
@@ -43,8 +45,10 @@ static void services_text(struct res_buffer *text) {
     rb_append(text, " :network ", 10);
     rb_append(text, res.producers[PRODUCER_NETWORK].snapshot,
         strlen(res.producers[PRODUCER_NETWORK].snapshot));
-    rb_append(text, " :tray (:items nil)", 19);
-    rb_append(text, " :audio (:volume 1.0d0 :muted nil))", 35);
+    rb_append(text, " :tray (:items nil) :audio ", 27);
+    rb_append(text, res.producers[PRODUCER_AUDIO].snapshot,
+        strlen(res.producers[PRODUCER_AUDIO].snapshot));
+    rb_append(text, ")", 1);
 }
 
 static void services_push(void) {
@@ -121,6 +125,8 @@ static void *producer_open(struct res_producer *producer, int *error) {
         root = getenv("TOMOE_POWER_SUPPLY_ROOT");
         if (!root || !*root) root = "/sys/class/power_supply";
         return tomoe_battery_open(root, error);
+    case PRODUCER_AUDIO:
+        return tomoe_audio_open(error);
     default:
         return tomoe_notifications_open(error);
     }
@@ -131,6 +137,7 @@ static int producer_poll(struct res_producer *producer) {
     case PRODUCER_NETWORK: return tomoe_network_poll(producer->native);
     case PRODUCER_MPRIS: return tomoe_mpris_poll(producer->native);
     case PRODUCER_BATTERY: return tomoe_battery_poll(producer->native);
+    case PRODUCER_AUDIO: return tomoe_audio_poll(producer->native);
     default: return tomoe_notifications_poll(producer->native);
     }
 }
@@ -140,6 +147,7 @@ static const char *producer_snapshot(struct res_producer *producer) {
     case PRODUCER_NETWORK: return tomoe_network_snapshot(producer->native);
     case PRODUCER_MPRIS: return tomoe_mpris_snapshot(producer->native);
     case PRODUCER_BATTERY: return tomoe_battery_snapshot(producer->native);
+    case PRODUCER_AUDIO: return tomoe_audio_snapshot(producer->native);
     default: return tomoe_notifications_snapshot(producer->native);
     }
 }
@@ -149,6 +157,7 @@ static int producer_fd(struct res_producer *producer) {
     case PRODUCER_NETWORK: return tomoe_network_fd(producer->native);
     case PRODUCER_MPRIS: return tomoe_mpris_fd(producer->native);
     case PRODUCER_BATTERY: return tomoe_battery_fd(producer->native);
+    case PRODUCER_AUDIO: return tomoe_audio_fd(producer->native);
     default: return tomoe_notifications_fd(producer->native);
     }
 }
@@ -158,6 +167,7 @@ static unsigned producer_mask(struct res_producer *producer) {
     case PRODUCER_NETWORK: return tomoe_network_mask(producer->native);
     case PRODUCER_MPRIS: return tomoe_mpris_mask(producer->native);
     case PRODUCER_BATTERY: return tomoe_battery_mask(producer->native);
+    case PRODUCER_AUDIO: return tomoe_audio_mask(producer->native);
     default: return tomoe_notifications_mask(producer->native);
     }
 }
@@ -167,17 +177,20 @@ static int producer_timeout(struct res_producer *producer) {
     case PRODUCER_NETWORK: return tomoe_network_timeout(producer->native, -1);
     case PRODUCER_MPRIS: return tomoe_mpris_timeout(producer->native, -1);
     case PRODUCER_BATTERY: return tomoe_battery_timeout(producer->native, -1);
+    case PRODUCER_AUDIO: return tomoe_audio_timeout(producer->native, -1);
     default: return tomoe_notifications_timeout(producer->native, -1);
     }
 }
 
 static void producer_close(struct res_producer *producer) {
     if (producer->source) { loop_remove(producer->source); producer->source = NULL; }
+    producer->fd = -1;
     if (!producer->native) return;
     switch (producer->kind) {
     case PRODUCER_NETWORK: tomoe_network_close(producer->native); break;
     case PRODUCER_MPRIS: tomoe_mpris_close(producer->native); break;
     case PRODUCER_BATTERY: tomoe_battery_close(producer->native); break;
+    case PRODUCER_AUDIO: tomoe_audio_close(producer->native); break;
     default: tomoe_notifications_close(producer->native); break;
     }
     producer->native = NULL;
@@ -209,12 +222,18 @@ static void producer_update_fd(struct res_producer *producer) {
     if (!producer->native) return;
     int descriptor = producer_fd(producer);
     unsigned mask = producer_mask(producer);
+    if (producer->source && descriptor != producer->fd) {
+        loop_remove(producer->source);
+        producer->source = NULL;
+        producer->fd = -1;
+    }
+    if (descriptor < 0) return;
     if (producer->source) {
         loop_update_fd(producer->source, mask);
         return;
     }
-    if (descriptor < 0) return;
     producer->source = loop_watch_fd(res.server, descriptor, mask, producer_callback, producer);
+    if (producer->source) producer->fd = descriptor;
 }
 
 static void producer_ready(struct res_producer *producer, uint64_t now) {
@@ -255,10 +274,7 @@ static void producer_start(struct res_producer *producer) {
     producer->native = native;
     producer_refresh(producer);
     producer->due = 0;
-    int descriptor = producer_fd(producer);
-    if (descriptor >= 0)
-        producer->source = loop_watch_fd(res.server, descriptor, producer_mask(producer),
-            producer_callback, producer);
+    producer_update_fd(producer);
 }
 
 bool res_system_read(void) {
@@ -650,20 +666,21 @@ bool res_backlight(int64_t percent, char *error, size_t size) {
 }
 
 void res_services_start(void) {
-    static const char *keys[] = { "network", "mpris", "battery", "notifications" };
-    for (int kind = 0; kind < 4; kind++) {
+    static const char *keys[] = { "network", "mpris", "battery", "notifications", "audio" };
+    for (int kind = 0; kind < PRODUCER_COUNT; kind++) {
         struct res_producer *producer = &res.producers[kind];
         producer->key = keys[kind];
         producer->kind = kind;
+        producer->fd = -1;
         producer->snapshot = res_dup(producer_default(kind));
     }
-    for (int kind = 0; kind < 4; kind++) producer_start(&res.producers[kind]);
+    for (int kind = 0; kind < PRODUCER_COUNT; kind++) producer_start(&res.producers[kind]);
     res.system_due = res_now();
 }
 
 void res_services_stop(void) {
-    for (int kind = 0; kind < 4; kind++) producer_close(&res.producers[kind]);
-    for (int kind = 0; kind < 4; kind++) {
+    for (int kind = 0; kind < PRODUCER_COUNT; kind++) producer_close(&res.producers[kind]);
+    for (int kind = 0; kind < PRODUCER_COUNT; kind++) {
         free(res.producers[kind].snapshot);
         res.producers[kind].snapshot = NULL;
     }
@@ -673,7 +690,7 @@ void res_services_stop(void) {
 }
 
 void res_services_service(uint64_t now, uint64_t *next) {
-    for (int kind = 0; kind < 4; kind++) {
+    for (int kind = 0; kind < PRODUCER_COUNT; kind++) {
         struct res_producer *producer = &res.producers[kind];
         if (!producer->native) continue;
         if (now >= producer->due) {

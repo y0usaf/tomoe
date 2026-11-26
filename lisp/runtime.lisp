@@ -12,7 +12,7 @@
   (list :items nil))
 
 (defun default-audio-state ()
-  (list :volume 1.0d0 :muted nil))
+  (list :available nil :volume 1.0d0 :muted nil))
 
 (defvar *materialized* nil
   "Within a transaction: the mounts, invalidation count, output revision and

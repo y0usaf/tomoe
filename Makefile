@@ -12,7 +12,7 @@ WAYLAND_XML ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-scanner)/wayl
 LIBS = freetype2 libinput vulkan
 LINK = $(shell $(PKG_CONFIG) --libs $(LIBS))
 PORTAL_LIBS = vulkan
-SUPPORT = executions watches notifications mpris backlight battery network system
+SUPPORT = executions watches notifications mpris backlight battery network system audio
 PROTOCOLS = \
 	$(WLR)/wlr-layer-shell-unstable-v1.xml \
 	$(WLR)/wlr-screencopy-unstable-v1.xml \
@@ -76,7 +76,7 @@ NATIVE = $(patsubst native/%.c,build/obj/%.o,$(wildcard native/*.c)) $(LIB_OBJEC
 CFLAGS_CODE = $(OPT) $(LTO) $(CPU)
 CFLAGS_BASE = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter
 CFLAGS_NATIVE = $(CFLAGS_BASE) -DTOMOE_VERSION='"$(VERSION)"' -DTOMOE_PATH_PREFIX='"$(PATH_PREFIX)"' -Ibuild -Inative $(LIB_INCLUDE) $(shell $(PKG_CONFIG) --cflags $(LIBS))
-CFLAGS_SUPPORT = $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -DTOMOE_VERSION='"$(VERSION)"' -Ilib/bus/include
+CFLAGS_SUPPORT = $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -DTOMOE_VERSION='"$(VERSION)"' -Ilib/bus/include -Ilib/pipewire/include
 CFLAGS_PORTAL = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild -Ilib/bus/include -Ilib/wayland/include -Ilib/wayland/scanner -Ilib/pipewire/include $(shell $(PKG_CONFIG) --cflags $(PORTAL_LIBS))
 LIB_CFLAGS_bus = $(CFLAGS_SUPPORT)
 LIB_CFLAGS_pipewire = $(CFLAGS_SUPPORT)
@@ -152,7 +152,7 @@ build/obj/lib/%.o: lib/%.c $(LIB_HEADERS) build/wayland-server-protocol.h build/
 build/obj/%-protocol.o: build/%-protocol.c $(HEADERS) | build/obj
 	$(CC) $(CFLAGS_NATIVE) -c $< -o $@
 
-build/%.o: support/%.c $(wildcard support/*.h) | build
+build/%.o: support/%.c $(wildcard support/*.h) $(LIB_HEADERS) | build
 	$(CC) $(CFLAGS_SUPPORT) -c $< -o $@
 
 build/wayland-server-protocol.h: $(WAYLAND_XML) | build

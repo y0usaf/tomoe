@@ -170,11 +170,19 @@ struct res_producer {
     int kind;
     void *native;
     struct loop_source *source;
+    int fd;
     char *snapshot;
     uint64_t due;
 };
 
-enum res_producer_kind { PRODUCER_NETWORK, PRODUCER_MPRIS, PRODUCER_BATTERY, PRODUCER_NOTIFICATIONS };
+enum res_producer_kind {
+    PRODUCER_NETWORK,
+    PRODUCER_MPRIS,
+    PRODUCER_BATTERY,
+    PRODUCER_NOTIFICATIONS,
+    PRODUCER_AUDIO,
+    PRODUCER_COUNT
+};
 
 struct want_timer {
     char *owner, *name;
@@ -246,7 +254,7 @@ struct res_state {
     bool source_scanning;
     int source_scans;
 
-    struct res_producer producers[4];
+    struct res_producer producers[PRODUCER_COUNT];
 };
 
 extern struct res_state res;
