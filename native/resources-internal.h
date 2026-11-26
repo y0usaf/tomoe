@@ -171,6 +171,7 @@ struct res_producer {
     void *native;
     struct loop_source *source;
     int fd;
+    uint64_t generation;
     char *snapshot;
     uint64_t due;
 };

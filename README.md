@@ -765,6 +765,10 @@ the API to move.
 - System bell requests play the owned `:bell` sound through the existing sound
   service, for example `(sound :bell "/path/to/bell.wav")`. Without an owner,
   bells are silent, just like the other configurable sound events.
+- The `:audio` session service talks to PipeWire directly over `lib/pipewire`,
+  tracking the default `Audio/Sink` and its parent device route for `:available`,
+  cubic `:volume`, and `:muted`, and reconnecting with exponential backoff if
+  PipeWire restarts or is absent.
 
 Bug reports, questions and odd setups are welcome in the
 [issues](https://github.com/y0usaf/tomoe/issues).

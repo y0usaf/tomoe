@@ -1,6 +1,8 @@
 #ifndef TOMOE_AUDIO_H
 #define TOMOE_AUDIO_H
 
+#include <stdint.h>
+
 struct tomoe_audio;
 
 struct tomoe_audio *tomoe_audio_open(int *error);
@@ -12,6 +14,8 @@ const char *tomoe_audio_snapshot(struct tomoe_audio *audio);
 int tomoe_audio_fd(const struct tomoe_audio *audio);
 
 unsigned tomoe_audio_mask(const struct tomoe_audio *audio);
+
+uint64_t tomoe_audio_generation(const struct tomoe_audio *audio);
 
 int tomoe_audio_timeout(const struct tomoe_audio *audio, int max_ms);
 

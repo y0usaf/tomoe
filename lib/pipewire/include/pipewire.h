@@ -77,7 +77,6 @@ enum {
 };
 
 enum {
-    SPA_PARAM_ROUTE_INDEX = 1,
     SPA_PARAM_ROUTE_DIRECTION = 2,
     SPA_PARAM_ROUTE_DEVICE = 3,
     SPA_PARAM_ROUTE_PROPS = 10,
@@ -216,7 +215,6 @@ enum {
 };
 
 enum {
-    PW_DEVICE_EVENT_INFO = 0,
     PW_DEVICE_EVENT_PARAM = 1,
 };
 
@@ -269,6 +267,8 @@ enum { SPA_CLOCK_RATE = 80, SPA_CLOCK_DURATION = 96 };
 #define PWW_MAX_MAPS 256
 #define PWW_MAX_FDS 64
 #define PWW_MAX_MESSAGE (1u << 20)
+#define PWW_MAX_IN (2u * PWW_MAX_MESSAGE)
+#define PWW_MAX_OUT (64u * 1024u)
 #define PWW_BUILD (64u * 1024u)
 
 struct pww_mem {
@@ -290,6 +290,11 @@ struct pww {
     uint8_t *in;
     size_t in_len;
     size_t in_cap;
+    uint8_t *out;
+    size_t out_len;
+    size_t out_off;
+    size_t out_cap;
+    int connecting;
     int fds[PWW_MAX_FDS];
     size_t n_fds;
     struct pww_mem mem[PWW_MAX_MEM];
@@ -360,6 +365,8 @@ int pww_parse_nested_dict(struct pww_parse *p);
 int pww_parse_pod_object(struct pww_parse *p, uint32_t *type, uint32_t *id);
 int pww_socket_path(char *path, size_t size);
 int pww_connect(struct pww *w);
+int pww_connect_nb(struct pww *w);
+int pww_flush(struct pww *w);
 void pww_unmap_all(struct pww *w);
 void pww_mem_clear(struct pww *w);
 int pww_mem_add(struct pww *w, uint32_t id, int fd);
@@ -371,8 +378,11 @@ int pww_send_message(struct pww *w, uint32_t id, uint32_t opcode, struct pww_bui
 void pww_message_begin(struct pww_build *b, struct pww_frame *root, uint8_t *storage);
 int pww_send_message_fds(struct pww *w, uint32_t id, uint32_t opcode, struct pww_build *b, const int *fds, uint32_t n_fds);
 int pww_message_send(struct pww *w, struct pww_build *b, struct pww_frame *root, uint32_t id, uint32_t opcode);
+int pww_send_nb(struct pww *w, uint32_t id, uint32_t opcode, struct pww_build *b);
+int pww_message_send_nb(struct pww *w, struct pww_build *b, struct pww_frame *root, uint32_t id, uint32_t opcode);
 int pww_parse_messages(struct pww *w, pww_dispatch dispatch, void *data);
 int pww_recv(struct pww *w, pww_dispatch dispatch, void *data);
+int pww_recv_budget(struct pww *w, pww_dispatch dispatch, void *data, size_t max_msgs, size_t max_bytes);
 
 void pww_pod_rectangle(struct pww_build *b, uint32_t width, uint32_t height);
 void pww_pod_fraction(struct pww_build *b, uint32_t num, uint32_t denom);

@@ -172,6 +172,11 @@ static unsigned producer_mask(struct res_producer *producer) {
     }
 }
 
+static uint64_t producer_generation(struct res_producer *producer) {
+    if (producer->kind == PRODUCER_AUDIO) return tomoe_audio_generation(producer->native);
+    return 0;
+}
+
 static int producer_timeout(struct res_producer *producer) {
     switch (producer->kind) {
     case PRODUCER_NETWORK: return tomoe_network_timeout(producer->native, -1);
@@ -185,6 +190,7 @@ static int producer_timeout(struct res_producer *producer) {
 static void producer_close(struct res_producer *producer) {
     if (producer->source) { loop_remove(producer->source); producer->source = NULL; }
     producer->fd = -1;
+    producer->generation = 0;
     if (!producer->native) return;
     switch (producer->kind) {
     case PRODUCER_NETWORK: tomoe_network_close(producer->native); break;
@@ -218,14 +224,16 @@ static void producer_refresh(struct res_producer *producer) {
     producer->snapshot = decoded;
 }
 
-static void producer_update_fd(struct res_producer *producer) {
+static void producer_update_fd(struct res_producer *producer, uint64_t now) {
     if (!producer->native) return;
     int descriptor = producer_fd(producer);
     unsigned mask = producer_mask(producer);
-    if (producer->source && descriptor != producer->fd) {
+    uint64_t generation = producer_generation(producer);
+    if (producer->source && (descriptor != producer->fd || generation != producer->generation)) {
         loop_remove(producer->source);
         producer->source = NULL;
         producer->fd = -1;
+        producer->generation = 0;
     }
     if (descriptor < 0) return;
     if (producer->source) {
@@ -233,7 +241,12 @@ static void producer_update_fd(struct res_producer *producer) {
         return;
     }
     producer->source = loop_watch_fd(res.server, descriptor, mask, producer_callback, producer);
-    if (producer->source) producer->fd = descriptor;
+    if (producer->source) {
+        producer->fd = descriptor;
+        producer->generation = generation;
+    } else if (now + SOURCE_RETRY_MS < producer->due) {
+        producer->due = now + SOURCE_RETRY_MS;
+    }
 }
 
 static void producer_ready(struct res_producer *producer, uint64_t now) {
@@ -246,7 +259,7 @@ static void producer_ready(struct res_producer *producer, uint64_t now) {
     }
     int timeout = producer_timeout(producer);
     producer->due = timeout < 0 ? UINT64_MAX : now + (uint64_t)timeout;
-    producer_update_fd(producer);
+    producer_update_fd(producer, now);
     if (status > 0) {
         producer_refresh(producer);
         services_push();
@@ -274,7 +287,7 @@ static void producer_start(struct res_producer *producer) {
     producer->native = native;
     producer_refresh(producer);
     producer->due = 0;
-    producer_update_fd(producer);
+    producer_update_fd(producer, res_now());
 }
 
 bool res_system_read(void) {

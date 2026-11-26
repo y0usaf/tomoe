@@ -221,25 +221,29 @@ void pww_parse_init(struct pww_parse *p, const void *data, size_t size) {
 }
 
 void pww_parse_align(struct pww_parse *p) {
-    p->off = (p->off + 7) & ~(size_t)7;
+    size_t rem = p->off & 7u;
+    if (rem) {
+        size_t pad = 8u - rem;
+        p->off = pad > SIZE_MAX - p->off ? SIZE_MAX : p->off + pad;
+    }
 }
 
 const uint8_t *pww_parse_pod(struct pww_parse *p, uint32_t *type, uint32_t *body) {
     if (p->fail) return NULL;
-    if (p->off + 8 > p->size) {
+    if (p->off > p->size || p->size - p->off < 8) {
         p->fail = 1;
         return NULL;
     }
     const uint8_t *pod = p->data + p->off;
     uint32_t size;
     memcpy(&size, pod, 4);
-    if (p->off + 8 + size > p->size) {
+    if (size > p->size - p->off - 8) {
         p->fail = 1;
         return NULL;
     }
     if (type) memcpy(type, pod + 4, 4);
     if (body) *body = size;
-    p->off += 8 + size;
+    p->off += 8 + (size_t)size;
     pww_parse_align(p);
     return pod;
 }
@@ -311,11 +315,12 @@ int pww_socket_path(char *path, size_t size) {
     return 0;
 }
 
-int pww_connect(struct pww *w) {
+static int pww_connect_flags(struct pww *w, int nonblock) {
     char path[PATH_MAX];
     int res = pww_socket_path(path, sizeof(path));
     if (res < 0) return res;
-    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    int type = SOCK_STREAM | SOCK_CLOEXEC | (nonblock ? SOCK_NONBLOCK : 0);
+    int fd = socket(AF_UNIX, type, 0);
     if (fd < 0) return -errno;
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
@@ -327,12 +332,57 @@ int pww_connect(struct pww *w) {
     strcpy(addr.sun_path, path);
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         int error = errno;
+        if (nonblock && error == EINPROGRESS) {
+            w->fd = fd;
+            w->connecting = 1;
+            return 0;
+        }
         close(fd);
         return error == ENOENT ? -EHOSTDOWN : -error;
     }
-    int flags = fcntl(fd, F_GETFL);
-    if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    if (!nonblock) {
+        int flags = fcntl(fd, F_GETFL);
+        if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    }
     w->fd = fd;
+    w->connecting = 0;
+    return 0;
+}
+
+int pww_connect(struct pww *w) {
+    return pww_connect_flags(w, 0);
+}
+
+int pww_connect_nb(struct pww *w) {
+    return pww_connect_flags(w, 1);
+}
+
+int pww_flush(struct pww *w) {
+    if (w->fd < 0) return -ENOTCONN;
+    if (w->connecting) {
+        struct pollfd p = { .fd = w->fd, .events = POLLOUT };
+        int r = poll(&p, 1, 0);
+        if (r < 0) return errno == EINTR ? 0 : -errno;
+        if (r == 0) return 0;
+        int err = 0;
+        socklen_t len = sizeof(err);
+        if (getsockopt(w->fd, SOL_SOCKET, SO_ERROR, &err, &len) < 0) return -errno;
+        if (err) return -err;
+        w->connecting = 0;
+    }
+    while (w->out_off < w->out_len) {
+        ssize_t n = send(w->fd, w->out + w->out_off, w->out_len - w->out_off,
+                MSG_NOSIGNAL | MSG_DONTWAIT);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
+            return -errno;
+        }
+        if (n == 0) return -EPIPE;
+        w->out_off += (size_t)n;
+    }
+    w->out_off = 0;
+    w->out_len = 0;
     return 0;
 }
 
@@ -448,15 +498,95 @@ int pww_message_send(struct pww *w, struct pww_build *b, struct pww_frame *root,
     return pww_send_message(w, id, opcode, b);
 }
 
-int pww_parse_messages(struct pww *w, pww_dispatch dispatch, void *data) {
+static int pww_queue_bytes(struct pww *w, const uint8_t *data, size_t len) {
+    if (!len) return 0;
+    size_t queued = w->out_len - w->out_off;
+    if (len > PWW_MAX_OUT || queued > PWW_MAX_OUT - len) return -ENOBUFS;
+    if (w->out_off > 0 && w->out_len + len > w->out_cap) {
+        if (queued) memmove(w->out, w->out + w->out_off, queued);
+        w->out_len = queued;
+        w->out_off = 0;
+    }
+    size_t need = w->out_len + len;
+    if (need > w->out_cap) {
+        size_t cap = w->out_cap ? w->out_cap : 4096u;
+        while (cap < need) cap = cap > PWW_MAX_OUT / 2u ? PWW_MAX_OUT : cap * 2u;
+        uint8_t *grown = realloc(w->out, cap);
+        if (!grown) return -ENOMEM;
+        w->out = grown;
+        w->out_cap = cap;
+    }
+    memcpy(w->out + w->out_len, data, len);
+    w->out_len += len;
+    return 0;
+}
+
+int pww_send_nb(struct pww *w, uint32_t id, uint32_t opcode, struct pww_build *b) {
+    if (b->fail) return -ENOSPC;
+    if (w->fd < 0) return -ENOTCONN;
+    uint32_t size = b->off;
+    if (size > 0xffffffu || size > PWW_BUILD) return -ENOSPC;
+    uint32_t header[4] = { id, (opcode << 24) | size, w->seq, 0 };
+    size_t total = sizeof(header) + (size_t)size;
+    if (total > PWW_MAX_OUT) return -ENOBUFS;
+    if (!w->connecting && w->out_off == w->out_len) {
+        w->out_off = 0;
+        w->out_len = 0;
+        struct iovec iov[2] = {
+            { header, sizeof(header) },
+            { b->data, size }
+        };
+        struct msghdr msg;
+        memset(&msg, 0, sizeof(msg));
+        msg.msg_iov = iov;
+        msg.msg_iovlen = size ? 2 : 1;
+        ssize_t n;
+        do {
+            n = sendmsg(w->fd, &msg, MSG_NOSIGNAL | MSG_DONTWAIT);
+        } while (n < 0 && errno == EINTR);
+        if (n < 0) {
+            if (errno != EAGAIN && errno != EWOULDBLOCK) return -errno;
+            n = 0;
+        }
+        size_t sent = (size_t)n;
+        if (sent < total) {
+            int rc = 0;
+            if (sent < sizeof(header)) {
+                rc = pww_queue_bytes(w, (const uint8_t *)header + sent, sizeof(header) - sent);
+                if (rc == 0) rc = pww_queue_bytes(w, b->data, size);
+            } else {
+                rc = pww_queue_bytes(w, b->data + (sent - sizeof(header)), total - sent);
+            }
+            if (rc < 0) return rc;
+        }
+    } else {
+        size_t queued = w->out_len - w->out_off;
+        if (queued > PWW_MAX_OUT - total) return -ENOBUFS;
+        int rc = pww_queue_bytes(w, (const uint8_t *)header, sizeof(header));
+        if (rc == 0) rc = pww_queue_bytes(w, b->data, size);
+        if (rc < 0) return rc;
+    }
+    w->seq = (w->seq + 1) & 0x3fffffffu;
+    return 0;
+}
+
+int pww_message_send_nb(struct pww *w, struct pww_build *b, struct pww_frame *root, uint32_t id,
+        uint32_t opcode) {
+    pww_pod_struct_end(b, root);
+    return pww_send_nb(w, id, opcode, b);
+}
+
+static int pww_parse_messages_limit(struct pww *w, pww_dispatch dispatch, void *data,
+        size_t max_msgs, size_t *done) {
     while (w->in_len >= PWW_HEADER) {
+        if (max_msgs && *done >= max_msgs) return 1;
         uint32_t id, op, size, nfds;
         memcpy(&id, w->in, 4);
         memcpy(&op, w->in + 4, 4);
         memcpy(&nfds, w->in + 12, 4);
         size = op & 0xffffffu;
-        if (size > PWW_MAX_MESSAGE) return -EPROTO;
-        if (w->in_len < PWW_HEADER + size) return 0;
+        if (size > PWW_MAX_MESSAGE || nfds > PWW_MAX_FDS) return -EPROTO;
+        if (w->in_len < PWW_HEADER + (size_t)size) return 0;
         if (nfds > w->n_fds) return 0;
         uint32_t opcode = op >> 24;
         struct pww_parse outer;
@@ -474,16 +604,31 @@ int pww_parse_messages(struct pww *w, pww_dispatch dispatch, void *data) {
         w->n_fds -= nfds;
         memmove(w->in, w->in + PWW_HEADER + size, w->in_len - PWW_HEADER - size);
         w->in_len -= PWW_HEADER + size;
+        if (done) (*done)++;
         if (res < 0) return res;
     }
     return 0;
 }
 
-int pww_recv(struct pww *w, pww_dispatch dispatch, void *data) {
+int pww_parse_messages(struct pww *w, pww_dispatch dispatch, void *data) {
+    return pww_parse_messages_limit(w, dispatch, data, 0, NULL);
+}
+
+int pww_recv_budget(struct pww *w, pww_dispatch dispatch, void *data,
+        size_t max_msgs, size_t max_bytes) {
+    size_t done = 0, total_bytes = 0;
+    if (w->in_len >= PWW_HEADER) {
+        int res = pww_parse_messages_limit(w, dispatch, data, max_msgs, &done);
+        if (res != 0) return res;
+    }
     for (;;) {
+        if (max_msgs && done >= max_msgs) return 1;
+        if (max_bytes && total_bytes >= max_bytes) return 1;
         uint8_t buf[65536];
+        size_t want = sizeof(buf);
+        if (max_bytes && max_bytes - total_bytes < want) want = max_bytes - total_bytes;
         char control[CMSG_SPACE(PWW_MAX_FDS * sizeof(int))];
-        struct iovec iov = { buf, sizeof(buf) };
+        struct iovec iov = { buf, want };
         struct msghdr msg;
         memset(&msg, 0, sizeof(msg));
         msg.msg_iov = &iov;
@@ -497,22 +642,28 @@ int pww_recv(struct pww *w, pww_dispatch dispatch, void *data) {
             return -errno;
         }
         if (n == 0) return -EPIPE;
+        total_bytes += (size_t)n;
         for (struct cmsghdr *cm = CMSG_FIRSTHDR(&msg); cm; cm = CMSG_NXTHDR(&msg, cm)) {
             if (cm->cmsg_level != SOL_SOCKET || cm->cmsg_type != SCM_RIGHTS) continue;
+            if (cm->cmsg_len < CMSG_LEN(0)) continue;
             size_t count = (cm->cmsg_len - CMSG_LEN(0)) / sizeof(int);
-            int *fds = (int *)CMSG_DATA(cm);
+            const unsigned char *cdata = CMSG_DATA(cm);
             for (size_t i = 0; i < count; i++) {
+                int fd;
+                memcpy(&fd, cdata + i * sizeof(int), sizeof(int));
                 if (w->n_fds >= PWW_MAX_FDS) {
-                    close(fds[i]);
+                    close(fd);
                     continue;
                 }
-                w->fds[w->n_fds++] = fds[i];
+                w->fds[w->n_fds++] = fd;
             }
         }
         if (msg.msg_flags & MSG_CTRUNC) return -EMSGSIZE;
-        if (w->in_len + (size_t)n > w->in_cap) {
+        if ((size_t)n > PWW_MAX_IN || w->in_len > PWW_MAX_IN - (size_t)n) return -EMSGSIZE;
+        size_t need = w->in_len + (size_t)n;
+        if (need > w->in_cap) {
             size_t cap = w->in_cap ? w->in_cap : 65536;
-            while (cap < w->in_len + (size_t)n) cap *= 2;
+            while (cap < need) cap = cap > PWW_MAX_IN / 2u ? PWW_MAX_IN : cap * 2u;
             uint8_t *in = realloc(w->in, cap);
             if (!in) return -ENOMEM;
             w->in = in;
@@ -520,9 +671,13 @@ int pww_recv(struct pww *w, pww_dispatch dispatch, void *data) {
         }
         memcpy(w->in + w->in_len, buf, (size_t)n);
         w->in_len += (size_t)n;
-        int res = pww_parse_messages(w, dispatch, data);
-        if (res < 0) return res;
+        int res = pww_parse_messages_limit(w, dispatch, data, max_msgs, &done);
+        if (res != 0) return res;
     }
+}
+
+int pww_recv(struct pww *w, pww_dispatch dispatch, void *data) {
+    return pww_recv_budget(w, dispatch, data, 0, 0);
 }
 
 void pww_pod_rectangle(struct pww_build *b, uint32_t width, uint32_t height) {
