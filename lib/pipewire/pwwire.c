@@ -498,11 +498,11 @@ int pww_message_send(struct pww *w, struct pww_build *b, struct pww_frame *root,
     return pww_send_message(w, id, opcode, b);
 }
 
-static int pww_queue_bytes(struct pww *w, const uint8_t *data, size_t len) {
+static int pww_reserve_out(struct pww *w, size_t len) {
     if (!len) return 0;
     size_t queued = w->out_len - w->out_off;
     if (len > PWW_MAX_OUT || queued > PWW_MAX_OUT - len) return -ENOBUFS;
-    if (w->out_off > 0 && w->out_len + len > w->out_cap) {
+    if (w->out_off > 0 && len > w->out_cap - w->out_len) {
         if (queued) memmove(w->out, w->out + w->out_off, queued);
         w->out_len = queued;
         w->out_off = 0;
@@ -516,8 +516,6 @@ static int pww_queue_bytes(struct pww *w, const uint8_t *data, size_t len) {
         w->out = grown;
         w->out_cap = cap;
     }
-    memcpy(w->out + w->out_len, data, len);
-    w->out_len += len;
     return 0;
 }
 
@@ -550,21 +548,31 @@ int pww_send_nb(struct pww *w, uint32_t id, uint32_t opcode, struct pww_build *b
         }
         size_t sent = (size_t)n;
         if (sent < total) {
-            int rc = 0;
-            if (sent < sizeof(header)) {
-                rc = pww_queue_bytes(w, (const uint8_t *)header + sent, sizeof(header) - sent);
-                if (rc == 0) rc = pww_queue_bytes(w, b->data, size);
-            } else {
-                rc = pww_queue_bytes(w, b->data + (sent - sizeof(header)), total - sent);
-            }
+            int rc = pww_reserve_out(w, total - sent);
             if (rc < 0) return rc;
+            if (sent < sizeof(header)) {
+                size_t hrem = sizeof(header) - sent;
+                memcpy(w->out + w->out_len, (const uint8_t *)header + sent, hrem);
+                w->out_len += hrem;
+                if (size) {
+                    memcpy(w->out + w->out_len, b->data, size);
+                    w->out_len += size;
+                }
+            } else {
+                size_t brem = total - sent;
+                memcpy(w->out + w->out_len, b->data + (sent - sizeof(header)), brem);
+                w->out_len += brem;
+            }
         }
     } else {
-        size_t queued = w->out_len - w->out_off;
-        if (queued > PWW_MAX_OUT - total) return -ENOBUFS;
-        int rc = pww_queue_bytes(w, (const uint8_t *)header, sizeof(header));
-        if (rc == 0) rc = pww_queue_bytes(w, b->data, size);
+        int rc = pww_reserve_out(w, total);
         if (rc < 0) return rc;
+        memcpy(w->out + w->out_len, header, sizeof(header));
+        w->out_len += sizeof(header);
+        if (size) {
+            memcpy(w->out + w->out_len, b->data, size);
+            w->out_len += size;
+        }
     }
     w->seq = (w->seq + 1) & 0x3fffffffu;
     return 0;
@@ -627,7 +635,7 @@ int pww_recv_budget(struct pww *w, pww_dispatch dispatch, void *data,
         uint8_t buf[65536];
         size_t want = sizeof(buf);
         if (max_bytes && max_bytes - total_bytes < want) want = max_bytes - total_bytes;
-        char control[CMSG_SPACE(PWW_MAX_FDS * sizeof(int))];
+        _Alignas(struct cmsghdr) char control[CMSG_SPACE(PWW_MAX_FDS * sizeof(int))];
         struct iovec iov = { buf, want };
         struct msghdr msg;
         memset(&msg, 0, sizeof(msg));
@@ -643,6 +651,7 @@ int pww_recv_budget(struct pww *w, pww_dispatch dispatch, void *data,
         }
         if (n == 0) return -EPIPE;
         total_bytes += (size_t)n;
+        int overflow = 0;
         for (struct cmsghdr *cm = CMSG_FIRSTHDR(&msg); cm; cm = CMSG_NXTHDR(&msg, cm)) {
             if (cm->cmsg_level != SOL_SOCKET || cm->cmsg_type != SCM_RIGHTS) continue;
             if (cm->cmsg_len < CMSG_LEN(0)) continue;
@@ -653,12 +662,13 @@ int pww_recv_budget(struct pww *w, pww_dispatch dispatch, void *data,
                 memcpy(&fd, cdata + i * sizeof(int), sizeof(int));
                 if (w->n_fds >= PWW_MAX_FDS) {
                     close(fd);
+                    overflow = 1;
                     continue;
                 }
                 w->fds[w->n_fds++] = fd;
             }
         }
-        if (msg.msg_flags & MSG_CTRUNC) return -EMSGSIZE;
+        if (overflow || (msg.msg_flags & MSG_CTRUNC)) return -EMSGSIZE;
         if ((size_t)n > PWW_MAX_IN || w->in_len > PWW_MAX_IN - (size_t)n) return -EMSGSIZE;
         size_t need = w->in_len + (size_t)n;
         if (need > w->in_cap) {
@@ -784,7 +794,7 @@ int pww_send_message_fds(struct pww *w, uint32_t id, uint32_t opcode, struct pww
     memcpy(storage, header, sizeof(header));
     memcpy(storage + sizeof(header), b->data, size);
     size_t total = sizeof(header) + size;
-    char control[CMSG_SPACE(PWW_MAX_FDS * sizeof(int))];
+    _Alignas(struct cmsghdr) char control[CMSG_SPACE(PWW_MAX_FDS * sizeof(int))];
     memset(control, 0, sizeof(control));
     struct iovec iov = { storage, total };
     struct msghdr msg;

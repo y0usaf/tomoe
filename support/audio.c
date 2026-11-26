@@ -807,13 +807,16 @@ static int handle_param(struct tomoe_audio *a, struct pww_parse *p, int is_devic
     return 0;
 }
 
-static int handle_proxy_gone(struct tomoe_audio *a, uint32_t id) {
-    proxy_release(a, id);
+static int handle_proxy_gone(struct tomoe_audio *a, uint32_t id, int destroy) {
     if (id == a->c.meta_proxy) {
         a->c.meta_proxy = 0;
         a->c.meta_global = SPA_ID_INVALID;
         a->c.default_sink[0] = '\0';
         a->c.configured_sink[0] = '\0';
+        if (destroy) {
+            int rc = send_destroy(a, id);
+            if (rc < 0) return rc;
+        }
         if (a->c.synced) return resolve_target_sink(a);
     } else if (id == a->c.sink_proxy) {
         if (a->c.target_sink_global != SPA_ID_INVALID)
@@ -824,15 +827,20 @@ static int handle_proxy_gone(struct tomoe_audio *a, uint32_t id) {
         a->c.target_card_profile_device = -1;
         a->c.node_props.valid = 0;
         int rc = unbind_device(a);
-        if (rc < 0) return rc;
-        if (a->c.synced) return resolve_target_sink(a);
         audio_recompute(a);
+        if (rc < 0) return rc;
+        if (destroy) {
+            rc = send_destroy(a, id);
+            if (rc < 0) return rc;
+        }
+        if (a->c.synced) return resolve_target_sink(a);
     } else if (id == a->c.device_proxy) {
         if (a->c.target_device_global != SPA_ID_INVALID)
             remove_device_global(a, a->c.target_device_global);
         a->c.device_proxy = 0;
         a->c.route_props.valid = 0;
         audio_recompute(a);
+        if (destroy) return send_destroy(a, id);
     }
     return 0;
 }
@@ -861,14 +869,16 @@ static int audio_dispatch(void *data, uint32_t id, uint32_t opcode, struct pww_p
             uint32_t removed = 0;
             if (pww_parse_int(p, &removed)) return -EPROTO;
             if (removed == AUDIO_REGISTRY_PROXY) return -EPROTO;
-            return removed < AUDIO_FIRST_PROXY ? 0 : handle_proxy_gone(a, removed);
+            if (removed < AUDIO_FIRST_PROXY) return 0;
+            proxy_release(a, removed);
+            return handle_proxy_gone(a, removed, 0);
         }
         case PW_CORE_EVENT_ERROR: {
             uint32_t target = 0, seq = 0, res = 0;
             if (pww_parse_int(p, &target) || pww_parse_int(p, &seq) || pww_parse_int(p, &res))
                 return -EPROTO;
             if (target == 0 || target == AUDIO_REGISTRY_PROXY) return -EPROTO;
-            return target < AUDIO_FIRST_PROXY ? 0 : handle_proxy_gone(a, target);
+            return target < AUDIO_FIRST_PROXY ? 0 : handle_proxy_gone(a, target, 1);
         }
         default: return 0;
         }
