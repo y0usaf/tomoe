@@ -14,10 +14,9 @@ change is checked when it is made, and the check is thrown away:
 
 If something breaks, fix it or revert it.
 
-Everything lands on `main` through `tomoe-land`, the queue finix runs on this
-machine: `tomoe-land submit BRANCH` rebases it onto `origin/main`, builds `.#tomoe`,
-pushes that exact commit to `origin` and `forgejo`, pins it in finix and queues a
-switch. `tomoe-land wait ID` blocks until that ticket has a result.
+To land a change on `main`: rebase onto `origin/main`, verify `nix build --no-link`,
+push `main` to `origin` and `forgejo`, then run `ship` (or `luin-pin update tomoe`
+and `nh os switch` in `~/finix`) to pin and switch.
 
 A speed or memory claim starts with `bench/speedlab.sh CANDIDATE` (bench/speedlab/README.md):
 the generated config, a recorded workload and a virtual clock on a sealed private
@@ -47,9 +46,8 @@ it.
 queue marker: before asking for `flock -x`, create
 `$XDG_RUNTIME_DIR/agent/tomoe-vm.pending/<your-agent-name>` and remove it as soon as
 the lock is granted (and on any exit); before each new `flock -s`, wait until that
-directory is empty — for at most `LAND_PENDING_WAIT` (10 minutes), because a steady
-stream of exclusive holders must not starve shared work forever. `tomoe-land` does all of
-this for you.
+directory is empty — for at most 10 minutes, because a steady stream of exclusive
+holders must not starve shared work forever.
 
 ## Never touch the live desktop
 

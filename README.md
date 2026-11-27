@@ -790,7 +790,6 @@ nix build          # the package
 nix build .#znver4 # the same code with -march/-mtune=znver4 for a Zen 4 host
 nix flake check    # builds the package; there is no test suite
 nix run .#bench    # Tomoe, sway, niri and Hyprland on one vkms output, as JSON
-tomoe-land submit BRANCH                     # build, then land it on main and pin it in finix
 bench/speedlab.sh REV                        # instructions, memory and output equivalence vs the reference
 tools/isolate DIR COMMAND                    # run anything that must not reach your desktop
 nix develop -c sh -c 'make -j && build/tomoe --backend nested'  # run from source
