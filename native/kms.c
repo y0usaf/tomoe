@@ -99,7 +99,7 @@ struct kms {
     struct tomoe *server;
     int fd, device;
     dev_t devnum;
-    bool atomic, async_atomic, modifiers;
+    bool atomic, async_atomic, modifiers, started;
     int last_ret;
     uint64_t cursor_width, cursor_height;
     unsigned wake_ms;
@@ -1691,6 +1691,7 @@ static void connector_add(struct kms *kms, struct drm_connector *info) {
         c->screen.height = preferred->height;
         c->screen.refresh = preferred->refresh;
     }
+    c->relight = kms->started;
     wl_list_insert(kms->connectors.prev, &c->link);
     tomoe_log(LOG_INFO, "tomoe: connector %s (%s)", c->screen.name, c->screen.description);
     if (log_verbosity >= LOG_INFO) log_kernel_state(c, "state before Tomoe");
@@ -1722,6 +1723,13 @@ static bool scan_connectors(struct kms *kms) {
             tomoe_log(LOG_WARNING, "tomoe: output %s removed: %s", c->screen.name,
                 gone ? (unreadable ? "the connector could not be read" :
                     "the connector reports it is disconnected") : "the EDID changed");
+            if (c->crtc && session_active(kms->server)) {
+                struct screen_update off = { .output = &c->screen };
+                screen_state_init(&off.base);
+                screen_state_set_enabled(&off.base, false);
+                commit(&off, 1, false);
+                screen_state_finish(&off.base);
+            }
             screen_destroy(&c->screen);
             continue;
         }
@@ -1855,7 +1863,9 @@ int kms_create(struct tomoe *s) {
 }
 
 void kms_start(struct tomoe *s) {
-    if (s->kms) scan_connectors(s->kms);
+    if (!s->kms) return;
+    scan_connectors(s->kms);
+    s->kms->started = true;
 }
 
 void kms_pause(struct tomoe *s) {
